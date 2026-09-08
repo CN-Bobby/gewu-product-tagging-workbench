@@ -1,5 +1,6 @@
 param([int]$Port = 8765, [string]$Storage = '')
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'workbench-health.ps1')
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
 $storagePath = if ($Storage) { [IO.Path]::GetFullPath($Storage) } else { Join-Path $projectRoot 'storage' }
@@ -10,7 +11,7 @@ $serverProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.Ow
 if (-not $serverProcess.CommandLine -or -not $serverProcess.CommandLine.Contains($pythonPath) -or -not $serverProcess.CommandLine.Contains('backend.app:app')) {
     throw "Port $Port is occupied by another process; nothing was stopped."
 }
-$health = Invoke-RestMethod -Uri "$baseUrl/api/health" -TimeoutSec 4
+$health = Get-WorkbenchHealth -BaseUrl $baseUrl -TimeoutSec 4
 $legacy = -not $health.application -and $health.version -eq '0.4.0' -and -not $Storage -and $Port -eq 8765
 if (-not $legacy -and ($health.application -ne 'product-tagging-workbench' -or $health.storage -ne $storagePath)) { throw 'Service identity or data directory does not match; nothing was stopped.' }
 Invoke-RestMethod -Method Post -Uri "$baseUrl/api/server/stop" -TimeoutSec 3 -ErrorAction SilentlyContinue | Out-Null

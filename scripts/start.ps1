@@ -1,5 +1,6 @@
 param([int]$Port = 8765, [string]$Storage = '')
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'workbench-health.ps1')
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
 $storagePath = if ($Storage) { [IO.Path]::GetFullPath($Storage) } else { Join-Path $projectRoot 'storage' }
@@ -8,7 +9,7 @@ New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 $baseUrl = "http://127.0.0.1:$Port"
 $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
 if ($listener) {
-    $health = Invoke-RestMethod -Uri "$baseUrl/api/health" -TimeoutSec 5
+    $health = Get-WorkbenchHealth -BaseUrl $baseUrl -TimeoutSec 5
     $matchingService = $health.application -eq 'product-tagging-workbench' -and $health.storage -eq $storagePath
     if (-not $health.application -and $health.version -eq '0.4.0' -and -not $Storage -and $Port -eq 8765) {
         $legacyProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)"
@@ -27,7 +28,7 @@ $process.Id | Set-Content -LiteralPath (Join-Path $logRoot 'server.pid')
 $ready = $false
 for ($attempt = 0; $attempt -lt 90; $attempt++) {
     try {
-        $health = Invoke-RestMethod -Uri "$baseUrl/api/health" -TimeoutSec 1
+        $health = Get-WorkbenchHealth -BaseUrl $baseUrl -TimeoutSec 1
         if ($health.status -eq 'ok' -and $health.application -eq 'product-tagging-workbench' -and $health.storage -eq $storagePath) { $ready = $true; break }
     } catch { }
     $process.Refresh()

@@ -16,13 +16,13 @@ function App(){
  const[version,setVersion]=useState(''),[frozen,setFrozen]=useState(null),[left,setLeft]=useState(''),[right,setRight]=useState(''),[diff,setDiff]=useState(null),[exports,setExports]=useState([]);
  const[textModel,setTextModel]=useState('deepseek/deepseek-v4-flash'),[visionModel,setVisionModel]=useState('deepseek/deepseek-v4-flash-vision-exp'),[name,setName]=useState(''),[definition,setDefinition]=useState(''),[source,setSource]=useState('text'),[connection,setConnection]=useState('连接中');
  const [filters,setFilters]=useState([]),[filterColumn,setFilterColumn]=useState(null),[imageProduct,setImageProduct]=useState(null),[focus,setFocus]=useState(false),[jobsOpen,setJobsOpen]=useState(false),[rowHeight,setRowHeight]=useState(80),[executeColumns,setExecuteColumns]=useState([]),[prefsLoaded,setPrefsLoaded]=useState('');
- const chatEnd=useRef(),file=useRef(),drag=useRef(false),editing=useRef(false);
+ const chatEnd=useRef(),file=useRef(),drag=useRef(false),editing=useRef(false),versionRequest=useRef(0),draftView=useRef(null);
  const [toolsPanel,setToolsPanel]=useState(null),[showHistory,setShowHistory]=useState(false);
  const handle=async fn=>{try{setError('');return await fn()}catch(e){setError(e.message)}};
  useEffect(()=>{handle(async()=>{let ds=await api('/api/datasets');setDatasets(ds);if(ds.length)setDid(ds[0].id)})},[]);
- useEffect(()=>{if(!did)return;let cancel=false,events;setData(null);setSelected([]);setVersion('');setFrozen(null);setRaw([]);setRange(null);setDetail(null);setBound('');
+ useEffect(()=>{if(!did)return;let cancel=false,events;versionRequest.current++;draftView.current=null;setData(null);setSelected([]);setVersion('');setFrozen(null);setRaw([]);setRange(null);setDetail(null);setBound('');setQuery('');setSort(null);setModal(null);setEdit(null);setImageProduct(null);setFilterColumn(null);setToolsPanel(null);setShowHistory(false);setScope('all');setText('');setNotice('');setError('');setPrefsLoaded('');
   handle(async()=>{let d=await api('/api/drafts/'+did);if(cancel)return;setData(d);let pref={};try{pref=JSON.parse(localStorage.getItem('worksheet:'+did)||'{}')}catch{};setVisible(pref.visible||d.columns.map(c=>c.id));setRaw(pref.raw||d.dataset.headers.filter(h=>!['图片','ASIN'].includes(h)).slice(0,6));setFilters(pref.filters||[]);setRowHeight(pref.rowHeight||80);setWidths(pref.widths||{});setPrefsLoaded(did);setExecuteColumns([]);events=new EventSource(`/api/drafts/${did}/events?after=${d.cursor}`);events.onopen=()=>setConnection('实时连接');events.onerror=()=>setConnection('正在重连');
-   events.onmessage=e=>{let ev=JSON.parse(e.data),p=ev.payload;if(ev.kind==='reload'){api('/api/drafts/'+did).then(setData);return}if(ev.kind==='column')setVisible(v=>v.includes(p.id)?v:[...v,p.id]);setData(old=>{if(!old)return old;
+   events.onmessage=e=>{let ev=JSON.parse(e.data),p=ev.payload;if(cancel)return;if(ev.kind==='reload'){api('/api/drafts/'+did).then(d=>{if(!cancel)setData(d)});return}if(ev.kind==='column')setVisible(v=>v.includes(p.id)?v:[...v,p.id]);setData(old=>{if(!old)return old;
     if(ev.kind==='text_record')return {...old,rows:old.rows.map(r=>r.id===p.product_id?{...r,text_record:p}:r)};
     if(ev.kind==='cell')return {...old,rows:old.rows.map(r=>r.id===p.product_id?{...r,cells:{...r.cells,[p.column_id]:p}}:r)};
     if(ev.kind==='chat_chunk')return {...old,messages:old.messages.map(m=>m.id===p.id?{...m,text:m.text+p.text}:m)};
@@ -30,13 +30,13 @@ function App(){
  },[did]);
  useEffect(()=>{chatEnd.current?.scrollIntoView({behavior:'smooth',block:'end'})},[data?.messages]);
  useEffect(()=>{let up=()=>drag.current=false;window.addEventListener('mouseup',up);return()=>window.removeEventListener('mouseup',up)},[]);
- useEffect(()=>{if(did&&prefsLoaded===did)localStorage.setItem('worksheet:'+did,JSON.stringify({raw,visible,filters,rowHeight,widths}))},[did,prefsLoaded,raw,visible,filters,rowHeight,widths]);
+ useEffect(()=>{if(did&&prefsLoaded===did&&!version)localStorage.setItem('worksheet:'+did,JSON.stringify({raw,visible,filters,rowHeight,widths}))},[did,prefsLoaded,raw,visible,filters,rowHeight,widths,version]);
  useEffect(()=>{let key=e=>{if(e.key==='Escape'&&!imageProduct)setFocus(false)};window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key)},[imageProduct]);
  const table=frozen||data,columns=useMemo(()=>[{id:'asin',name:table?.dataset.mapping?.asin?'ASIN':table?.dataset.mapping?.sku?'SKU':table?.dataset.mapping?.parent_asin?'父ASIN':'原始行号',fixed:true},{id:'image',name:'图片',fixed:true},...raw.map(h=>({id:'raw:'+h,name:h,raw:h})),...(table?.columns||[]).filter(c=>visible.includes(c.id)&&!c.definition.expanded&&!c.definition.archived).map(c=>({...c,name:columnName(c,table.columns)}))],[table?.columns,table?.dataset.mapping,visible,raw]);
  const shownColumns=(table?.columns||[]).filter(c=>!c.definition.expanded&&!c.definition.archived);
  const cellText=(r,c)=>c.id==='asin'?r.anchor:c.id==='image'?'':c.raw?pretty(r.raw[c.raw]):c.definition?.attribute?(r.cells[c.id]?.status==='ready'?(r.cells[c.id]?.value===true?'✓':r.cells[c.id]?.value===false?'❌':''):''):r.cells[c.id]?.status==='ready'?pretty(r.cells[c.id]?.value):`【${LABEL[r.cells[c.id]?.status||'pending']}】${r.cells[c.id]?.value??''}`;
  const rows=useMemo(()=>{let rs=(table?.rows||[]).filter(r=>matches(r,filters,query));if(sort){let c=columns.find(c=>c.id===sort.id);if(c)rs=[...rs].sort((a,b)=>cellText(a,c).localeCompare(cellText(b,c),'zh',{numeric:true})*sort.dir)}return rs},[table,query,sort,filters,columns]);
- const allFilterColumns=[{id:'asin',name:columns[0].name},{id:'image',name:'图片'},...(data?.dataset.headers||[]).filter(h=>h!=='图片').map(h=>({id:'raw:'+h,name:h})),...shownColumns.map(c=>({id:c.id,name:c.definition.name}))];
+ const allFilterColumns=[{id:'asin',name:columns[0].name},{id:'image',name:'图片'},...(table?.dataset.headers||[]).filter(h=>h!=='图片').map(h=>({id:'raw:'+h,name:h})),...shownColumns.map(c=>({id:c.id,name:c.definition.name}))];
  const scopeIds=()=>scope==='selected'?selected:scope==='filtered'?rows.map(r=>r.id):data.rows.map(r=>r.id);
  const propose=async changes=>{let p=await api(`/api/drafts/${did}/proposals`,{title:changes[0].kind==='execute'?'执行选定标签':'标签变更',changes});setBound(p.id);setScope('all');setFocus(false);setNotice('提案已准备，请在对话中一次确认。');return p};
  const confirm=async(p,sample=false)=>{await api(`/api/drafts/${did}/proposals/${p.id}/confirm`,{sample,text_model:textModel,vision_model:visionModel,product_ids:p.changes.some(ch=>ch.kind==='execute')&&scope!=='all'?scopeIds().filter(id=>p.changes.filter(ch=>ch.kind==='execute').every(ch=>ch.product_ids.includes(id))):undefined});setNotice(sample?'抽样任务已提交':'提案已确认');setScope('all')};
@@ -46,7 +46,16 @@ function App(){
  const copy=async()=>{if(!range)return;let[r1,r2]=[range.start.r,range.end.r].sort((a,b)=>a-b),[c1,c2]=[range.start.c,range.end.c].sort((a,b)=>a-b);await navigator.clipboard.writeText(rows.slice(r1,r2+1).map(r=>columns.slice(c1,c2+1).map(c=>cellText(r,c).replaceAll('\n',' ')).join('\t')).join('\n'));setNotice('选中区域已复制，可粘贴到 Excel。')};
  const upload=async e=>{let f=e.target.files[0];if(!f)return;let form=new FormData();form.append('file',f);let r=await fetch('/api/import',{method:'POST',body:form}),d=await r.json();if(!r.ok)throw Error(d.detail);setDatasets(await api('/api/datasets'));setDid(d.id);e.target.value=''};
  const download=async()=>{let r=await fetch(`/api/drafts/${did}/export`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({columns:exports,version:version||null})});if(!r.ok)throw Error((await r.json()).detail);let url=URL.createObjectURL(await r.blob()),a=document.createElement('a');a.href=url;a.download='商品打标结果.xlsx';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);setModal(null)};
- const pickVersion=async id=>{let sheet=id?await api(`/api/drafts/${did}/sheet?version=${id}`):data;setVersion(id);setFrozen(id?sheet:null);setVisible(sheet.columns.filter(c=>!c.definition.expanded&&!c.definition.archived).map(c=>c.id));setFilter({cid:'',value:''});setFilters([]);setDetail(null)};
+ const pickVersion=async id=>{
+  const request=++versionRequest.current;
+  if(!version&&!draftView.current)draftView.current={visible,raw,filters,rowHeight,widths,query,sort};
+  const sheet=id?await api(`/api/drafts/${did}/sheet?version=${id}`):data;
+  if(request!==versionRequest.current)return;
+  setVersion(id);setFrozen(id?sheet:null);
+  if(id){setVisible(sheet.columns.filter(c=>!c.definition.expanded&&!c.definition.archived).map(c=>c.id));setRaw(raw.filter(h=>sheet.dataset.headers.includes(h)));setFilters([]);setQuery('');setSort(null)}
+  else if(draftView.current){const view=draftView.current;setVisible(view.visible);setRaw(view.raw);setFilters(view.filters);setRowHeight(view.rowHeight);setWidths(view.widths);setQuery(view.query);setSort(view.sort);draftView.current=null}
+  setRange(null);setSelected([]);setDetail(null);setEdit(null);setFilterColumn(null);setImageProduct(null);
+ };
  const resize=(e,c)=>{e.preventDefault();e.stopPropagation();let start=e.clientX,w=widths[c.id]||190;const move=ev=>setWidths(x=>({...x,[c.id]:Math.max(100,w+ev.clientX-start)}));const end=()=>{window.removeEventListener('mousemove',move);window.removeEventListener('mouseup',end)};window.addEventListener('mousemove',move);window.addEventListener('mouseup',end)};
  const pending=data?.proposals.filter(p=>p.status==='pending')||[],running=data?.jobs.some(j=>['queued','running','pausing','cancelling'].includes(j.status)),streaming=data?.messages.some(m=>m.status==='running');
  const receiveProposal=p=>{setBound(p.id);setScope('all');setFocus(false);setNotice('局部修复提案已准备，请在对话中核对范围并确认。')};
