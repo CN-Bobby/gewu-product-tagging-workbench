@@ -80,6 +80,38 @@ def test_sparse_repair_keeps_exact_cells_and_manual(dataset):
     draft.correct(did,pids[1],a['id'],'人工保留')
     with pytest.raises(ValueError,match='保护'):task_control.repair(did,j['id'],[pids[1]+':'+a['id']])
 
+@pytest.mark.parametrize('selected_indexes', [[0], [1], [0,1]])
+def test_sparse_confirmation_intersects_each_column_separately(dataset,selected_indexes):
+    did=dataset['id'];a=add(did);b=add(did,key='second')
+    pids=[r['id'] for r in draft.sheet(did)['rows'][:3]]
+    p=draft.propose(did,'不同商品修复不同列',[
+        {'kind':'execute','column_ids':[a['id']],'product_ids':[pids[0]]},
+        {'kind':'execute','column_ids':[b['id']],'product_ids':[pids[1]]}])
+    jobs=draft.confirm(did,p['id'],scope=[pids[i] for i in selected_indexes])
+    expected={pids[i]+':'+[a,b][i]['id'] for i in selected_indexes}
+    assert {token for job in jobs for token in job['spec']['expected']}==expected
+    assert all(job['spec']['product_ids'] for job in jobs)
+
+def test_sparse_confirmation_rejects_scope_outside_proposal(dataset):
+    did=dataset['id'];a=add(did);pids=[r['id'] for r in draft.sheet(did)['rows'][:2]]
+    p=draft.propose(did,'修复',[{'kind':'execute','column_ids':[a['id']],'product_ids':pids[:1]}])
+    with pytest.raises(ValueError,match='范围'):
+        draft.confirm(did,p['id'],scope=pids)
+    assert next(x for x in draft.state(did)['proposals'] if x['id']==p['id'])['status']=='pending'
+
+def test_compound_sample_caps_distinct_products_across_jobs(dataset):
+    did=dataset['id'];a=add(did);b=add(did,key='second')
+    with Session.begin() as s:
+        for row in range(100,125):
+            s.add(Product(dataset_id=did,row=row,anchor=str(row),raw={},fields={}))
+    pids=[r['id'] for r in draft.sheet(did)['rows']]
+    p=draft.propose(did,'统一抽样',[
+        {'kind':'execute','column_ids':[a['id']],'product_ids':pids[:15]},
+        {'kind':'execute','column_ids':[b['id']],'product_ids':pids[15:]}])
+    jobs=draft.confirm(did,p['id'],sample=True)
+    assert len(jobs)==2
+    assert {pid for job in jobs for pid in job['spec']['product_ids']}==set(pids[:20])
+
 def test_mapping_removal_and_extra_details_stale(dataset):
     did=dataset['id'];cat=field_catalog.read(did);sku=next(f for f in cat['fields'] if f['role']=='sku')
     c=add(did,fields=['sku']);j=job(did,c)

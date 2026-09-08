@@ -283,6 +283,13 @@ def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None)
     with WRITE_LOCK, Session.begin() as s:
         p=require(s,Proposal,ident)
         if p.dataset_id!=did or p.status!='pending':raise ValueError('提案已处理或不属于当前工作表')
+        proposed_ids=list(dict.fromkeys(pid for ch in p.changes if ch['kind']=='execute' for pid in ch['product_ids']))
+        execution_scope=None
+        if scope is not None:
+            if not scope or any(pid not in proposed_ids for pid in scope):raise ValueError('确认范围必须在提案范围内')
+            execution_scope=list(dict.fromkeys(scope))
+        if sample:
+            execution_scope=(execution_scope if execution_scope is not None else proposed_ids)[:20]
         for ch in p.changes:
             kind=ch['kind']
             if kind in ('add','revise'):
@@ -328,10 +335,9 @@ def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None)
             elif kind=='execute':
                 ids=ch['product_ids']
                 jid=uid()
-                if scope is not None:
-                    if not scope or any(x not in ids for x in scope):raise ValueError('确认范围必须在提案范围内')
-                    ids=scope
-                if sample:ids=ids[:min(20,len(ids))]
+                if execution_scope is not None:
+                    ids=[pid for pid in ids if pid in execution_scope]
+                    if not ids:continue
                 columns=[];expected={}
                 for cid in ch['column_ids']:
                     col=require(s,DraftColumn,cid)
