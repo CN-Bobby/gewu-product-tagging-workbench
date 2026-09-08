@@ -62,6 +62,18 @@ def research(did,query='',urls=None,scope='',refresh=False):
             answer=json.loads(fetch(f'https://{language}.wikipedia.org/w/api.php',{'action':'query','list':'search','srsearch':query,'srlimit':3,'format':'json'}))
             for hit in answer.get('query',{}).get('search',[]):sources.append({'title':hit['title'],'url':f'https://{language}.wikipedia.org/wiki/'+quote(hit['title'].replace(' ','_')),'excerpt':plain(hit.get('snippet','')),'publisher':'Wikipedia','kind':'术语检索摘要，非一手产品证据','retrieved_at':now()})
         except Exception as e:errors.append('术语检索失败：'+str(e)[:200])
+        if not sources:
+            try:
+                from xml.etree import ElementTree as ET
+                feed=ET.fromstring(fetch('https://www.bing.com/search',{'format':'rss','q':query}))
+                for item in feed.findall('./channel/item')[:3]:
+                    link=item.findtext('link','')
+                    if urlparse(link).scheme!='https':continue
+                    sources.append({'title':item.findtext('title',''),'url':link,
+                        'excerpt':plain(item.findtext('description',''))[:1000],
+                        'publisher':urlparse(link).hostname,'kind':'Bing索引摘要，未读取来源正文，不作为产品事实',
+                        'retrieved_at':now()})
+            except Exception as e:errors.append('补充检索失败：'+str(e)[:200])
     for url in urls:
         try:
             content=plain(fetch(url));sources.append({'title':urlparse(url).hostname,'url':url,'excerpt':content[:1500],'publisher':urlparse(url).hostname,'kind':'指定来源网页摘录，需核对正文与适用范围','retrieved_at':now()})

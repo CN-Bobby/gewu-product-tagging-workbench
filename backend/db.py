@@ -29,6 +29,23 @@ class Workspace(Record, Base):
     __tablename__ = 'workspace'
     name = Column(String, nullable=False)
 
+class TagTemplate(Record, Base):
+    __tablename__ = 'tag_template'
+    workspace_id = Column(String, ForeignKey('workspace.id'), nullable=False)
+    name = Column(String, nullable=False)
+
+class TemplateRevision(Record, Base):
+    __tablename__ = 'template_revision'
+    template_id = Column(String, ForeignKey('tag_template.id'), nullable=False)
+    revision = Column(Integer, nullable=False)
+    data = Column(JSON, nullable=False)
+    __table_args__ = (UniqueConstraint('template_id','revision'),)
+
+class CellReuse(Record, Base):
+    __tablename__ = 'cell_reuse_index'
+    fingerprint = Column(String, index=True, nullable=False)
+    cell_id = Column(String, ForeignKey('draft_cell.id'), nullable=False, unique=True)
+
 class Dataset(Record, Base):
     __tablename__ = 'dataset'
     workspace_id = Column(String, ForeignKey('workspace.id'), nullable=False)
@@ -240,6 +257,12 @@ class ModelAttempt(Record, Base):
     model = Column(String)
     data = Column(JSON, default=dict)
 
+cache_engine=None
+if os.environ.get('TAG_CACHE'):
+    cache_path=Path(os.environ['TAG_CACHE']).resolve();cache_path.mkdir(parents=True,exist_ok=True)
+    cache_engine=create_engine('sqlite:///'+str(cache_path/'cache.db'),connect_args={'check_same_thread':False,'timeout':30})
+    Session.configure(binds={VisionCache:cache_engine,TextCache:cache_engine})
+
 def init_db():
     # A consistent SQLite backup precedes the first additive schema migration.
     if engine.url.get_backend_name()=='sqlite' and engine.url.database and Path(engine.url.database).is_file():
@@ -250,13 +273,16 @@ def init_db():
             migrated=src.execute("select 1 from sqlite_master where type='table' and name='draft_column'").fetchone()
             skill_migrated=src.execute("select 1 from sqlite_master where type='table' and name='product_text_record'").fetchone()
             v4=src.execute("select 1 from sqlite_master where type='table' and name='workbench_meta'").fetchone()
-            if (legacy and not migrated) or (migrated and not skill_migrated) or (skill_migrated and not v4):
+            v5=src.execute("select 1 from sqlite_master where type='table' and name='tag_template'").fetchone()
+            if (legacy and not migrated) or (migrated and not skill_migrated) or (skill_migrated and not v4) or (v4 and not v5):
                 folder=path.parent/'backups';folder.mkdir(exist_ok=True)
-                with sqlite3.connect(folder/('before-'+('v4-' if skill_migrated else 'skill-v3-' if migrated else 'draft-')+uid()+'.db')) as dst:src.backup(dst)
+                with sqlite3.connect(folder/('before-'+('v5-' if v4 else 'v4-' if skill_migrated else 'skill-v3-' if migrated else 'draft-')+uid()+'.db')) as dst:src.backup(dst)
     Base.metadata.create_all(engine)
+    if cache_engine is not None:Base.metadata.create_all(cache_engine,tables=[VisionCache.__table__,TextCache.__table__])
     with Session.begin() as s:
         if not s.get(Migration,3):s.add(Migration(version=3))
         if not s.get(Migration,4):s.add(Migration(version=4))
+        if not s.get(Migration,5):s.add(Migration(version=5))
 def obj(record): return {c.name: getattr(record, c.name) for c in record.__table__.columns}
 def require(s, cls, ident):
     result = s.get(cls, ident)

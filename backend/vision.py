@@ -18,7 +18,8 @@ PROMPT='''你是商品图片事实提取工具。实际观察所提供的图片�
 描述图中实际可见的商品主体、色彩组合、图案、结构和件数；不要输出思维链。总输出不超过500字。'''
 
 def provider_config(model_ref):
-    home=Path(os.environ.get('REASONIX_HOME',Path(os.environ.get('APPDATA',str(Path.home()/'.config')))/'reasonix'))
+    from .runtime_isolation import provider_home
+    home=provider_home()
     config_path=home/'config.toml'
     if not config_path.exists():raise ValueError('未找到 Reasonix 全局配置')
     config=tomllib.loads(config_path.read_text(encoding='utf-8-sig'))
@@ -29,7 +30,7 @@ def provider_config(model_ref):
     if provider.get('kind','openai')!='openai':raise ValueError('视觉工具当前支持 Reasonix 的 OpenAI 兼容 provider；请配置对应视觉端点')
     key_name=provider.get('api_key_env')
     # Match Reasonix v1.25.1: provider secrets live in its global .env, never copy them.
-    key=dotenv_values(home/'.env').get(key_name) if key_name else None
+    key=(os.environ.get(key_name) or dotenv_values(home/'.env').get(key_name)) if key_name else None
     if not key:raise ValueError('Reasonix 视觉 provider 尚未保存有效授权，请在 Reasonix 中配置')
     base=provider.get('base_url','').rstrip('/')
     endpoint=provider.get('request_url') or base+'/chat/completions'

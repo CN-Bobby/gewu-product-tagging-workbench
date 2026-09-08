@@ -93,7 +93,8 @@ def visual_overview(did,goal,limit=20):
     from concurrent.futures import ThreadPoolExecutor
     import threading,time
     from . import batch
-    from .harness import VISION_MODEL
+    from .model_settings import defaults
+    VISION_MODEL=defaults()[1]
     if not isinstance(goal,str) or not 3<=len(goal)<=2000:raise ValueError('请说明本次希望观察的结构或图案问题')
     if type(limit) is not int or not 1<=limit<=20:raise ValueError('代表样本数为1–20')
     summary=profile(did);ids=summary['representative_product_ids'][:limit];data=draft.sheet(did);rows=[r for r in data['rows'] if r['id'] in ids];metrics={};lock=threading.Lock();start=time.perf_counter()

@@ -115,6 +115,10 @@ def validate_definition(d,existing):
     standard.update({k:copy.deepcopy(d[k]) for k in ('method','depends_on','mapping','bins','fields','cardinality','when','parser') if k in d})
     if standard.get('cardinality','auto') not in ('auto','single','multiple'):raise ValueError('cardinality需为auto/single/multiple')
     standard['judgment']=tagging_rules.judgment(d)
+    if d.get('parent_id'):
+        if d['parent_id'] not in existing or not isinstance(d.get('attribute'),str):raise ValueError('属性列需要有效的父类别')
+        standard.update(parent_id=d['parent_id'],attribute=d['attribute'])
+    if d.get('expanded'):standard['expanded']=True
     method=standard.setdefault('method','model')
     if method not in ('model','mapping','bins','attribute','text_rule'):raise ValueError('处理方式需为 model / mapping / bins / attribute / text_rule')
     if method=='text_rule':
@@ -268,6 +272,7 @@ def correct(did,pid,cid,value,expected_edit=None):
 
 def _correct(s,did,c,value):
     col=require(s,DraftColumn,c.column_id)
+    if c.revision!=col.revision:c.evidence={k:v for k,v in c.evidence.items() if k!='input_fingerprint'}
     if col.definition.get('attribute') and value is not None and type(value) is not bool:raise ValueError('属性单元格只能为 true/false/null')
     c.edit+=1;c.revision=require(s,DraftColumn,c.column_id).revision;c.manual={'value':value,'at':now()};c.value=value;c.status='ready' if value is not None else 'unknown';c.conflict=None
     if isinstance(value,list) and not col.definition.get('attribute'):
@@ -278,7 +283,8 @@ def _correct(s,did,c,value):
     cell_change(s,did,c,'manual_correction');recompute(s,did,c.product_id,c.column_id)
 
 def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None):
-    from .harness import DEFAULT_MODEL,VISION_MODEL
+    from .model_settings import defaults
+    DEFAULT_MODEL,VISION_MODEL=defaults()
     jobs=[]
     with WRITE_LOCK, Session.begin() as s:
         p=require(s,Proposal,ident)
@@ -296,7 +302,7 @@ def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None)
                 d={**copy.deepcopy(ch['definition']),'skill':tagging_rules.freeze()}
                 if kind=='add':
                     if s.scalar(select(DraftColumn.id).where(DraftColumn.dataset_id==did,DraftColumn.key==d['key'])):raise ValueError('标签 key 已存在，请提出修改定义')
-                    col=DraftColumn(id=ch.get('planned_id') or uid(),dataset_id=did,key=d['key'],definition=d,origin={'proposal_id':p.id});s.add(col);s.flush()
+                    col=DraftColumn(id=ch.get('planned_id') or uid(),dataset_id=did,key=d['key'],definition=d,origin={'proposal_id':p.id,**({'template':ch['template_source']} if ch.get('template_source') else {})});s.add(col);s.flush()
                 else:
                     col=require(s,DraftColumn,ch['column_id'])
                     if col.revision!=ch['expected_revision']:raise ValueError('提案基于旧定义，请重新提案')
@@ -355,7 +361,7 @@ def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None)
                         from .task_control import claim
                         claim(s,did,token,jid)
                         c.status='pending';cell_change(s,did,c,'queued')
-                job=BatchJob(id=jid,dataset_id=did,proposal_id=p.id,spec={'product_ids':ids,'columns':columns,'expected':expected,'text_model':text_model or DEFAULT_MODEL,'vision_model':vision_model or VISION_MODEL,'refresh_images':bool(ch.get('refresh_images')),'sample':sample},metrics={})
+                job=BatchJob(id=jid,dataset_id=did,proposal_id=p.id,spec={'product_ids':ids,'columns':columns,'expected':expected,'text_model':text_model or DEFAULT_MODEL,'vision_model':vision_model or VISION_MODEL,'refresh_images':bool(ch.get('refresh_images')),'reuse_results':bool(ch.get('reuse_results')),'force_recompute':bool(ch.get('force_recompute')),'sample':sample},metrics={})
                 s.add(job);s.flush();jobs.append(obj(job));emit(s,did,'job',obj(job))
         p.status='confirmed';p.confirmed_at=now();emit(s,did,'proposal',obj(p));audit(s,did,'human_confirmed_proposal',{'id':p.id,'scope':scope,'sample':sample})
     return jobs
@@ -377,6 +383,8 @@ def write_result(s,job,pid,col,value):
         c.value=value.get('normalized_value');c.raw_value=value.get('raw_value');c.evidence=evidence;c.revision=col['revision'];c.status='ready' if c.value is not None else 'unknown';c.conflict=None;c.manual=None
         if col['definition'].get('method') in ('mapping','bins','attribute'):c.status=value.get('result_status',c.status)
         attributes.on_result(s,job,current,c,value)
+        from .result_reuse import index
+        s.flush();index(s,c)
         cell_change(s,job.dataset_id,c,'worker_result');recompute(s,job.dataset_id,pid,col['id'])
     job.completed=list(set(job.completed+[token]))
 

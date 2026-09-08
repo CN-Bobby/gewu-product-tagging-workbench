@@ -99,7 +99,9 @@ class ACP:
         self.on_event=on_event or (lambda _:None)
         self.text=[];self.diagnostics=[]
         cwd=runtime_dir(dataset_id,run_id or 'chat',product_id,model if run_id else VISION_MODEL)
-        self.proc=subprocess.Popen([executable(),'acp','--model',model],cwd=cwd,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8',errors='replace',bufsize=1,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        from .runtime_isolation import environment,mark_resumed
+        isolated_env=environment(dataset_id,session_id)
+        self.proc=subprocess.Popen([executable(),'acp','--model',model],cwd=cwd,env=isolated_env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8',errors='replace',bufsize=1,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         threading.Thread(target=self._read,daemon=True).start()
         threading.Thread(target=self._stderr,daemon=True).start()
         try:
@@ -116,6 +118,7 @@ class ACP:
                 session=self.rpc('session/new',{'cwd':str(cwd),'mcpServers':[]},timeout=90)
             self.session_id=session_id or session['sessionId']
             self.session=session
+            if session_id:mark_resumed(dataset_id,self.session_id)
             if session_id:
                 self.rpc('_reasonix.io/session/reloadExtensions',{'sessionId':self.session_id},timeout=90)
         except Exception:

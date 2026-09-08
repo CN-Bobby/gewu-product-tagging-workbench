@@ -1,0 +1,22 @@
+{
+  "python-3.14.3-embed-amd64.zip": {
+    "url": "https://www.python.org/ftp/python/3.14.3/python-3.14.3-embed-amd64.zip",
+    "sha256": "ad4961a479dedbeb7c7d113253f8db1b1935586b73c27488712beec4f2c894e6",
+    "bytes": 12023245
+  },
+  "nsis-3.12.zip": {
+    "url": "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.12/nsis-3.12.zip",
+    "sha256": "56581f90db321581c5381193d796fffcf2d24b2f8fed2160a6c6a3baa67f2c4f",
+    "bytes": 2362938
+  },
+  "reasonix.exe": {
+    "version": "1.25.1",
+    "source_commit": "c4fbdd1d07400180fe9b4746f2c6326e53116e28",
+    "sha256": "738de62b4a123147a16748e632c548cd53755129631ed16c2891f72783c7c76b",
+    "npm_archive": "https://registry.npmjs.org/@reasonix/cli-win32-x64/-/cli-win32-x64-1.25.1.tgz"
+  },
+  "reasonix-LICENSE.txt": {
+    "url": "https://raw.githubusercontent.com/esengine/DeepSeek-Reasonix/c4fbdd1d07400180fe9b4746f2c6326e53116e28/LICENSE",
+    "sha256": "dc024237821ac82056c37f8d82e3be919bd51e39a4529ec12a8ab3e2a346dc4c"
+  }
+}

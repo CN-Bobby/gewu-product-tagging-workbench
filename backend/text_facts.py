@@ -26,7 +26,8 @@ def emit_record(s,did,r):
 
 def prepare(did,model=None):
     from .harness import DEFAULT_MODEL
-    model=model or DEFAULT_MODEL;rules=tagging_rules.freeze()
+    from .model_settings import defaults
+    model=model or defaults()[0];rules=tagging_rules.freeze()
     with draft.WRITE_LOCK,Session.begin() as s:
         require(s,Dataset,did)
         existing=s.scalars(select(BatchJob).where(BatchJob.dataset_id==did,BatchJob.status.in_(['queued','running','pausing','cancelling']))).all()

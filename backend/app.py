@@ -13,7 +13,7 @@ from . import importer, service, jobs, harness
 from .exporter import export_run
 from . import draft,batch,conversation,draft_export,text_facts
 from . import field_catalog,worksheet_query,task_control
-from . import knowledge
+from . import knowledge,templates,storage_management,model_settings
 from .build_info import VERSION, build_info
 
 @asynccontextmanager
@@ -46,6 +46,18 @@ async def validation_error(request,e):return JSONResponse({'detail':str(e)},stat
 
 @app.get('/api/health')
 def health():return {'status':'ok','application':'product-tagging-workbench','storage':str(STORAGE),**build_info()}
+
+@app.get('/api/settings/models')
+def settings_models():return {**model_settings.read(),'defaults':model_settings.defaults()}
+
+@app.post('/api/settings/models')
+def settings_models_save(body:dict):return model_settings.save(body)
+
+@app.get('/api/storage')
+def storage_usage():return storage_management.usage()
+
+@app.post('/api/storage/clear-cache')
+def cache_clear():return storage_management.clear()
 
 @app.get('/api/drafts/{did}/fields')
 def fields_read(did:str):return field_catalog.read(did)
@@ -96,6 +108,21 @@ def harness_status():return harness.status()
 @app.get('/api/datasets')
 def datasets():return service.list_datasets()
 
+@app.get('/api/projects')
+def project_list():return templates.projects()
+
+@app.post('/api/projects')
+def project_create(body:dict):return templates.create_project(body.get('name'))
+
+@app.get('/api/projects/{wid}/templates')
+def template_list(wid:str):return templates.list_templates(wid)
+
+@app.post('/api/drafts/{did}/templates')
+def template_save(did:str,body:dict):return templates.save(did,body.get('name'),body.get('columns'),body.get('template_id'))
+
+@app.post('/api/drafts/{did}/templates/copy')
+def template_copy(did:str,body:dict):return templates.propose_copy(did,body['revision_id'],body.get('execute',False),body.get('product_ids'))
+
 async def upload_bytes(file):
     if not (file.filename or '').lower().endswith('.xlsx'):raise ValueError('请上传 .xlsx 文件')
     data=await file.read(100*1024*1024+1)
@@ -110,7 +137,7 @@ async def import_data(file:UploadFile=File(...),sheet:str=Form(''),workspace_id:
     dataset=importer.import_file(await upload_bytes(file),file.filename,sheet or None,workspace_id or None,json.loads(mapping))
     task=text_facts.prepare(dataset['id'])
     if task['status']=='queued':batch.launch(task['id'])
-    return {**dataset,'text_job_id':task['id']}
+    return {**dataset,'text_job_id':task['id'],'profile':worksheet_query.profile(dataset['id'])}
 
 @app.get('/api/drafts/{did}/text-records')
 def text_records(did:str,offset:int=0,limit:int=50):return text_facts.records(did,offset,limit)
@@ -144,7 +171,7 @@ def asset(asset_id:str):
         return FileResponse(a.path)
 
 @app.post('/api/datasets/{dataset_id}/chat')
-def chat(dataset_id:str,body:dict):return conversation.start(dataset_id,body.get('text',''),body.get('model',harness.DEFAULT_MODEL),body.get('proposal_id'),body.get('vision_model'))
+def chat(dataset_id:str,body:dict):return conversation.start(dataset_id,body.get('text',''),body.get('model') or model_settings.defaults()[0],body.get('proposal_id'),body.get('vision_model'))
 
 @app.post('/api/datasets/{dataset_id}/chat/stop')
 def stop_chat(dataset_id:str):return conversation.stop(dataset_id)
