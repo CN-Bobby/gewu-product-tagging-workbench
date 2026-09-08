@@ -12,7 +12,12 @@ VERSION = json.loads((ROOT / 'VERSION.json').read_text(encoding='utf-8'))['versi
 def build_info():
     release = ROOT / 'build-manifest.json'
     if release.exists():
-        return json.loads(release.read_text(encoding='utf-8'))
+        raw=release.read_bytes()
+        manifest=json.loads(raw)
+        # Keep the complete file inventory in the release artifact, not every cell/job/event.
+        result={k:v for k,v in manifest.items() if k!='files'}
+        result['manifest_sha256']=hashlib.sha256(raw).hexdigest()
+        return result
     digest = hashlib.sha256()
     files = [ROOT / 'VERSION.json', ROOT / 'requirements.txt']
     for folder in ('backend', 'frontend/src', 'skills/product-tagging'):

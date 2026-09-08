@@ -19,3 +19,16 @@ def test_task_build_is_frozen_at_creation(dataset):
         saved=s.get(BatchJob,job['id'])
         assert saved.spec['application_build']==build_info()
         assert saved.spec['application_build']['version']==VERSION
+
+
+def test_packaged_identity_does_not_duplicate_file_inventory(tmp_path,monkeypatch):
+    import hashlib
+    from backend import build_info as module
+    manifest={'version':VERSION,'commit':'test-build','files':{'runtime/file'+str(i):'f'*64 for i in range(3000)}}
+    raw=json.dumps(manifest).encode();(tmp_path/'build-manifest.json').write_bytes(raw)
+    monkeypatch.setattr(module,'ROOT',tmp_path);module.build_info.cache_clear()
+    try:
+        identity=module.build_info()
+        assert 'files' not in identity and len(json.dumps(identity))<1000
+        assert identity['manifest_sha256']==hashlib.sha256(raw).hexdigest()
+    finally:module.build_info.cache_clear()
