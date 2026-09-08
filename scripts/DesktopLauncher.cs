@@ -28,6 +28,8 @@ class DesktopLauncher {
   string data=Option(args,"--data",settings.ContainsKey("data")?settings["data"]:Path.Combine(settingsDir,"data"));
   string cache=Option(args,"--cache",settings.ContainsKey("cache")?settings["cache"]:Path.Combine(settingsDir,"cache"));
   bool automated=Array.IndexOf(args,"--data")>=0;
+  bool stopping=Array.IndexOf(args,"--stop")>=0;
+  if(stopping&&!File.Exists(settingsPath)&&!automated)return 0;
   if(!File.Exists(settingsPath)&&!automated) {
    Application.EnableVisualStyles();
    using(var form=new Form()) {
@@ -49,7 +51,16 @@ class DesktopLauncher {
    if(!mutex.WaitOne(45000))throw new Exception("另一个启动过程尚未完成，请稍后重试。");
    try {
     var health=Health(port);
-    if(Array.IndexOf(args,"--stop")>=0) { if(Same(health,data)){var r=(HttpWebRequest)WebRequest.Create("http://127.0.0.1:"+port+"/api/server/stop");r.Method="POST";r.ContentLength=0;r.Timeout=5000;using(var response=r.GetResponse()){} }return 0; }
+    if(stopping) {
+     if(Same(health,data)){
+      var r=(HttpWebRequest)WebRequest.Create("http://127.0.0.1:"+port+"/api/server/stop");r.Method="POST";r.ContentLength=0;r.Timeout=5000;using(var response=r.GetResponse()){}
+      for(int i=0;i<60;i++){Thread.Sleep(500);if(!Occupied(port))return 0;}
+      throw new Exception("工作台尚未停止，暂不能卸载或切换版本。请等待任务保存后重试。");
+     }return 0;
+    }
+    var build=json.Deserialize<Dictionary<string,object>>(File.ReadAllText(Path.Combine(root,"build-manifest.json")));
+    if(Same(health,data)&&(!health.ContainsKey("commit")||!Object.Equals(health["commit"],build["commit"])))
+     throw new Exception("此数据目录仍由另一个版本使用。请先停止原工作台，再打开新版本，以便安全备份和升级。");
     if(!Same(health,data)) {
      int end=port+50;while(Occupied(port)&&port<end)port++;if(Occupied(port))throw new Exception("没有可用本机端口。");
      string python=Path.Combine(root,"runtime","pythonw.exe");if(!File.Exists(python))throw new Exception("内置Python运行时缺失，请重新安装。");

@@ -13,7 +13,7 @@ from . import importer, service, jobs, harness
 from .exporter import export_run
 from . import draft,batch,conversation,draft_export,text_facts
 from . import field_catalog,worksheet_query,task_control
-from . import knowledge,templates,storage_management,model_settings
+from . import knowledge,templates,storage_management,model_settings,release_updates
 from .build_info import VERSION, build_info
 
 @asynccontextmanager
@@ -56,6 +56,9 @@ def settings_models_save(body:dict):return model_settings.save(body)
 @app.get('/api/storage')
 def storage_usage():return storage_management.usage()
 
+@app.get('/api/updates')
+def update_status():return release_updates.check()
+
 @app.post('/api/storage/clear-cache')
 def cache_clear():return storage_management.clear()
 
@@ -73,6 +76,16 @@ def query_rows(did:str,body:dict):return worksheet_query.query(did,body.get('fil
 
 @app.get('/api/drafts/{did}/profile')
 def data_profile(did:str):return worksheet_query.profile(did)
+
+@app.get('/api/drafts/{did}/runtime')
+def dataset_runtime(did:str):
+    with Session() as s:
+        require(s,Dataset,did);saved=s.scalar(select(ChatSession).where(ChatSession.dataset_id==did))
+        client=conversation.clients.get(did)
+        return {'dataset_id':did,'session_id':saved.session_id if saved else None,
+                'process_id':client.proc.pid if client and client.proc.poll() is None else None,
+                'work_directory':str(STORAGE/'harness'/did/'chat'),
+                'state_directory':str(STORAGE/'datasets'/did/'reasonix')}
 
 @app.post('/api/drafts/{did}/profile/observe')
 def data_observe(did:str,body:dict):return worksheet_query.visual_overview(did,body.get('goal',''),body.get('limit',20))

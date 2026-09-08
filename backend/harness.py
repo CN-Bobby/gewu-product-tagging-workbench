@@ -18,6 +18,8 @@ VISION_MODEL='deepseek/deepseek-v4-flash-vision-exp'
 def executable():
     configured=os.environ.get('REASONIX_EXE')
     if configured and Path(configured).is_file():return configured
+    bundled=ROOT/'reasonix'/'reasonix.exe'
+    if bundled.is_file():return str(bundled)
     direct=shutil.which('reasonix.exe')
     if direct:return direct
     cmd=shutil.which('reasonix.cmd') or shutil.which('reasonix')
@@ -65,7 +67,9 @@ def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_M
     bundle=tagging_rules.freeze()
     (path/'PRODUCT_ANALYST_AGENT.md').write_text(LEGACY_SYSTEM if suffix!='chat' else SYSTEM+'\n\n'+tagging_rules.read('core')+'\n可用只读 read_tagging_rules(topic=core/text/attributes/normalization/tools/output)。先按主题读取细则；read_worksheet 含文字底稿。判断规则通过 definition.judgment 传递。拆列使用 kind=expand,column_id,attributes。当前Skill版本 '+bundle['version']+' SHA256 '+bundle['sha256'],encoding='utf-8')
     # Project-scoped config only. Provider credentials and user configuration remain owned by Reasonix.
-    environment={'PYTHONPATH':str(ROOT),'TAG_STORAGE':str(STORAGE),'TAG_DATASET_ID':dataset_id,'PYTHONIOENCODING':'utf-8','TAG_VISION_MODEL':vision_model,'TAG_MCP_PROTOCOL':'draft-v3-skill-'+bundle['sha256'][:12]}
+    from .runtime_isolation import provider_home
+    environment={'PYTHONPATH':str(ROOT),'TAG_STORAGE':str(STORAGE),'TAG_PROVIDER_HOME':str(provider_home()),'TAG_DATASET_ID':dataset_id,'PYTHONIOENCODING':'utf-8','TAG_VISION_MODEL':vision_model,'TAG_MCP_PROTOCOL':'draft-v3-skill-'+bundle['sha256'][:12]}
+    if os.environ.get('TAG_CACHE'):environment['TAG_CACHE']=os.environ['TAG_CACHE']
     if suffix!='chat':environment.update(TAG_RUN_ID=suffix,TAG_PRODUCT_ID=product_id)
     if 'DATABASE_URL' in os.environ:environment['DATABASE_URL']=os.environ['DATABASE_URL']
     plugin='\n[[plugins]]\nname = "product_workbench"\ncommand = '+json.dumps(sys.executable)+'\nargs = ["-m", "backend.mcp_server"]\nauto_start = true\nenv = {'+', '.join(json.dumps(k)+' = '+json.dumps(v) for k,v in environment.items())+'}\n'
@@ -105,7 +109,8 @@ class ACP:
         threading.Thread(target=self._read,daemon=True).start()
         threading.Thread(target=self._stderr,daemon=True).start()
         try:
-            self.capabilities=self.rpc('initialize',{'protocolVersion':1,'clientCapabilities':{},'clientInfo':{'name':'product-workbench','version':'0.1.0'}},timeout=60)
+            from .build_info import VERSION
+            self.capabilities=self.rpc('initialize',{'protocolVersion':1,'clientCapabilities':{},'clientInfo':{'name':'product-workbench','version':VERSION}},timeout=60)
             env={'PYTHONPATH':str(ROOT),'TAG_STORAGE':str(STORAGE),'TAG_DATASET_ID':dataset_id,'PYTHONIOENCODING':'utf-8'}
             if 'DATABASE_URL' in os.environ:env['DATABASE_URL']=os.environ['DATABASE_URL']
             if run_id:env.update(TAG_RUN_ID=run_id,TAG_PRODUCT_ID=product_id)
