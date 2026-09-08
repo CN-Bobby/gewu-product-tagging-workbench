@@ -14,6 +14,7 @@ from .exporter import export_run
 from . import draft,batch,conversation,draft_export,text_facts
 from . import field_catalog,worksheet_query,task_control
 from . import knowledge
+from .build_info import VERSION, build_info
 
 @asynccontextmanager
 async def lifespan(app):
@@ -27,7 +28,7 @@ async def lifespan(app):
     for jid in list(batch.active):batch.stop(jid)
     conversation.close()
 
-app=FastAPI(title='商品特征工程工作台',version='0.4.0',lifespan=lifespan)
+app=FastAPI(title='商品特征工程工作台',version=VERSION,lifespan=lifespan)
 
 @app.middleware('http')
 async def localhost(request:Request,call_next):
@@ -44,7 +45,7 @@ async def value_error(request,e):return JSONResponse({'detail':str(e)},status_co
 async def validation_error(request,e):return JSONResponse({'detail':str(e)},status_code=422)
 
 @app.get('/api/health')
-def health():return {'status':'ok','version':'0.4.0'}
+def health():return {'status':'ok','application':'product-tagging-workbench','storage':str(STORAGE),**build_info()}
 
 @app.get('/api/drafts/{did}/fields')
 def fields_read(did:str):return field_catalog.read(did)
@@ -246,5 +247,5 @@ async def draft_events(did:str,request:Request,after:int=0):
             await asyncio.sleep(.5)
     return StreamingResponse(events(),media_type='text/event-stream',headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})
 
-dist=ROOT/'frontend'/'dist'
+dist=Path(os.environ.get('TAG_FRONTEND_DIST',ROOT/'frontend'/'dist'))
 if dist.exists():app.mount('/',StaticFiles(directory=dist,html=True),name='frontend')

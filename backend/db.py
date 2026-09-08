@@ -175,6 +175,11 @@ class BatchJob(Record, Base):
     errors = Column(JSON, default=dict)
     metrics = Column(JSON, default=dict)
 
+@event.listens_for(BatchJob, 'before_insert')
+def stamp_job_build(mapper, connection, target):
+    from .build_info import build_info
+    target.spec = {**(target.spec or {}), 'application_build': build_info()}
+
 class Snapshot(Record, Base):
     __tablename__ = 'draft_snapshot'
     dataset_id = Column(String, ForeignKey('dataset.id'), nullable=False)

@@ -361,7 +361,7 @@ def write_result(s,job,pid,col,value):
         reject_candidate(s,job.id,job.spec.get('text_model'),{'code':'superseded','token':token,'candidate':value});job.completed=list(set(job.completed+[token]));return
     c=get_cell(s,pid,col['id']);current=require(s,DraftColumn,col['id'])
     skill=col['definition'].get('skill',{})
-    evidence={**value,'job_id':job.id,'column_revision':col['revision'],'skill_version':skill.get('version'),'skill_sha256':skill.get('sha256'),'judgment':col['definition'].get('judgment')}
+    evidence={**value,'job_id':job.id,'application_build':job.spec.get('application_build'),'column_revision':col['revision'],'skill_version':skill.get('version'),'skill_sha256':skill.get('sha256'),'judgment':col['definition'].get('judgment')}
     deps_changed=any(any(getattr(get_cell(s,pid,cid),key)!=val for key,val in old.items()) for cid,old in expected.get('dependencies',{}).items())
     if c.edit!=expected['edit'] or current.revision!=expected['revision'] or deps_changed:
         c.conflict=evidence

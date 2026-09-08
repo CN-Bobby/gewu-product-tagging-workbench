@@ -1,0 +1,7 @@
+{
+  "version": "0.4.1",
+  "channel": "development",
+  "schema_version": 4,
+  "reasonix_baseline": "1.25.1",
+  "release_status": "pending_acceptance"
+}

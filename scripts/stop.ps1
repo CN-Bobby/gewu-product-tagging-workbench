@@ -1,13 +1,19 @@
+param([int]$Port = 8765, [string]$Storage = '')
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
-$listener = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue
+$storagePath = if ($Storage) { [IO.Path]::GetFullPath($Storage) } else { Join-Path $projectRoot 'storage' }
+$baseUrl = "http://127.0.0.1:$Port"
+$listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
 if (-not $listener) { Write-Output 'Workbench is not running.'; exit 0 }
 $serverProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)"
-if (-not $serverProcess.CommandLine.Contains($pythonPath) -or -not $serverProcess.CommandLine.Contains('backend.app:app')) {
-    throw 'Port 8765 is occupied by another process; nothing was stopped.'
+if (-not $serverProcess.CommandLine -or -not $serverProcess.CommandLine.Contains($pythonPath) -or -not $serverProcess.CommandLine.Contains('backend.app:app')) {
+    throw "Port $Port is occupied by another process; nothing was stopped."
 }
-Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8765/api/server/stop' -TimeoutSec 3 -ErrorAction SilentlyContinue | Out-Null
+$health = Invoke-RestMethod -Uri "$baseUrl/api/health" -TimeoutSec 4
+$legacy = -not $health.application -and $health.version -eq '0.4.0' -and -not $Storage -and $Port -eq 8765
+if (-not $legacy -and ($health.application -ne 'product-tagging-workbench' -or $health.storage -ne $storagePath)) { throw 'Service identity or data directory does not match; nothing was stopped.' }
+Invoke-RestMethod -Method Post -Uri "$baseUrl/api/server/stop" -TimeoutSec 3 -ErrorAction SilentlyContinue | Out-Null
 for ($attempt = 0; $attempt -lt 40; $attempt++) {
     if (-not (Get-Process -Id $serverProcess.ProcessId -ErrorAction SilentlyContinue)) { break }
     Start-Sleep -Milliseconds 250
