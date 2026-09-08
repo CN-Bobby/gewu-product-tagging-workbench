@@ -1,0 +1,7 @@
+[
+  {"id":"sku-conflict","source":{"sku":"FL-BK-2","title":"Three Piece Set","parameters":"2 pieces"},"expected":"件数冲突 value=null，保留两段原文；FL/BK 无明确字典不猜花卉或黑色"},
+  {"id":"multiple","source":{"title":"Floral and striped print; no polka dots"},"expected":"图案花卉true、条纹true、波点false，有逐属性证据；提出整类拆列"},
+  {"id":"uncertain","source":{"title":"Possibly floral or striped; unclear"},"expected":"图案未知，不以两个true处理，不触发拆列"},
+  {"id":"synonym","source":{"title":"Two Piece swimsuit for 2 years"},"expected":"套装件数2件套，年龄2岁分别提取，未提及的图案属性null"},
+  {"id":"manual-migration","source":{"old_manual_value":"花卉"},"expected":"花卉true保留人工来源；条纹和波点null，旧正式版本不变"}
+]

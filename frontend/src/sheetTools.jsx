@@ -1,0 +1,38 @@
+import React,{useState,useEffect,useRef} from 'react';
+
+export const valueText=v=>v==null?'':typeof v==='boolean'?(v?'✓':'❌'):typeof v==='object'?JSON.stringify(v):String(v);
+export function rowValue(row,cid){if(cid==='asin')return [row.anchor,'ready'];if(cid==='image')return [row.assets.some(a=>a.path)?'有图':'无图','ready'];if(cid.startsWith('raw:'))return [row.raw[cid.slice(4)]??null,'ready'];let c=row.cells[cid];return [c?.value??null,c?.status||'pending']}
+export function matches(row,filters,search=''){
+ if(search&&!([row.anchor,...Object.values(row.raw),...Object.values(row.cells).map(c=>c.value)].map(valueText).join(' ').toLowerCase().includes(search.toLowerCase())))return false;
+ return filters.every(f=>{let[v,state]=rowValue(row,f.column_id),t=valueText(v).toLowerCase();if(f.values&&!f.values.some(x=>JSON.stringify(x)===JSON.stringify(v)))return false;if(f.states?.length&&!f.states.includes(state))return false;if(f.op==='empty'&&v!==null&&v!=='')return false;if(f.op==='not_empty'&&(v===null||v===''))return false;
+ let checks=(f.keywords||[]).map(k=>f.op==='equals'?t===k.toLowerCase():f.op==='not_contains'?!t.includes(k.toLowerCase()):t.includes(k.toLowerCase()));return !checks.length||(f.match==='all'?checks.every(Boolean):checks.some(Boolean));});
+}
+const states={ready:'已完成',unknown:'未知',pending:'待处理',failed:'失败',stale:'待更新',review:'待确认'};
+export function FilterEditor({columnId,columns,rows,filters,search,onApply,onClose}){
+ const[cid,setCid]=useState(columnId||columns[0]?.id),[current,setCurrent]=useState({}),[candidateSearch,setCandidateSearch]=useState('');
+ useEffect(()=>{setCurrent(filters.find(f=>f.column_id===cid)||{column_id:cid});setCandidateSearch('')},[cid]);
+ const counts=new Map();rows.filter(r=>matches(r,filters.filter(f=>f.column_id!==cid),search)).forEach(r=>{let[v]=rowValue(r,cid),key=JSON.stringify(v);let item=counts.get(key)||{value:v,count:0};item.count++;counts.set(key,item)});
+ (current.values||[]).forEach(v=>{let k=JSON.stringify(v);if(!counts.has(k))counts.set(k,{value:v,count:0})});
+ const options=[...counts.values()].sort((a,b)=>valueText(a.value).localeCompare(valueText(b.value),'zh',{numeric:true})),chosen=current.values??options.map(o=>o.value);
+ const has=v=>chosen.some(x=>JSON.stringify(x)===JSON.stringify(v));
+ return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><section className="modal filter-editor"><div className="panel-heading"><strong>筛选工作表</strong><button aria-label="关闭筛选" onClick={onClose}>×</button></div><div className="modal-body">
+ <label>字段<select aria-label="筛选字段" value={cid} onChange={e=>setCid(e.target.value)}>{columns.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
+ <div className="filter-keyword"><select aria-label="匹配方式" value={current.op||'contains'} onChange={e=>setCurrent({...current,op:e.target.value})}><option value="contains">包含</option><option value="equals">等于</option><option value="not_contains">不包含</option><option value="empty">为空</option><option value="not_empty">不为空</option></select><input aria-label="筛选关键词" placeholder="关键词；多个词用换行分隔" value={(current.keywords||[]).join('\n')} onChange={e=>setCurrent({...current,keywords:e.target.value?[e.target.value]:[]})}/></div>
+ <label>多关键词（每行一个）<textarea aria-label="多关键词" value={(current.keywords||[]).join('\n')} onChange={e=>setCurrent({...current,keywords:e.target.value.split('\n').filter(Boolean)})}/></label><select aria-label="关键词关系" value={current.match||'any'} onChange={e=>setCurrent({...current,match:e.target.value})}><option value="any">匹配任一关键词</option><option value="all">匹配全部关键词</option></select>
+ <div className="filter-values-head"><b>勾选细分值</b><button onClick={()=>setCurrent({...current,values:options.map(o=>o.value)})}>全选</button><button onClick={()=>setCurrent({...current,values:[]})}>清空勾选</button></div><input aria-label="搜索候选值" placeholder="搜索下面的值，不改变行筛选" value={candidateSearch} onChange={e=>setCandidateSearch(e.target.value)}/>
+ <div className="filter-values">{options.filter(o=>valueText(o.value).toLowerCase().includes(candidateSearch.toLowerCase())).map(o=><label key={JSON.stringify(o.value)}><input type="checkbox" checked={has(o.value)} onChange={()=>setCurrent({...current,values:has(o.value)?chosen.filter(v=>JSON.stringify(v)!==JSON.stringify(o.value)):[...chosen,o.value]})}/><span>{valueText(o.value)||'（空白）'}</span><b>{o.count}</b></label>)}</div><small>数量按其他列筛选后的商品行统计；同列勾选取“或”，多列取“且”。</small>
+ {!cid?.startsWith('raw:')&&!['asin','image'].includes(cid)&&<div className="filter-states">{Object.entries(states).map(([key,label])=><label key={key}><input type="checkbox" checked={current.states?.includes(key)||false} onChange={()=>setCurrent({...current,states:current.states?.includes(key)?current.states.filter(x=>x!==key):[...(current.states||[]),key]})}/>{label}</label>)}</div>}
+ <div className="filter-footer"><button onClick={()=>{onApply(cid,null);onClose()}}>清除此列筛选</button><button className="primary" onClick={()=>{onApply(cid,{...current,column_id:cid});onClose()}}>应用筛选</button></div></div></section></div>
+}
+
+export function ImageViewer({rows,productId,onClose}){
+ const[index,setIndex]=useState(Math.max(0,rows.findIndex(r=>r.id===productId))),[assetIndex,setAssetIndex]=useState(0),[zoom,setZoom]=useState(1),[offset,setOffset]=useState({x:0,y:0}),[size,setSize]=useState(null),[error,setError]=useState('');const drag=useRef(null);
+ const row=rows[index],assets=row?.assets.filter(a=>a.path)||[],asset=assets[assetIndex];
+ const reset=()=>{setZoom(1);setOffset({x:0,y:0});setSize(null);setError('')};
+ const move=step=>{setIndex(i=>Math.min(rows.length-1,Math.max(0,i+step)));setAssetIndex(0);reset()};
+ useEffect(()=>{let key=e=>{if(e.key==='Escape'){e.stopImmediatePropagation();onClose()}if(e.key==='ArrowLeft')move(-1);if(e.key==='ArrowRight')move(1)};window.addEventListener('keydown',key,true);return()=>window.removeEventListener('keydown',key,true)},[rows.length]);
+ return <div className="image-viewer" role="dialog" aria-label="商品原图"><header><div><strong>{row?.anchor}</strong><small>原表第 {row?.row} 行 · {index+1}/{rows.length} 件 · {size?`${size.width} × ${size.height} 原始像素`:'加载原图'}</small></div><button onClick={()=>{setZoom(1);setOffset({x:0,y:0})}}>适应窗口</button><button onClick={()=>{if(size)setZoom(Math.max(size.width/(window.innerWidth-100),size.height/(window.innerHeight-150)));setOffset({x:0,y:0})}}>100%原始尺寸</button><button onClick={()=>setZoom(z=>Math.max(.2,z/1.25))}>−</button><span>{Math.round(zoom*100)}%</span><button onClick={()=>setZoom(z=>Math.min(12,z*1.25))}>＋</button><button aria-label="关闭原图" onClick={onClose}>关闭 Esc</button></header>
+ <div className="image-stage" onWheel={e=>setZoom(z=>Math.max(.2,Math.min(12,z*(e.deltaY>0?.9:1.1))))} onPointerDown={e=>{drag.current={x:e.clientX-offset.x,y:e.clientY-offset.y};e.currentTarget.setPointerCapture(e.pointerId)}} onPointerMove={e=>drag.current&&setOffset({x:e.clientX-drag.current.x,y:e.clientY-drag.current.y})} onPointerUp={()=>drag.current=null}>
+ {asset&&!error?<img key={asset.id} draggable={false} src={'/api/assets/'+asset.id} style={{transform:`translate(${offset.x}px,${offset.y}px) scale(${zoom})`}} onLoad={e=>setSize({width:e.target.naturalWidth,height:e.target.naturalHeight})} onError={()=>setError('原图加载失败，请检查原始图片文件')}/>:<p>{error||'当前商品没有可用原图'}</p>}</div>
+ <footer><button disabled={!index} onClick={()=>move(-1)}>← 上一件</button><div>{assets.map((a,i)=><button key={a.id} className={i===assetIndex?'primary':''} onClick={()=>{setAssetIndex(i);reset()}}>图片 {i+1}</button>)}</div><button disabled={index===rows.length-1} onClick={()=>move(1)}>下一件 →</button></footer></div>
+}
