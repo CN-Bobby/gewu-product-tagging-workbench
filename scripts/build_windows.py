@@ -22,6 +22,7 @@ for directory in ('backend','skills/product-tagging','docs'):
     shutil.copytree(ROOT/directory,app/directory,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
 (app/'scripts').mkdir()
 shutil.copy2(ROOT/'scripts/desktop_bootstrap.py',app/'scripts/desktop_bootstrap.py')
+shutil.copy2(ROOT/'scripts/restore_backup.py',app/'scripts/restore_backup.py')
 for name in ('VERSION.json','requirements-runtime.lock.txt','requirements-runtime-hashed.txt'):
     shutil.copy2(ROOT/name,app/name)
 runtime=app/'runtime'
@@ -73,7 +74,7 @@ VIAddVersionKey "FileVersion" "WINDOWSVERSION"
 VIAddVersionKey "FileDescription" "GeWu Workbench Installer"
 VIAddVersionKey "LegalCopyright" "GeWu Workbench"
 OutFile "OUTFILE"
-InstallDir "$LOCALAPPDATA\\GeWuWorkbench\\versions\\VERSION"
+InstallDir "$LOCALAPPDATA\\GeWuWorkbench\\versions\\BUILDID"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 Page directory
@@ -83,13 +84,13 @@ UninstPage instfiles
 Section
 SetOutPath "$INSTDIR"
 File /r "APPDIR\\*"
-CreateShortCut "$DESKTOP\\格物工作台 VERSION.lnk" "$INSTDIR\\Workbench.exe"
+CreateShortCut "$DESKTOP\\格物工作台 BUILDID.lnk" "$INSTDIR\\Workbench.exe"
 CreateDirectory "$SMPROGRAMS\\格物工作台"
-CreateShortCut "$SMPROGRAMS\\格物工作台\\格物工作台 VERSION.lnk" "$INSTDIR\\Workbench.exe"
+CreateShortCut "$SMPROGRAMS\\格物工作台\\格物工作台 BUILDID.lnk" "$INSTDIR\\Workbench.exe"
 WriteUninstaller "$INSTDIR\\Uninstall.exe"
-WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWu-VERSION" "DisplayName" "格物工作台 VERSION"
-WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWu-VERSION" "UninstallString" '"$INSTDIR\\Uninstall.exe"'
-WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWu-VERSION" "DisplayVersion" "VERSION"
+WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWu-BUILDID" "DisplayName" "格物工作台 BUILDID"
+WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWu-BUILDID" "UninstallString" '"$INSTDIR\\Uninstall.exe"'
+WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWu-BUILDID" "DisplayVersion" "VERSION"
 SectionEnd
 Section "Uninstall"
 ClearErrors
@@ -99,15 +100,15 @@ IntCmp $0 0 stop_done
 stop_failed:
 Abort "Workbench could not stop. Close it before uninstalling."
 stop_done:
-Delete "$DESKTOP\\格物工作台 VERSION.lnk"
-Delete "$SMPROGRAMS\\格物工作台\\格物工作台 VERSION.lnk"
+Delete "$DESKTOP\\格物工作台 BUILDID.lnk"
+Delete "$SMPROGRAMS\\格物工作台\\格物工作台 BUILDID.lnk"
 DELETEFILES
 DELETEDIRS
 Delete "$INSTDIR\\Uninstall.exe"
 RMDir "$INSTDIR"
-DeleteRegKey HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWu-VERSION"
+DeleteRegKey HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWu-BUILDID"
 SectionEnd
-'''.replace('WINDOWSVERSION',windows_version).replace('VERSION',version['version']).replace('OUTFILE',str(out/('GeWuWorkbench-'+version['version']+'-Setup.exe'))).replace('APPDIR',str(app)).replace('DELETEFILES',delete_files).replace('DELETEDIRS',delete_dirs)
+'''.replace('WINDOWSVERSION',windows_version).replace('VERSION',version['version']).replace('BUILDID',version['version']+('-'+commit[:12] if args.candidate else '')).replace('OUTFILE',str(out/('GeWuWorkbench-'+version['version']+'-Setup.exe'))).replace('APPDIR',str(app)).replace('DELETEFILES',delete_files).replace('DELETEDIRS',delete_dirs)
 (out/'installer.nsi').write_text(nsis,encoding='utf-8-sig')
 subprocess.run([str(tools/'nsis-3.12/makensis.exe'),'/WX',str(out/'installer.nsi')],check=True)
 with zipfile.ZipFile(out/'source.zip','w',zipfile.ZIP_DEFLATED) as archive:

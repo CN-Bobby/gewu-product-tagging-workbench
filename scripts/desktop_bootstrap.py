@@ -1,11 +1,15 @@
 """Bundled runtime entrypoint: no system Python, Node or CLI dependency."""
 import json,os,sys,sqlite3,shutil,traceback
+from contextlib import ExitStack
 from pathlib import Path
 from datetime import datetime,timezone
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 DATA=Path(os.environ['TAG_STORAGE']);logs=DATA/'logs';logs.mkdir(parents=True,exist_ok=True)
 sys.stdout=open(logs/'desktop.log','a',encoding='utf-8',buffering=1);sys.stderr=sys.stdout
 try:
+    from backend.storage_lock import exclusive_storage
+    lifecycle=ExitStack()
+    lifecycle.enter_context(exclusive_storage(DATA))
     manifest=json.loads((ROOT/'VERSION.json').read_text(encoding='utf-8'))
     previous=DATA/'installed-build.json'
     current=json.loads((ROOT/'build-manifest.json').read_text(encoding='utf-8'))
@@ -23,3 +27,5 @@ try:
     uvicorn.run('backend.app:app',host='127.0.0.1',port=int(os.environ['TAG_PORT']),access_log=False)
 except Exception:
     traceback.print_exc();raise
+finally:
+    if 'lifecycle' in globals():lifecycle.close()

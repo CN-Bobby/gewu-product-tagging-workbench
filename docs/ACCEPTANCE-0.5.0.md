@@ -15,3 +15,11 @@
 `storage/release-verification/packaged-flow-3b1957a921844b1b835e6e67fe6b0e10/report.json`：包内官方Python与bootstrap运行，真实Chrome完成两次10行上传、中文件数打标、人工修正、V1保存、标准复制和执行。第二个月10项严格复用、0模型请求、0视觉请求、0.384秒，保留人工来源。首次上传已命中文字缓存，不能作为冷启动性能证据。无浏览器脚本错误。
 
 该构建原生启动器运行被自动审批拒绝，未绕过。其NSIS构建存在4处引号警告，后续构建改为警告即失败，并修正引用。新候选还修正表格标签列位置和双击编辑的单击详情抢占问题，需要在新包复测。
+
+## 构建a119cb2与离线回退实测
+
+- NSIS启用/WX后构建成功，安装器40,790,406字节，无NSIS警告。
+- `storage/release-verification/packaged-flow-358738c2281840b2aaa7d39f9eae1f54/report.json`：真实Chrome双击直接修改通过；标签列紧邻ASIN/图片；模板复制后10项严格复用、0请求、0.389秒，人工来源可见。截图已检查。
+- `storage/release-verification/packaged-session-report.json`：升级自动备份SQLite完整，旧快照内容不变；同一原生会话ID恢复，5轮同进程，升级前记忆恢复。
+- `storage/release-verification/packaged-rollback-report.json`：实际将隔离数据库及会话一起回退至429a07c，原ID、记忆、旧快照均恢复。较新数据保留于before-restore安全副本。通过的是本机包内Python入口，不能替代安装器与干净Windows测试。
+- 目录锁与离线恢复工具加入后，76项隔离测试通过（24.33秒）；新源码的最终包需重新构建。

@@ -34,8 +34,10 @@ with sync_playwright() as pw:
     page.locator('input[type=file]').set_input_files(str(ROOT/'测试10行.xlsx'))
     expect(page.get_by_text('核对表头与项目',exact=True)).to_be_visible()
     expect(page.get_by_label('映射SKU',exact=True)).not_to_have_value('')
-    page.get_by_role('button',name='导入独立工作表',exact=True).click()
-    expect(page.get_by_label('数据集',exact=True)).not_to_have_value(previous,timeout=30000)
+    with page.expect_response(lambda r:r.url==BASE+'/api/import' and r.request.method=='POST') as imported:
+        page.get_by_role('button',name='导入独立工作表',exact=True).click()
+    first=imported.value.json()['id']
+    expect(page.get_by_label('数据集',exact=True)).to_have_value(first,timeout=30000)
     expect(page.locator('.product-table tbody tr')).to_have_count(10,timeout=30000)
     first=page.get_by_label('数据集',exact=True).input_value();state=wait_jobs(page,first)
     checks.append({'first_import':first,'text_metrics':state['jobs'][0]['metrics']})
@@ -59,9 +61,11 @@ with sync_playwright() as pw:
     page.locator('input[type=file]').set_input_files({'name':'二月验收.xlsx','mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','buffer':(ROOT/'测试10行.xlsx').read_bytes()})
     expect(page.get_by_text('核对表头与项目',exact=True)).to_be_visible()
     page.get_by_label('上传所属项目',exact=True).select_option(value=state['dataset']['workspace_id'])
-    page.get_by_role('button',name='导入独立工作表',exact=True).click()
-    expect(page.get_by_label('数据集',exact=True)).not_to_have_value(first,timeout=30000)
-    second=page.get_by_label('数据集',exact=True).input_value();state2=wait_jobs(page,second)
+    with page.expect_response(lambda r:r.url==BASE+'/api/import' and r.request.method=='POST') as imported:
+        page.get_by_role('button',name='导入独立工作表',exact=True).click()
+    second=imported.value.json()['id']
+    expect(page.get_by_label('数据集',exact=True)).to_have_value(second,timeout=30000)
+    state2=wait_jobs(page,second)
     assert not state2['columns']
     page.get_by_role('button',name='标签标准',exact=True).click()
     choice=page.get_by_label('标签模板修订',exact=True)

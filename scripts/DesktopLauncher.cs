@@ -48,7 +48,9 @@ class DesktopLauncher {
   int port=Int32.Parse(Option(args,"--port",settings.ContainsKey("port")?settings["port"]:"8765"));
   string mutexName="Local\\GeWuStart-"+Convert.ToBase64String(System.Security.Cryptography.SHA256.Create().ComputeHash(System.Text.Encoding.UTF8.GetBytes(data.ToLowerInvariant()))).Replace('/','_');
   using(var mutex=new Mutex(false,mutexName)) {
-   if(!mutex.WaitOne(45000))throw new Exception("另一个启动过程尚未完成，请稍后重试。");
+   bool acquired=false;
+   try{acquired=mutex.WaitOne(45000);}catch(AbandonedMutexException){acquired=true;}
+   if(!acquired)throw new Exception("另一个启动过程尚未完成，请稍后重试。");
    try {
     var health=Health(port);
     if(stopping) {
