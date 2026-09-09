@@ -32,3 +32,9 @@ def test_packaged_identity_does_not_duplicate_file_inventory(tmp_path,monkeypatc
         assert 'files' not in identity and len(json.dumps(identity))<1000
         assert identity['manifest_sha256']==hashlib.sha256(raw).hexdigest()
     finally:module.build_info.cache_clear()
+
+
+def test_desktop_launcher_keeps_runtime_cache_out_of_install_directory():
+    root=Path(__file__).resolve().parents[1]
+    source=(root/'scripts'/'DesktopLauncher.cs').read_text(encoding='utf-8')
+    assert 'start.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"]="1"' in source
