@@ -87,7 +87,7 @@ def dataset_runtime(did:str):
 @app.post('/api/drafts/{did}/profile/observe')
 def data_observe(did:str,body:dict):
     capabilities.require_visual_tagging()
-    return worksheet_query.visual_overview(did,body.get('goal',''),body.get('limit',20))
+    return worksheet_query.visual_overview(did,body.get('goal',''),body.get('limit',24))
 
 @app.get('/api/drafts/{did}/knowledge')
 def knowledge_read(did:str):return knowledge.read(did)

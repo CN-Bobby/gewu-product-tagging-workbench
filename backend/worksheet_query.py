@@ -85,28 +85,40 @@ def profile(did):
     for r in data['rows']:
         key=tuple(a.get('sha256') for a in r['assets'] if a.get('path')) or (r['id'],)
         if key not in seen:sample.append(r['id']);seen.add(key)
-    if len(sample)>20:sample=[sample[i*(len(sample)-1)//19] for i in range(20)]
-    result['representative_product_ids']=sample;return result
+    if len(sample)>24:sample=[sample[i*(len(sample)-1)//23] for i in range(24)]
+    result['representative_product_ids']=sample
+    with Session() as s:
+        latest=s.scalar(select(WorkbenchMeta).where(WorkbenchMeta.dataset_id==did,WorkbenchMeta.kind=='visual_overview').order_by(WorkbenchMeta.updated_at.desc(),WorkbenchMeta.id.desc()))
+        if latest:
+            value=latest.data
+            result['latest_visual_overview']={'overview_id':latest.id,'goal':value.get('goal'),'sample_count':value.get('sample_count'),'successful':value.get('successful'),'input_policy':value.get('input_policy'),'basis':value.get('basis'),'groups':[{'patterns':g.get('patterns',[]),'coverage_note':g.get('coverage_note'),'results':g.get('results',[])} for g in value.get('groups',[]) if g.get('status')=='ready'],'created_at':value.get('created_at')}
+    return result
 
-def visual_overview(did,goal,limit=20):
-    """Bounded representative inspection; never creates columns or claims full visual coverage."""
+def visual_overview(did,goal,limit=24):
+    """Compare representative main images in six-product groups."""
     from concurrent.futures import ThreadPoolExecutor
     import threading,time
     from . import batch
     from .model_settings import defaults
     VISION_MODEL=defaults()[1]
     if not isinstance(goal,str) or not 3<=len(goal)<=2000:raise ValueError('请说明本次希望观察的结构或图案问题')
-    if type(limit) is not int or not 1<=limit<=20:raise ValueError('代表样本数为1–20')
+    if type(limit) is not int or not 1<=limit<=24:raise ValueError('代表样本数为1–24')
     summary=profile(did);ids=summary['representative_product_ids'][:limit];data=draft.sheet(did);rows=[r for r in data['rows'] if r['id'] in ids];metrics={};lock=threading.Lock();start=time.perf_counter()
-    def observe(row):
+    groups=[rows[i:i+6] for i in range(0,len(rows),6)]
+    def observe(group):
         try:
-            views=[batch.observation(a,VISION_MODEL,'代表样本观察，回答当前目标：'+goal,False,metrics,lock) for a in row['assets'] if a.get('path')]
-            if not views:raise ValueError('没有已导入图片')
-            return {'product_id':row['id'],'row':row['row'],'anchor':row['anchor'],'status':'ready','views':views}
-        except Exception as e:return {'product_id':row['id'],'row':row['row'],'anchor':row['anchor'],'status':'failed','error':str(e)[:500]}
-    with ThreadPoolExecutor(max_workers=3) as pool:results=list(pool.map(observe,rows))
+            compared=batch.calibration_group(group,VISION_MODEL,goal,False,metrics,lock)
+            by_id={item['product_id']:item for item in compared['products']}
+            return [{'status':'ready','product_ids':[row['id'] for row in group],'patterns':compared['patterns'],'coverage_note':compared['coverage_note'],'cached':compared['cached'],'results':[{'product_id':row['id'],'row':row['row'],'anchor':row['anchor'],**by_id[row['id']]} for row in group]}]
+        except Exception as e:
+            if len(group)>1:
+                middle=len(group)//2
+                return observe(group[:middle])+observe(group[middle:])
+            return [{'status':'failed','product_ids':[group[0]['id']],'error':str(e)[:500]}]
+    with ThreadPoolExecutor(max_workers=3) as pool:group_results=[item for result in pool.map(observe,groups) for item in result]
+    results=[item for group in group_results if group['status']=='ready' for item in group['results']]
     metrics['wall_seconds']=time.perf_counter()-start
-    value={'goal':goal,'total':summary['total'],'sample_count':len(rows),'successful':sum(r['status']=='ready' for r in results),'basis':'按去重图片稳定取代表样本；结论只覆盖这些样本，不代表全量已看图','results':results,'metrics':metrics,'created_at':now()}
+    value={'goal':goal,'total':summary['total'],'sample_count':len(rows),'successful':len(results),'input_policy':'single_main_image_v1','group_size':6,'basis':'按去重主图稳定取代表样本，每组最多6件比较；结论只覆盖这些样本，不代表全量已看图','groups':group_results,'results':results,'metrics':metrics,'created_at':now()}
     with draft.WRITE_LOCK,Session.begin() as s:
-        s.add(WorkbenchMeta(id=uid(),dataset_id=did,kind='visual_overview',data=value));audit(s,did,'visual_overview',{'goal':goal,'sample_count':len(rows),'successful':value['successful']})
+        ident=uid();value['overview_id']=ident;record=WorkbenchMeta(id=ident,dataset_id=did,kind='visual_overview',data=value);s.add(record);audit(s,did,'visual_overview',{'overview_id':ident,'goal':goal,'sample_count':len(rows),'successful':value['successful'],'input_policy':value['input_policy']})
     return value

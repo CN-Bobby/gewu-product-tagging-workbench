@@ -6,10 +6,11 @@ from test_draft import add,run
 
 
 def test_confirmed_prompts_survive_later_code_changes(dataset,monkeypatch):
-    monkeypatch.setenv('TAG_ENABLE_VISUAL_TAGGING','1')
+    monkeypatch.delenv('TAG_DISABLE_VISUAL_TAGGING',raising=False)
     did=dataset['id'];column=add(did,source='image');pid=draft.sheet(did)['rows'][0]['id']
     proposal=draft.propose(did,'冻结执行规则',[{'kind':'execute','column_ids':[column['id']],'product_ids':[pid]}])
     job=draft.confirm(did,proposal['id'])[0];frozen=job['spec']['execution_contract']
+    assert frozen['version']==4 and frozen['format_repair_prefix']
     monkeypatch.setattr(batch,'VISION_RULES','NEW IMAGE PROMPT MUST NOT LEAK')
     monkeypatch.setattr(execution_contract,'FILL_PREFIX','NEW FILL PROMPT MUST NOT LEAK')
     seen=[]

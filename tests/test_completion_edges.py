@@ -37,7 +37,7 @@ def test_mapping_worker_keeps_changed_dependency_conflict(dataset):
     assert cell['conflict'] and cell['value']=='冷'
 
 def test_vision_requirement_includes_judgment(dataset,monkeypatch):
-    monkeypatch.setenv('TAG_ENABLE_VISUAL_TAGGING','1')
+    monkeypatch.delenv('TAG_DISABLE_VISUAL_TAGGING',raising=False)
     did=dataset['id'];col=add(did,'color',source='image',judgment={'include':'只观察上衣'});seen=[]
     def observe(asset,model,requirements,*rest):seen.append(requirements);return {'observation':'蓝色'}
     def fake(model,messages,*args):return {'results':[{'product_id':p['product_id'],'normalized_value':'蓝色','evidence':'图片上衣'} for p in json.loads(messages[-1]['content'])]}

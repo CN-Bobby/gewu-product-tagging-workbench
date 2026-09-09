@@ -124,14 +124,17 @@ def test_mapping_removal_and_extra_details_stale(dataset):
     assert data['rows'][0]['raw']==raw and data['rows'][0]['cells'][c['id']]['status']=='stale'
 
 def test_visual_columns_share_observation_and_text_context(dataset,monkeypatch):
-    monkeypatch.setenv('TAG_ENABLE_VISUAL_TAGGING','1')
     did=dataset['id'];a=add(did,source='both',fields=['sku']);b=add(did,key='pattern',source='image');pid=draft.sheet(did)['rows'][0]['id'];calls=[]
+    from backend.db import Asset
+    original=draft.sheet(did)['rows'][0]['assets'][0]
+    with Session.begin() as s:s.add(Asset(product_id=pid,source='upload',path=original['path'],sha256=original['sha256'],image_type='supplemental'))
     def observe(*args):calls.append(args);return {'observation':'上衣前领口圆弧，下装纯色','asset_id':args[0]['id']}
     monkeypatch.setattr(batch,'observation',observe)
     monkeypatch.setattr(batch,'request_json',lambda m,msg,*a:{'results':[{'product_id':p['product_id'],'normalized_value':'2件套','evidence':'清晰可见'} for p in json.loads(msg[-1]['content'])]})
     p=draft.propose(did,'共同观察',[{'kind':'execute','targets':[{'column_id':a['id'],'product_ids':[pid]},{'column_id':b['id'],'product_ids':[pid]}]}]);j=run(draft.confirm(did,p['id'])[0])
     assert j['status']=='completed' and len(calls)==1
-    assert calls[0][6].get('sku') and j['metrics']['shared_visual_hits']==1
+    assert calls[0][6].get('sku') and calls[0][0]['source']=='excel' and j['metrics']['shared_visual_hits']==1
+    assert j['metrics']['main_image_observations']==1 and j['metrics']['supplemental_images_ignored']==1
 
 def test_single_cardinality_preserves_conflicting_candidate_without_expansion(dataset):
     did=dataset['id'];c=add(did,cardinality='single',options=['圆领','方领']);pid=draft.sheet(did)['rows'][0]['id'];j=job(did,c,[pid])

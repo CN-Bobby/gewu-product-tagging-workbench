@@ -107,7 +107,7 @@ def _sheet(s,did):
     ps=s.scalars(select(Product).where(Product.dataset_id==did).order_by(Product.row)).all()
     rows=[]
     for p in ps:
-        assets=[obj(a) for a in s.scalars(select(Asset).where(Asset.product_id==p.id))]
+        assets=[obj(a) for a in s.scalars(select(Asset).where(Asset.product_id==p.id).order_by(Asset.created_at,Asset.id))]
         cells={c.column_id:obj(c) for c in s.scalars(select(Cell).where(Cell.product_id==p.id))}
         record=s.scalar(select(TextRecord).where(TextRecord.product_id==p.id))
         rows.append({**obj(p),'assets':assets,'cells':cells,'text_record':obj(record) if record else None})

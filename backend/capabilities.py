@@ -1,4 +1,4 @@
-"""Release capability gates. Experimental features require an explicit local opt-in."""
+"""Public release capabilities."""
 import os
 from .build_info import VERSION
 
@@ -8,17 +8,19 @@ def _enabled(name):
 
 
 def visual_tagging_enabled():
-    return _enabled('TAG_ENABLE_VISUAL_TAGGING')
+    # Automatic visual tagging is a supported beta capability.  A deployment may
+    # still disable it explicitly when its configured provider has no vision model.
+    return not _enabled('TAG_DISABLE_VISUAL_TAGGING')
 
 
 def require_visual_tagging():
     if not visual_tagging_enabled():
-        raise ValueError(f'{VERSION} 暂未开放自动视觉打标；可继续查看高清原图、核对已有结果或人工修正')
+        raise ValueError(f'{VERSION} 当前部署已关闭自动视觉打标；请启用视觉模型后重试')
 
 
 def public():
     return {
         'visual_tagging': visual_tagging_enabled(),
-        'visual_tagging_status': 'internal_research' if visual_tagging_enabled() else 'disabled_for_beta',
+        'visual_tagging_status': 'available' if visual_tagging_enabled() else 'disabled_by_deployment',
         'online_updates': False,
     }

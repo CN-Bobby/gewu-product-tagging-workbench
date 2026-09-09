@@ -129,13 +129,14 @@ def import_file(data, filename, sheet=None, workspace_id=None, mapping=None):
             product = Product(dataset_id=ident, **{k:row[k] for k in ['row','anchor','identity_source','raw','fields']})
             s.add(product); s.flush()
             seen=set()
-            for data_image in row['images']:
+            for image_index, data_image in enumerate(row['images']):
                 path, digest=image_bytes(data_image)
-                if digest not in seen: s.add(Asset(product_id=product.id,source='excel',path=path,sha256=digest))
+                if digest not in seen:
+                    s.add(Asset(product_id=product.id,source='excel',path=path,sha256=digest,image_type='main' if image_index==0 else 'supplemental'))
                 seen.add(digest)
             url=row['fields'].get('image_url')
             if isinstance(url,str) and url.startswith(('https://','http://')):
-                s.add(Asset(product_id=product.id, source='url', url=url))
+                s.add(Asset(product_id=product.id, source='url', url=url, image_type='reference' if seen else 'main'))
         audit(s, ident, 'dataset_imported', {'rows':len(p['rows']), 'sha256':dataset.sha256,'format':'WPS DISPIMG / DrawingML'})
         return obj(dataset)
 
@@ -152,6 +153,6 @@ def attach_images(dataset_id, files):
             path,digest=image_bytes(data)
             for p in targets:
                 if not s.scalar(select(Asset).where(Asset.product_id==p.id, Asset.sha256==digest)):
-                    s.add(Asset(product_id=p.id,source='upload',path=path,sha256=digest)); matched+=1
+                    s.add(Asset(product_id=p.id,source='upload',path=path,sha256=digest,image_type='supplemental')); matched+=1
         audit(s,dataset_id,'images_attached',{'matched':matched,'unmatched':unmatched})
     return {'matched':matched,'unmatched':unmatched}

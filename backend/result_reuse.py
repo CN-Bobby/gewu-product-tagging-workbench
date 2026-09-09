@@ -37,9 +37,10 @@ def fingerprint(product,column,spec,entry,vision_requirements):
               'fill_prompt':execution['fill_prefix']}
     if definition['source'] in ('image','both'):
         endpoint,_,model=provider_config(spec['vision_model'])
-        assets=[a for a in product['assets'] if a.get('path')]
-        if not assets:raise ValueError('没有完整图片输入，不复用')
-        contract.update(images=[pixels(a['path']) for a in assets],vision_model=[spec['vision_model'],endpoint,model],
+        from .image_inputs import selection
+        image_input=selection(product)
+        asset=image_input['asset']
+        contract.update(images=[pixels(asset['path'])],image_input_policy=image_input['input_policy'],vision_model=[spec['vision_model'],endpoint,model],
                         vision_prompt=execution['vision_rules'],vision_requirements=vision_requirements)
     return digest(contract)
 

@@ -62,8 +62,9 @@ SYSTEM='''你是商品打标工作台的持续对话协调员。默认用中文�
 
 def system_prompt():
     from .capabilities import visual_tagging_enabled
-    if visual_tagging_enabled():return SYSTEM
-    return SYSTEM+'\n当前0.5.0-beta.1关闭自动视觉观察和image/both标签提案。只提出source=text或程序映射标签；可以读取图片是否存在，但不能声称已观察图片像素。高清原图由用户在网页人工核对。'
+    if visual_tagging_enabled():
+        return SYSTEM+'\n自动视觉打标以每件商品的一张主图为正式输入；补充套图只供人工核对，不能暗中改变批量判断。先按当前目标观察代表样本，再把用户确认的边界写入标签定义。'
+    return SYSTEM+'\n当前部署关闭自动视觉观察和image/both标签提案。可以读取图片是否存在，但不能声称已观察图片像素。'
 
 def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_MODEL):
     path=STORAGE/'harness'/dataset_id/suffix
@@ -74,7 +75,7 @@ def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_M
     # Project-scoped config only. Provider credentials and user configuration remain owned by Reasonix.
     from .runtime_isolation import provider_home
     environment={'PYTHONPATH':str(ROOT),'TAG_STORAGE':str(STORAGE),'TAG_PROVIDER_HOME':str(provider_home()),'TAG_DATASET_ID':dataset_id,'PYTHONIOENCODING':'utf-8','TAG_VISION_MODEL':vision_model,'TAG_MCP_PROTOCOL':'draft-v3-skill-'+bundle['sha256'][:12]}
-    environment['TAG_ENABLE_VISUAL_TAGGING']=os.environ.get('TAG_ENABLE_VISUAL_TAGGING','0')
+    environment['TAG_DISABLE_VISUAL_TAGGING']=os.environ.get('TAG_DISABLE_VISUAL_TAGGING','0')
     if os.environ.get('TAG_CACHE'):environment['TAG_CACHE']=os.environ['TAG_CACHE']
     if suffix!='chat':environment.update(TAG_RUN_ID=suffix,TAG_PRODUCT_ID=product_id)
     if 'DATABASE_URL' in os.environ:environment['DATABASE_URL']=os.environ['DATABASE_URL']
@@ -120,7 +121,7 @@ class ACP:
         try:
             from .build_info import VERSION
             self.capabilities=self.rpc('initialize',{'protocolVersion':1,'clientCapabilities':{},'clientInfo':{'name':'product-workbench','version':VERSION}},timeout=60)
-            env={'PYTHONPATH':str(ROOT),'TAG_STORAGE':str(STORAGE),'TAG_DATASET_ID':dataset_id,'PYTHONIOENCODING':'utf-8','TAG_ENABLE_VISUAL_TAGGING':os.environ.get('TAG_ENABLE_VISUAL_TAGGING','0')}
+            env={'PYTHONPATH':str(ROOT),'TAG_STORAGE':str(STORAGE),'TAG_DATASET_ID':dataset_id,'PYTHONIOENCODING':'utf-8','TAG_DISABLE_VISUAL_TAGGING':os.environ.get('TAG_DISABLE_VISUAL_TAGGING','0')}
             if 'DATABASE_URL' in os.environ:env['DATABASE_URL']=os.environ['DATABASE_URL']
             if run_id:env.update(TAG_RUN_ID=run_id,TAG_PRODUCT_ID=product_id)
             mcp={'name':'product_workbench','command':sys.executable,'args':['-m','backend.mcp_server'],'env':[{'name':k,'value':v} for k,v in env.items()]}

@@ -134,17 +134,17 @@ def test_semantic_repair_expands_to_full_column_with_zero_model_estimate(dataset
     assert summary['rerun']==len(rows) and summary['estimated_requests']==0 and summary['preserved_success']==0
 
 
-def test_visual_tagging_is_disabled_by_default(dataset,monkeypatch):
-    monkeypatch.delenv('TAG_ENABLE_VISUAL_TAGGING',raising=False)
-    with pytest.raises(ValueError,match='暂未开放'):
+def test_visual_tagging_can_be_disabled_by_deployment(dataset,monkeypatch):
+    monkeypatch.setenv('TAG_DISABLE_VISUAL_TAGGING','1')
+    with pytest.raises(ValueError,match='当前部署已关闭'):
         add(dataset['id'],'visual',source='image')
 
 
 def test_beta_health_exposes_capabilities_and_has_no_online_update_route(monkeypatch):
     from fastapi.testclient import TestClient
     from backend.app import app
-    monkeypatch.delenv('TAG_ENABLE_VISUAL_TAGGING',raising=False)
+    monkeypatch.delenv('TAG_DISABLE_VISUAL_TAGGING',raising=False)
     with TestClient(app) as client:
         health=client.get('/api/health').json()
-        assert health['capabilities']=={'visual_tagging':False,'visual_tagging_status':'disabled_for_beta','online_updates':False}
+        assert health['capabilities']=={'visual_tagging':True,'visual_tagging_status':'available','online_updates':False}
         assert client.get('/api/updates').status_code==404

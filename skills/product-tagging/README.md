@@ -1,4 +1,4 @@
-# 商品标签工程 0.3.0
+# 商品标签工程 0.4.0
 
 主文件讲判断方法，references 是按需规范，examples 是明确标识的测试案例。工作台通过 backend/tagging_rules.py 读取唯一源，核心指令注入 Reasonix；read_tagging_rules 只读加载参考。不是依赖 CLI 自动发现的全局安装包，不修改用户其他项目配置。
 

@@ -134,8 +134,8 @@ if not RUN:
 
     if visual_tagging_enabled():
         @mcp.tool()
-        def inspect_representative_images(goal:str,limit:int=20) -> dict:
-            """Observe up to 20 deterministic representative product samples using the visual model. Records sample IDs, observations, failures and timings; does not change labels."""
+        def inspect_representative_images(goal:str,limit:int=24) -> dict:
+            """Compare up to 24 deterministic representative products in groups of six, using exactly one main image per product. Records sample IDs, observations, failures and timings; does not change labels."""
             from .worksheet_query import visual_overview
             return visual_overview(DATASET,goal,limit)
 
@@ -153,7 +153,7 @@ if not RUN:
 
     @mcp.tool()
     def propose_changes(title:str,changes:list[dict]) -> dict:
-        """Propose ONLY; no approval. Beta accepts text-source labels and deterministic derived columns. add/revise supplies definition and judgment; execute supplies explicit column IDs and scope. Image/both proposals are unavailable unless the internal visual research gate is enabled."""
+        """Propose ONLY; no approval. Beta accepts text, main-image and combined labels. add/revise supplies definition and judgment; execute supplies explicit column IDs and scope. Visual definitions must state observable boundaries and preserve unknown when the main image is insufficient."""
         return draft.propose(DATASET,title,changes)
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True,destructiveHint=False,openWorldHint=False))
