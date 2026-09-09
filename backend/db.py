@@ -195,7 +195,8 @@ class BatchJob(Record, Base):
 @event.listens_for(BatchJob, 'before_insert')
 def stamp_job_build(mapper, connection, target):
     from .build_info import build_info
-    target.spec = {**(target.spec or {}), 'application_build': build_info()}
+    from .execution_contract import snapshot,model_identities
+    target.spec = {**(target.spec or {}), 'application_build': build_info(), 'execution_contract': {**snapshot(),'models':model_identities(target.spec or {})}}
 
 class Snapshot(Record, Base):
     __tablename__ = 'draft_snapshot'

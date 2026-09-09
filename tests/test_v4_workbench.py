@@ -130,7 +130,7 @@ def test_visual_columns_share_observation_and_text_context(dataset,monkeypatch):
     monkeypatch.setattr(batch,'request_json',lambda m,msg,*a:{'results':[{'product_id':p['product_id'],'normalized_value':'2件套','evidence':'清晰可见'} for p in json.loads(msg[-1]['content'])]})
     p=draft.propose(did,'共同观察',[{'kind':'execute','column_ids':[a['id'],b['id']],'product_ids':[pid]}]);j=run(draft.confirm(did,p['id'])[0])
     assert j['status']=='completed' and len(calls)==1
-    assert calls[0][-1].get('sku') and j['metrics']['shared_visual_hits']==1
+    assert calls[0][6].get('sku') and j['metrics']['shared_visual_hits']==1
 
 def test_single_cardinality_preserves_conflicting_candidate_without_expansion(dataset):
     did=dataset['id'];c=add(did,cardinality='single',options=['圆领','方领']);pid=draft.sheet(did)['rows'][0]['id'];j=job(did,c,[pid])

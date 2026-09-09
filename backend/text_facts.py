@@ -18,8 +18,11 @@ def source_for(p):
         if h in p.raw:source[h]=p.raw[h]
     return source
 
-def fingerprint(source,model,rules):
-    return hashlib.sha256(json.dumps([source,model,rules['sha256']],ensure_ascii=False,sort_keys=True).encode()).hexdigest()
+def fingerprint(source,model,rules,prefix=None,identity=None):
+    from .execution_contract import TEXT_PREFIX,model_identity
+    prefix=TEXT_PREFIX if prefix is None else prefix
+    identity=model_identity(model) if identity is None else identity
+    return hashlib.sha256(json.dumps([source,model,rules['sha256'],prefix,identity],ensure_ascii=False,sort_keys=True).encode()).hexdigest()
 
 def emit_record(s,did,r):
     s.flush();draft.emit(s,did,'text_record',obj(r))
@@ -118,19 +121,24 @@ def execute(jid):
     with draft.WRITE_LOCK,Session.begin() as s:
         job=require(s,BatchJob,jid);spec=job.spec;did=job.dataset_id;done=set(job.completed)
         metrics.update(job.metrics);metrics['job_id']=jid;metrics['execution_attempts']=metrics.get('execution_attempts',0)+1;prior_wall=metrics.get('wall_seconds',0)
+        from .build_info import build_info
+        metrics['execution_build']=build_info()
         if not stop.is_set():job.status='running'
         draft.emit(s,did,'job',obj(job))
+    from .execution_contract import require_contract,check_models
+    contract=require_contract(spec)
+    check_models(spec)
     def save(pid,value,cached=False,error=None):
         ts=time.perf_counter()
         with draft.WRITE_LOCK,Session.begin() as s:
             j=require(s,BatchJob,jid);r=s.scalar(select(TextRecord).where(TextRecord.product_id==pid));p=require(s,Product,pid)
             expected=spec['expected'][pid]['fingerprint']
-            if r.provenance.get('pending_job_id',jid)!=jid or r.fingerprint!=expected or fingerprint(source_for(p),spec['text_model'],spec['rules'])!=expected:
+            if r.provenance.get('pending_job_id',jid)!=jid or r.fingerprint!=expected or fingerprint(source_for(p),spec['text_model'],spec['rules'],contract['text_prefix'],contract['models'].get('text_model'))!=expected:
                 raise ValueError('原文已改变，请重新提取')
             errors=dict(j.errors)
             if error:r.status='failed';r.error=str(error)[:400];errors[pid]=r.error
             else:
-                r.content=value;r.status='ready';r.error=None;r.provenance={**r.provenance,'job_id':jid,'cached':cached}
+                r.content=value;r.status='ready';r.error=None;r.provenance={**r.provenance,'job_id':jid,'cached':cached,'execution_build':build_info()}
                 errors.pop(pid,None);j.completed=list(set(j.completed+[pid]))
                 if not cached:
                     c=s.scalar(select(TextCache).where(TextCache.fingerprint==expected))
@@ -152,7 +160,7 @@ def execute(jid):
             n=len(pending)//2;group(pending[:n]);group(pending[n:]);return
         validation_errors={}
         try:
-            result=batch.request_json(spec['text_model'],[{'role':'system','content':tagging_rules.prompt(spec['rules'],['core','text','normalization'])+'\n这是上传后的文字底稿提取，不创建标签。返回JSON {"results":[{"product_id":"...","facts":[{"attribute":"中文属性","value":"中文标准值或null","raw_value":"原始值","state":"observed或conflict或unknown","reason":"简短原因","evidence":[{"field":"输入text中的字段名","quote":"逐字原文片段"}]}]}]}。每商品一项，所有证据片段必须逐字存在于对应字段。'}, {'role':'user','content':json.dumps(inputs,ensure_ascii=False)}],metrics,mlock)
+            result=batch.request_json(spec['text_model'],[{'role':'system','content':tagging_rules.prompt(spec['rules'],['core','text','normalization'])+contract['text_prefix']}, {'role':'user','content':json.dumps(inputs,ensure_ascii=False)}],metrics,mlock)
             for value in batch.result_items(result):
                 pid=value.get('product_id')
                 if pid not in pending:continue

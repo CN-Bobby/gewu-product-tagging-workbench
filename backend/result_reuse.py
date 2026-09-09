@@ -16,7 +16,8 @@ def pixels(path):
 
 def fingerprint(product,column,spec,entry,vision_requirements):
     from .vision import provider_config
-    from .batch import VISION_RULES
+    from .execution_contract import require_contract
+    execution=require_contract(spec)
     definition=copy.deepcopy(column['definition'])
     # Dependency identities differ between months; compare their definitions and frozen values.
     deps=spec['expected'][product['id']+':'+column['id']].get('dependencies',{})
@@ -33,13 +34,13 @@ def fingerprint(product,column,spec,entry,vision_requirements):
     inputs['upstream']={names[cid]:{k:v for k,v in dep.items() if k in ('value','status')} for cid,dep in deps.items()}
     contract={'version':1,'definition':definition,'inputs':inputs,
               'text_model':[spec['text_model'],text_endpoint,text_model],
-              'fill_prompt':'frozen-definition-json-results-v1'}
+              'fill_prompt':execution['fill_prefix']}
     if definition['source'] in ('image','both'):
         endpoint,_,model=provider_config(spec['vision_model'])
         assets=[a for a in product['assets'] if a.get('path')]
         if not assets:raise ValueError('没有完整图片输入，不复用')
         contract.update(images=[pixels(a['path']) for a in assets],vision_model=[spec['vision_model'],endpoint,model],
-                        vision_prompt=VISION_RULES,vision_requirements=vision_requirements)
+                        vision_prompt=execution['vision_rules'],vision_requirements=vision_requirements)
     return digest(contract)
 
 
