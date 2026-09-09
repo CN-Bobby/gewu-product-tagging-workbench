@@ -1,5 +1,5 @@
 """Offline local rollback; preserves current state before restoring an upgrade backup."""
-import argparse,json,shutil,sqlite3,sys,uuid
+import argparse,json,shutil,sqlite3,sys,time,uuid
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from backend.storage_lock import exclusive_storage
@@ -7,6 +7,15 @@ from backend.storage_lock import exclusive_storage
 
 def sqlite_copy(source,target):
     with sqlite3.connect(source) as src,sqlite3.connect(target) as dst:src.backup(dst)
+
+
+def rename_after_release(source,target):
+    """Windows may release a stopped Reasonix session directory moments after its process exits."""
+    for attempt in range(40):
+        try:return source.rename(target)
+        except PermissionError:
+            if attempt==39:raise
+            time.sleep(.25)
 
 
 def restore(data,backup):
@@ -32,14 +41,14 @@ def restore(data,backup):
         for path in (current,retained,staged):path.resolve().relative_to(data)
         moved=False;installed=False
         try:
-            if current.exists():current.rename(retained);moved=True
-            staged.rename(current);installed=True
+            if current.exists():rename_after_release(current,retained);moved=True
+            rename_after_release(staged,current);installed=True
             sqlite_copy(backup/'workbench.db',data/'workbench.db')
             shutil.copy2(backup/'installed-build.json',data/'installed-build.json')
         except Exception:
             sqlite_copy(safety/'workbench.db',data/'workbench.db')
-            if installed:current.rename(safety/'failed-restored-datasets')
-            if moved:retained.rename(current)
+            if installed:rename_after_release(current,safety/'failed-restored-datasets')
+            if moved:rename_after_release(retained,current)
             if (safety/'installed-build.json').exists():shutil.copy2(safety/'installed-build.json',data/'installed-build.json')
             raise
         result={'restored_commit':old.get('commit'),'backup':str(backup),'preserved_current':str(safety),

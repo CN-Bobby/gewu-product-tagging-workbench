@@ -38,3 +38,4 @@ def test_desktop_launcher_keeps_runtime_cache_out_of_install_directory():
     root=Path(__file__).resolve().parents[1]
     source=(root/'scripts'/'DesktopLauncher.cs').read_text(encoding='utf-8')
     assert 'start.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"]="1"' in source
+    assert '!Occupied(port)&&StorageReleased(data)' in source

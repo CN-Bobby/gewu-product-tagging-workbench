@@ -24,3 +24,19 @@ def test_offline_restore_retains_current_and_rejects_running(tmp_path):
     with sqlite3.connect(tmp_path/'workbench.db') as db:assert db.execute('select value from sample').fetchone()[0]=='old'
     with sqlite3.connect(safety/'workbench.db') as db:assert db.execute('select value from sample').fetchone()[0]=='new'
     assert (tmp_path/'original.xlsx').read_bytes()==b'preserve raw input'
+
+
+def test_offline_restore_retries_transient_windows_directory_release(tmp_path,monkeypatch):
+    backup=tmp_path/'backups/upgrade-test';backup.mkdir(parents=True)
+    for root,value in [(tmp_path,'new'),(backup,'old')]:
+        with sqlite3.connect(root/'workbench.db') as db:db.execute('create table sample(value text)')
+        (root/'installed-build.json').write_text(json.dumps({'commit':value}))
+        (root/'datasets').mkdir();(root/'datasets/session.json').write_text(value)
+    original=Path.rename;failed={'value':False}
+    def transient(path,target):
+        if path.name=='restored-datasets' and not failed['value']:
+            failed['value']=True;raise PermissionError('session directory still closing')
+        return original(path,target)
+    monkeypatch.setattr(Path,'rename',transient);monkeypatch.setattr(module.time,'sleep',lambda _:None)
+    module.restore(tmp_path,backup)
+    assert failed['value'] and (tmp_path/'datasets/session.json').read_text()=='old'

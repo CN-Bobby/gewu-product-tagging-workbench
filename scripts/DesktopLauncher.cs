@@ -20,6 +20,7 @@ class DesktopLauncher {
  }
  static bool Same(Dictionary<string,object> h,string data) { return h!=null&&h.ContainsKey("application")&&(string)h["application"]=="product-tagging-workbench"&&h.ContainsKey("storage")&&String.Equals(Path.GetFullPath((string)h["storage"]),data,StringComparison.OrdinalIgnoreCase); }
  static bool Occupied(int port) { try { var l=new System.Net.Sockets.TcpListener(IPAddress.Loopback,port);l.Start();l.Stop();return false; } catch { return true; } }
+ static bool StorageReleased(string data) { try { string path=Path.Combine(data,"runtime.lock");using(var f=new FileStream(path,FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.ReadWrite)){if(f.Length==0){f.WriteByte(0);f.Flush();}f.Lock(0,1);f.Unlock(0,1);}return true;} catch(IOException){return false;} catch(UnauthorizedAccessException){return false;} }
  static int Run(string[] args) {
   var json=new JavaScriptSerializer();string root=AppDomain.CurrentDomain.BaseDirectory;
   string settingsDir=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"GeWuWorkbench");
@@ -56,7 +57,7 @@ class DesktopLauncher {
     if(stopping) {
      if(Same(health,data)){
       var r=(HttpWebRequest)WebRequest.Create("http://127.0.0.1:"+port+"/api/server/stop");r.Method="POST";r.ContentLength=0;r.Timeout=5000;using(var response=r.GetResponse()){}
-      for(int i=0;i<60;i++){Thread.Sleep(500);if(!Occupied(port))return 0;}
+      for(int i=0;i<60;i++){Thread.Sleep(500);if(!Occupied(port)&&StorageReleased(data))return 0;}
       throw new Exception("工作台尚未停止，暂不能卸载或切换版本。请等待任务保存后重试。");
      }return 0;
     }
