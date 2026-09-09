@@ -41,7 +41,7 @@ if __name__=='__main__':
             result['first_extraction']=wait(imported['text_job_id'])
             records=text_facts.records(did);assert len(records)==10 and all(r['status']=='ready' for r in records)
             for record in records:text_facts.validate(record['content'],record['source'])
-            col=add(did,{'key':'pieces','name':'套装件数','type':'FACT','source':'text','definition':'根据SKU、详细信息与商品标题明确的套装件数判断。2pcs/2-piece/Two Piece为2件套，3pcs/Three Piece为3件套；年龄尺寸不是件数。来源冲突或未知则null。','options':['2件套','3件套'],'fields':['sku','parameters','title'],'judgment':{'synonyms':{'Two Piece':'2件套','2pcs':'2件套','Three Piece':'3件套'}}})
+            col=add(did,{'key':'pieces','name':'套装件数','type':'FACT','source':'text','result_shape':'scalar_enum','definition':'根据SKU、详细信息与商品标题明确的套装件数判断。2pcs/2-piece/Two Piece为2件套，3pcs/Three Piece为3件套；年龄尺寸不是件数。来源冲突或未知则null。','options':['2件套','3件套'],'fields':['sku','parameters','title'],'judgment':{'synonyms':{'Two Piece':'2件套','2pcs':'2件套','Three Piece':'3件套'}}})
             result['first_tagging']=execute(did,col);result['repeat_tagging']=execute(did,col)
             assert result['first_tagging']['metrics']['vision_requests']==0 and result['first_tagging']['metrics']['text_record_hits']==10
             result['values']=[{'asin':r['anchor'],'value':r['cells'][col['id']]['value'],'status':r['cells'][col['id']]['status']} for r in draft.sheet(did)['rows']]
@@ -68,7 +68,7 @@ if __name__=='__main__':
             sheet.append(['SYNTHETIC-C','FL-BK-2','Two Piece swimsuit','共3件；SKU缩写无字典'])
             buf=io.BytesIO();wb.save(buf)
             syn=client.post('/api/import',files={'file':('明确标识的合成验收.xlsx',buf.getvalue())}).json();result['synthetic_dataset_id']=syn['id'];result['synthetic_extraction']=wait(syn['text_job_id'])
-            pattern=add(syn['id'],{'key':'pattern','name':'图案','type':'FACT','source':'text','definition':'识别文字明确出现的所有图案，多个同时存在返回完整命中集合和逐属性证据。可能A或B是未知，没提到不是否定。','options':['花卉','条纹','波点']})
+            pattern=add(syn['id'],{'key':'pattern','name':'图案','type':'FACT','source':'text','result_shape':'multi_enum','cardinality':'multiple','definition':'识别文字明确出现的所有图案，多个同时存在返回完整命中集合和逐属性证据。可能A或B是未知，没提到不是否定。','options':['花卉','条纹','波点']})
             result['synthetic_tagging']=execute(syn['id'],pattern)
             synsheet=draft.sheet(syn['id']);assert set(synsheet['rows'][0]['cells'][pattern['id']]['value'])=={'花卉','条纹'}
             assert synsheet['rows'][1]['cells'][pattern['id']]['value'] is None

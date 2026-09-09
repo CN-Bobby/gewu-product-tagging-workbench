@@ -2,7 +2,7 @@
 import re
 
 def validate(parser):
-    if not isinstance(parser,dict) or parser.get('operation') not in ('size_age','split','mapping'):raise ValueError('文字规则operation需为size_age/split/mapping')
+    if not isinstance(parser,dict) or parser.get('operation') not in ('size_age','size_value','split','mapping'):raise ValueError('文字规则operation需为size_age/size_value/split/mapping')
     if not isinstance(parser.get('field'),str):raise ValueError('文字规则需要来源字段')
     if parser['operation']=='size_age':
         if not isinstance(parser.get('bins'),list) or not parser['bins']:raise ValueError('年龄分档需明确bins')
@@ -15,6 +15,12 @@ def validate(parser):
             last=high
     return parser
 
+def extract_size(text):
+    match=re.search(r'(?:Size|尺码)\s*[:：]\s*([^|;；,，]+)',text,re.I)
+    part=match[1].strip() if match else text.strip()
+    size=re.fullmatch(r'(\d{1,2})(?:\s*[-–~至]\s*(\d{1,2}))?\s*(?:Years?|Y|T|岁)?',part,re.I)
+    return (int(size[2] or size[1]),part) if size else (None,part)
+
 def apply(parser,fields):
     raw=fields.get(parser['field']);value=None;reason=''
     if isinstance(raw,(dict,list)):return {'normalized_value':None,'raw_value':raw,'evidence':'来源包含多个值，请确认处理口径'}
@@ -24,9 +30,9 @@ def apply(parser,fields):
         parts=text.split(parser.get('separator','|'));index=parser.get('index',0)
         if isinstance(index,int) and -len(parts)<=index<len(parts):value=parts[index].strip()
     else:
-        match=re.search(r'(?:Size|尺码)\s*[:：]\s*([^|;；]+)',text,re.I);part=match[1].strip() if match else text
-        size=re.fullmatch(r'(\d{1,2})(?:\s*[-–~至]\s*(\d{1,2}))?\s*(?:Years?|Y|T|岁)?',part,re.I)
-        if size:
-            age=int(size[2] or size[1]);value=next((b['value'] for b in parser['bins'] if (b.get('min') is None or age>=b['min']) and (b.get('max') is None or age<b['max'])),None);reason=f'提取{part}，按已确认规则取上界{age}'
+        age,part=extract_size(text)
+        if age is not None:
+            value=str(age) if op=='size_value' else next((b['value'] for b in parser['bins'] if (b.get('min') is None or age>=b['min']) and (b.get('max') is None or age<b['max'])),None)
+            reason=f'提取{part}，按已确认规则取上界{age}'
         else:value=parser.get('unknown');reason='字母码、缺失或复杂尺码，使用已确认未知策略'
     return {'normalized_value':value,'raw_value':raw,'evidence':reason or '按已确认文字规则计算','method':'text_rule'}

@@ -15,6 +15,6 @@
 |回退|离线恢复工具保留新状态后恢复旧数据库与会话，打开对应旧程序，核对原会话ID|待验收|
 |缓存|记录分类占用，清理仅移除可重建缓存，原表/图/结果/会话仍在|待验收|
 |卸载|服务停止后卸载；程序文件移除，数据与会话留存；服务无法停止时卸载中止|待验收|
-|更新|实际HTTPS清单可访问，版本比较正确；无网络时明确失败，无假更新成功|待验收|
+|离线升级|使用新安装包升级；页面不出现在线更新入口，数据与旧版本目录均保留|待验收|
 
-每个通过项目必须附真实日志或截图文件及SHA256。发布证据JSON绑定相同commit/version，gates包含automated、browser、real_model、performance、clean_windows、install、upgrade、rollback、update_manifest；每项有status、artifact与sha256。scripts/check_release.py会拒绝缺失、其他构建或校验不符的证据。
+每个通过项目必须附真实日志或截图文件及SHA256。发布证据JSON绑定相同commit/version，gates包含automated、browser、real_model、performance、clean_windows、install、upgrade、rollback；每项有status、artifact与sha256。scripts/check_release.py会拒绝缺失、其他构建或校验不符的证据。

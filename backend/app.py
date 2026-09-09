@@ -13,7 +13,7 @@ from . import importer, service, jobs, harness
 from .exporter import export_run
 from . import draft,batch,conversation,draft_export,text_facts
 from . import field_catalog,worksheet_query,task_control
-from . import knowledge,templates,storage_management,model_settings,release_updates
+from . import knowledge,templates,storage_management,model_settings,capabilities
 from .build_info import VERSION, build_info
 
 @asynccontextmanager
@@ -45,7 +45,7 @@ async def value_error(request,e):return JSONResponse({'detail':str(e)},status_co
 async def validation_error(request,e):return JSONResponse({'detail':str(e)},status_code=422)
 
 @app.get('/api/health')
-def health():return {'status':'ok','application':'product-tagging-workbench','storage':str(STORAGE),**build_info()}
+def health():return {'status':'ok','application':'product-tagging-workbench','storage':str(STORAGE),'capabilities':capabilities.public(),**build_info()}
 
 @app.get('/api/settings/models')
 def settings_models():return {**model_settings.read(),'defaults':model_settings.defaults()}
@@ -55,9 +55,6 @@ def settings_models_save(body:dict):return model_settings.save(body)
 
 @app.get('/api/storage')
 def storage_usage():return storage_management.usage()
-
-@app.get('/api/updates')
-def update_status():return release_updates.check()
 
 @app.post('/api/storage/clear-cache')
 def cache_clear():return storage_management.clear()
@@ -88,7 +85,9 @@ def dataset_runtime(did:str):
                 'state_directory':str(STORAGE/'datasets'/did/'reasonix')}
 
 @app.post('/api/drafts/{did}/profile/observe')
-def data_observe(did:str,body:dict):return worksheet_query.visual_overview(did,body.get('goal',''),body.get('limit',20))
+def data_observe(did:str,body:dict):
+    capabilities.require_visual_tagging()
+    return worksheet_query.visual_overview(did,body.get('goal',''),body.get('limit',20))
 
 @app.get('/api/drafts/{did}/knowledge')
 def knowledge_read(did:str):return knowledge.read(did)
@@ -103,7 +102,16 @@ def knowledge_review(did:str,ident:str,body:dict):return knowledge.review(did,id
 def job_detail(jid:str):return task_control.detail(jid)
 
 @app.post('/api/drafts/{did}/jobs/{jid}/repair')
-def job_repair(did:str,jid:str,body:dict):return task_control.repair(did,jid,body.get('tokens'),body.get('definitions'),body.get('refresh_images',False))
+def job_repair(did:str,jid:str,body:dict):return task_control.repair(did,jid,body.get('tokens'),body.get('definitions'),body.get('refresh_images',False),body.get('repair_scope_id'))
+
+@app.post('/api/drafts/{did}/repair-scopes')
+def repair_scope_create(did:str,body:dict):return task_control.create_repair_scope(did,body.get('job_ids'),body.get('tokens'))
+
+@app.get('/api/drafts/{did}/repair-scopes/{rid}')
+def repair_scope_read(did:str,rid:str):return task_control.get_repair_scope(did,rid)
+
+@app.post('/api/drafts/{did}/repair-scopes/{rid}/propose')
+def repair_scope_propose(did:str,rid:str,body:dict):return task_control.repair(did,definitions=body.get('definitions'),refresh_images=body.get('refresh_images',False),repair_scope_id=rid)
 
 @app.post('/api/drafts/{did}/jobs/{jid}/disposition')
 def job_disposition(did:str,jid:str,body:dict):return task_control.disposition(did,jid,body['action'])

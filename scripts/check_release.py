@@ -20,7 +20,7 @@ if not args.evidence or not args.evidence.is_file():errors.append('current-commi
 else:
     evidence=json.loads(args.evidence.read_text(encoding='utf-8'))
     if evidence.get('commit')!=commit or evidence.get('version')!=v['version']:errors.append('release evidence belongs to another build')
-    for gate in ('automated','browser','real_model','performance','clean_windows','install','upgrade','rollback','update_manifest'):
+    for gate in ('automated','browser','real_model','performance','clean_windows','install','upgrade','rollback'):
         item=evidence.get('gates',{}).get(gate,{})
         if item.get('status')!='passed' or not item.get('artifact'):errors.append(gate+' evidence is not passed')
         else:

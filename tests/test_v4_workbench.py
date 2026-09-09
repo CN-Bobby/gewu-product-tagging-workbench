@@ -71,7 +71,7 @@ def test_empty_selection_and_facet_counts(dataset):
 
 def test_sparse_repair_keeps_exact_cells_and_manual(dataset):
     did=dataset['id'];a=add(did);b=add(did,key='other');rows=draft.sheet(did)['rows'];pids=[r['id'] for r in rows[:2]]
-    p=draft.propose(did,'两列',[{'kind':'execute','column_ids':[a['id'],b['id']],'product_ids':pids}]);j=draft.confirm(did,p['id'])[0]
+    p=draft.propose(did,'两列',[{'kind':'execute','targets':[{'column_id':a['id'],'product_ids':pids},{'column_id':b['id'],'product_ids':pids}]}]);j=draft.confirm(did,p['id'])[0]
     with Session.begin() as s:
         saved=require(s,BatchJob,j['id']);saved.status='partial';saved.errors={t:'格式错误' for t in saved.spec['expected']}
     tokens=[pids[0]+':'+a['id'],pids[1]+':'+b['id']]
@@ -124,11 +124,12 @@ def test_mapping_removal_and_extra_details_stale(dataset):
     assert data['rows'][0]['raw']==raw and data['rows'][0]['cells'][c['id']]['status']=='stale'
 
 def test_visual_columns_share_observation_and_text_context(dataset,monkeypatch):
+    monkeypatch.setenv('TAG_ENABLE_VISUAL_TAGGING','1')
     did=dataset['id'];a=add(did,source='both',fields=['sku']);b=add(did,key='pattern',source='image');pid=draft.sheet(did)['rows'][0]['id'];calls=[]
     def observe(*args):calls.append(args);return {'observation':'上衣前领口圆弧，下装纯色','asset_id':args[0]['id']}
     monkeypatch.setattr(batch,'observation',observe)
     monkeypatch.setattr(batch,'request_json',lambda m,msg,*a:{'results':[{'product_id':p['product_id'],'normalized_value':'2件套','evidence':'清晰可见'} for p in json.loads(msg[-1]['content'])]})
-    p=draft.propose(did,'共同观察',[{'kind':'execute','column_ids':[a['id'],b['id']],'product_ids':[pid]}]);j=run(draft.confirm(did,p['id'])[0])
+    p=draft.propose(did,'共同观察',[{'kind':'execute','targets':[{'column_id':a['id'],'product_ids':[pid]},{'column_id':b['id'],'product_ids':[pid]}]}]);j=run(draft.confirm(did,p['id'])[0])
     assert j['status']=='completed' and len(calls)==1
     assert calls[0][6].get('sku') and j['metrics']['shared_visual_hits']==1
 

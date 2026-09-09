@@ -54,21 +54,27 @@ SYSTEM='''你是商品打标工作台的持续对话协调员。默认用中文�
 新增列 kind=add，修改列 kind=revise 并提供 column_id；definition 包含 key/name/type/definition/options/source(text/image/both)。
 纯文字能确认的标签如套装件数使用 source=text，可用 fields 指定所需字段。只有必要时才重新看图。
 聚合使用 method=mapping、depends_on=[上游column_id]、mapping={原值:中文新值}；数值区间用 method=bins、bins=[{min:含下界,max:不含上界,value:中文}]。映射由程序计算，不调用模型。
-执行用 kind=execute,column_ids,product_ids,overwrite=false,refresh_images=false。新增与执行应组成一份提案：changes先add再execute，execute使用column_ids=["$新列key"]引用。省略product_ids表示全量；局部范围先query_scope生成scope_id。一次人工确认完成建列与执行。不要直接逐商品调用视觉或填表，批处理由应用直接请求模型。
+执行用 kind=execute,targets=[{column_id,product_ids}]；每一列必须明确自己的商品范围。新增与执行应组成一份提案：changes先add再execute，target.column_id使用"$新列key"引用。普通筛选先query_scope；失败修复必须使用propose_failed_repair生成服务器冻结的精确范围。一次人工确认完成建列与执行。不要直接逐商品调用视觉或填表，批处理由应用直接请求模型。
 修正用 kind=correct,column_id,product_ids,value。每个提案简要说明影响列、商品范围、是否重新看图、是否覆盖结果。
 不要调用CLI ask工具，所有澄清直接用普通中文回复，在网页同一对话里等待用户。读取字段用read_fields，条件圈选用query_scope；不能要求用户收集内部ID。执行范围与可见列无关。未知实际请求次数/成本不能承诺一次识图或零增量成本；先read_tasks再报告进度，不猜测不存在的界面操作。
 产品术语或品类建议需要外部依据时，使用research_knowledge实际查询并引用返回的来源；已确认资料用read_knowledge。知识只能指导关注点，不能补造本行事实。需要图片概览时inspect_representative_images按当前目标看代表样本，明确覆盖数量和失败。不把文字取样称为全量识图。\n用户确定满意时自行保存V1/V2；不能把每轮讨论称为正式版本。回答简洁清楚，不输出隐藏推理。
 '''
+
+def system_prompt():
+    from .capabilities import visual_tagging_enabled
+    if visual_tagging_enabled():return SYSTEM
+    return SYSTEM+'\n当前0.5.0-beta.1关闭自动视觉观察和image/both标签提案。只提出source=text或程序映射标签；可以读取图片是否存在，但不能声称已观察图片像素。高清原图由用户在网页人工核对。'
 
 def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_MODEL):
     path=STORAGE/'harness'/dataset_id/suffix
     path.mkdir(parents=True,exist_ok=True)
     from . import tagging_rules
     bundle=tagging_rules.freeze()
-    (path/'PRODUCT_ANALYST_AGENT.md').write_text(LEGACY_SYSTEM if suffix!='chat' else SYSTEM+'\n\n'+tagging_rules.read('core')+'\n可用只读 read_tagging_rules(topic=core/text/attributes/normalization/tools/output)。先按主题读取细则；read_worksheet 含文字底稿。判断规则通过 definition.judgment 传递。拆列使用 kind=expand,column_id,attributes。当前Skill版本 '+bundle['version']+' SHA256 '+bundle['sha256'],encoding='utf-8')
+    (path/'PRODUCT_ANALYST_AGENT.md').write_text(LEGACY_SYSTEM if suffix!='chat' else system_prompt()+'\n\n'+tagging_rules.read('core')+'\n可用只读 read_tagging_rules(topic=core/text/attributes/normalization/tools/output)。先按主题读取细则；read_worksheet 含文字底稿。判断规则通过 definition.judgment 传递。拆列使用 kind=expand,column_id,attributes。当前Skill版本 '+bundle['version']+' SHA256 '+bundle['sha256'],encoding='utf-8')
     # Project-scoped config only. Provider credentials and user configuration remain owned by Reasonix.
     from .runtime_isolation import provider_home
     environment={'PYTHONPATH':str(ROOT),'TAG_STORAGE':str(STORAGE),'TAG_PROVIDER_HOME':str(provider_home()),'TAG_DATASET_ID':dataset_id,'PYTHONIOENCODING':'utf-8','TAG_VISION_MODEL':vision_model,'TAG_MCP_PROTOCOL':'draft-v3-skill-'+bundle['sha256'][:12]}
+    environment['TAG_ENABLE_VISUAL_TAGGING']=os.environ.get('TAG_ENABLE_VISUAL_TAGGING','0')
     if os.environ.get('TAG_CACHE'):environment['TAG_CACHE']=os.environ['TAG_CACHE']
     if suffix!='chat':environment.update(TAG_RUN_ID=suffix,TAG_PRODUCT_ID=product_id)
     if 'DATABASE_URL' in os.environ:environment['DATABASE_URL']=os.environ['DATABASE_URL']
@@ -76,7 +82,10 @@ def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_M
     other_plugins=[]
     global_config=Path(os.environ.get('APPDATA',str(Path.home()/'.config')))/'reasonix'/'config.toml'
     if global_config.exists():other_plugins=[p['name'] for p in tomllib.loads(global_config.read_text(encoding='utf-8-sig')).get('plugins',[]) if p.get('name')!='product_workbench']
-    allowed=['mcp_connect__product_workbench']+['mcp__product_workbench__'+n for n in ('read_worksheet','read_product_source','read_tasks','propose_changes','read_tagging_rules','read_fields','query_scope','read_profile','research_knowledge','read_knowledge','inspect_representative_images')]
+    names=['read_worksheet','read_product_source','read_tasks','propose_changes','read_tagging_rules','read_fields','query_scope','read_profile','research_knowledge','read_knowledge']
+    from .capabilities import visual_tagging_enabled
+    if visual_tagging_enabled():names.append('inspect_representative_images')
+    allowed=['mcp_connect__product_workbench']+['mcp__product_workbench__'+n for n in names]
     denied=['bash','write','edit','task','parallel_tasks','fleet']+['mcp_connect__'+n for n in other_plugins]
     plugin=plugin.replace('auto_start = true','auto_start = true\ntier = "eager"')
     (path/'reasonix.toml').write_text('''[agent]
@@ -93,7 +102,7 @@ mode = "deny"
 
 def instruction_hash():
     from . import tagging_rules
-    return hashlib.sha256((SYSTEM+tagging_rules.freeze()['sha256']).encode()).hexdigest()
+    return hashlib.sha256((system_prompt()+tagging_rules.freeze()['sha256']).encode()).hexdigest()
 
 class ACP:
     def __init__(self,dataset_id,model=DEFAULT_MODEL,run_id=None,product_id=None,on_event=None,session_id=None):
@@ -111,7 +120,7 @@ class ACP:
         try:
             from .build_info import VERSION
             self.capabilities=self.rpc('initialize',{'protocolVersion':1,'clientCapabilities':{},'clientInfo':{'name':'product-workbench','version':VERSION}},timeout=60)
-            env={'PYTHONPATH':str(ROOT),'TAG_STORAGE':str(STORAGE),'TAG_DATASET_ID':dataset_id,'PYTHONIOENCODING':'utf-8'}
+            env={'PYTHONPATH':str(ROOT),'TAG_STORAGE':str(STORAGE),'TAG_DATASET_ID':dataset_id,'PYTHONIOENCODING':'utf-8','TAG_ENABLE_VISUAL_TAGGING':os.environ.get('TAG_ENABLE_VISUAL_TAGGING','0')}
             if 'DATABASE_URL' in os.environ:env['DATABASE_URL']=os.environ['DATABASE_URL']
             if run_id:env.update(TAG_RUN_ID=run_id,TAG_PRODUCT_ID=product_id)
             mcp={'name':'product_workbench','command':sys.executable,'args':['-m','backend.mcp_server'],'env':[{'name':k,'value':v} for k,v in env.items()]}

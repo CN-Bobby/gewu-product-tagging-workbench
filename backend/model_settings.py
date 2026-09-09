@@ -30,7 +30,7 @@ def save(body):
     if not re.fullmatch(r'[a-zA-Z0-9_-]{1,60}',name):raise ValueError('服务名称仅使用英文、数字、下划线或短横线')
     url=urlparse(base)
     if url.scheme!='https' or not url.netloc or url.username or url.password or url.query or url.fragment:raise ValueError('模型地址需为不含授权信息的HTTPS地址')
-    if not isinstance(models,list) or not models or any(not isinstance(m,str) or not m.strip() for m in models):raise ValueError('请填写文本及视觉模型名称')
+    if not isinstance(models,list) or not models or any(not isinstance(m,str) or not m.strip() for m in models):raise ValueError('请填写模型名称')
     home=provider_home();home.mkdir(parents=True,exist_ok=True);path=home/'config.toml'
     config=tomllib.loads(path.read_text(encoding='utf-8-sig')) if path.exists() else {}
     key_name='WORKBENCH_'+name.upper().replace('-','_')+'_KEY';secret=body.get('api_key','')

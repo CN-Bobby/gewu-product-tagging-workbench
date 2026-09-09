@@ -91,7 +91,8 @@ def confirm(did,fields,revision):
         for p in s.scalars(select(Product).where(Product.dataset_id==did)):
             previous=dict(p.fields);updated={k:v for k,v in p.fields.items() if k not in ROLES}
             updated.update({k:p.raw.get(h) for k,h in mapping.items()});p.fields=updated
-            p.anchor=str(updated.get('asin') or updated.get('sku') or updated.get('parent_asin') or f'ROW-{p.row}')
+            from .identity import choose
+            p.anchor,p.identity_source=choose(updated,p.row)
             changed={k for k in set(previous)|set(updated) if previous.get(k)!=updated.get(k)}|changed_roles
             if changed:
                 r=s.scalar(select(TextRecord).where(TextRecord.product_id==p.id))

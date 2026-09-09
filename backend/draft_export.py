@@ -26,7 +26,7 @@ def export(did,selected,version=None):
             name+=f'（原规则{legacy}）' if legacy else f'（草稿列{index+1}）'
         names[c['id']]=name
     ws.append(headers+[names[c] for c in selected])
-    detail=wb.create_sheet('AI_Detail');detail.append(['ASIN','原始行','标签','状态','原始观察','标准值','人工修正','证据与来源','定义修订','冲突候选'])
+    detail=wb.create_sheet('AI_Detail');detail.append(['商品标识','标识来源','原始行','标签','状态','原始观察','标准值','人工修正','证据与来源','定义修订','冲突候选'])
     dictionary=wb.create_sheet('Tag_Dictionary');dictionary.append(['标签','稳定ID','修订','定义','候选值','处理方式','依赖列','映射／区间','版本','类别ID','具体属性','判断规则','Skill版本','Skill摘要'])
     import json
     for cid in selected:
@@ -41,7 +41,7 @@ def export(did,selected,version=None):
             if cols[cid]['definition'].get('attribute'):
                 values.append('✓' if value is True and status=='ready' else '❌' if value is False and status=='ready' else None)
             else:values.append(safe(value) if status=='ready' else f'【{STATUS.get(status,status)}】'+(str(value) if value is not None else ''))
-            detail.append([row['anchor'],row['row'],names[cid],STATUS.get(status,status),safe(cell.get('raw_value')),safe(value),safe(cell.get('manual')),safe(cell.get('evidence')),cell.get('revision'),safe(cell.get('conflict'))])
+            detail.append([row['anchor'],row.get('identity_source'),row['row'],names[cid],STATUS.get(status,status),safe(cell.get('raw_value')),safe(value),safe(cell.get('manual')),safe(cell.get('evidence')),cell.get('revision'),safe(cell.get('conflict'))])
         ws.append(values);ws.row_dimensions[index].height=78
         for offset,cid in enumerate(selected,len(headers)+1):
             status=row['cells'].get(cid,{}).get('status','pending')

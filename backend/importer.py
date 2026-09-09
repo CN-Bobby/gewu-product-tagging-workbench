@@ -13,6 +13,7 @@ import openpyxl
 from PIL import Image
 from sqlalchemy import select, func
 from .db import Session, Dataset, Product, Asset, Workspace, STORAGE, uid, obj, audit, require
+from .identity import choose
 
 ALIASES = {
  'asin': ['ASIN', 'asin', 'ASIN码'], 'sku': ['SKU', 'sku'],
@@ -84,8 +85,8 @@ def parse(data, sheet=None):
             if header:
                 cell = row[headers.index(header)]
                 fields[key] = clean(cached[ws.title][cell.coordinate].value) if cell.data_type == 'f' else raw[header]
-        anchor = str(fields.get('asin') or fields.get('sku') or f'ROW-{row[0].row}')
-        rows.append({'row': row[0].row, 'anchor':anchor, 'raw':raw, 'fields':fields, 'images':images})
+        anchor,identity_source=choose(fields,row[0].row)
+        rows.append({'row': row[0].row, 'anchor':anchor, 'identity_source':identity_source, 'raw':raw, 'fields':fields, 'images':images})
     if not rows: raise ValueError('工作表中没有商品数据')
     dupes = [k for k,v in Counter(r['anchor'] for r in rows).items() if v > 1]
     if dupes: warnings.append(f'存在重复商品标识，保留独立行：{", ".join(dupes[:10])}')
@@ -97,7 +98,7 @@ def parse(data, sheet=None):
     for r in rows:
         for key,h in mapping.items():
             if h and key not in r['fields']:r['fields'][key]=r['raw'].get(h)
-        r['anchor']=str(r['fields'].get('asin') or r['fields'].get('sku') or r['fields'].get('parent_asin') or f"ROW-{r['row']}")
+        r['anchor'],r['identity_source']=choose(r['fields'],r['row'])
     return {'sheets':book.sheetnames, 'sheet':ws.title, 'headers':headers, 'mapping':mapping, 'rows':rows, 'warnings':warnings}
 
 def inspect(data, sheet=None):
@@ -111,7 +112,7 @@ def import_file(data, filename, sheet=None, workspace_id=None, mapping=None):
         p['mapping'].update(mapping)
         for row in p['rows']:
             for key, header in mapping.items(): row['fields'][key] = row['raw'].get(header) if header else None
-            row['anchor'] = str(row['fields'].get('asin') or row['fields'].get('sku') or f"ROW-{row['row']}")
+            row['anchor'],row['identity_source'] = choose(row['fields'],row['row'])
     ident = uid()
     original = STORAGE / 'originals' / f'{ident}.xlsx'
     original.parent.mkdir(exist_ok=True)
@@ -122,10 +123,10 @@ def import_file(data, filename, sheet=None, workspace_id=None, mapping=None):
             workspace = Workspace(name=Path(filename).stem)
             s.add(workspace); s.flush()
         version = (s.scalar(select(func.max(Dataset.version)).where(Dataset.workspace_id==workspace.id)) or 0)+1
-        dataset = Dataset(id=ident, workspace_id=workspace.id, name=Path(filename).stem, version=version, original_file=str(original), sha256=hashlib.sha256(data).hexdigest(), sheet=p['sheet'], headers=p['headers'], mapping=p['mapping'], warnings=p['warnings'])
+        dataset = Dataset(id=ident, workspace_id=workspace.id, name=Path(filename).stem, version=version, original_file=str(original), source_filename=Path(filename).name, sha256=hashlib.sha256(data).hexdigest(), sheet=p['sheet'], headers=p['headers'], mapping=p['mapping'], warnings=p['warnings'])
         s.add(dataset); s.flush()
         for row in p['rows']:
-            product = Product(dataset_id=ident, **{k:row[k] for k in ['row','anchor','raw','fields']})
+            product = Product(dataset_id=ident, **{k:row[k] for k in ['row','anchor','identity_source','raw','fields']})
             s.add(product); s.flush()
             seen=set()
             for data_image in row['images']:

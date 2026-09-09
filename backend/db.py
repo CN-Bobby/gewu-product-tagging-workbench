@@ -3,7 +3,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from sqlalchemy import create_engine, Column, String, Integer, JSON, ForeignKey, UniqueConstraint, event
+from sqlalchemy import create_engine, Column, String, Integer, JSON, ForeignKey, UniqueConstraint, event, select
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +52,7 @@ class Dataset(Record, Base):
     name = Column(String, nullable=False)
     version = Column(Integer, nullable=False)
     original_file = Column(String)
+    source_filename = Column(String)
     sha256 = Column(String)
     sheet = Column(String)
     headers = Column(JSON)
@@ -65,6 +66,7 @@ class Product(Record, Base):
     dataset_id = Column(String, ForeignKey('dataset.id'), nullable=False)
     row = Column(Integer, nullable=False)
     anchor = Column(String, nullable=False)
+    identity_source = Column(String, default='row')
     raw = Column(JSON, nullable=False)
     fields = Column(JSON, nullable=False)
     __table_args__ = (UniqueConstraint('dataset_id', 'row'),)
@@ -275,15 +277,31 @@ def init_db():
             skill_migrated=src.execute("select 1 from sqlite_master where type='table' and name='product_text_record'").fetchone()
             v4=src.execute("select 1 from sqlite_master where type='table' and name='workbench_meta'").fetchone()
             v5=src.execute("select 1 from sqlite_master where type='table' and name='tag_template'").fetchone()
-            if (legacy and not migrated) or (migrated and not skill_migrated) or (skill_migrated and not v4) or (v4 and not v5):
+            product_columns={r[1] for r in src.execute("pragma table_info(product)").fetchall()} if src.execute("select 1 from sqlite_master where type='table' and name='product'").fetchone() else set()
+            dataset_columns={r[1] for r in src.execute("pragma table_info(dataset)").fetchall()} if src.execute("select 1 from sqlite_master where type='table' and name='dataset'").fetchone() else set()
+            v6='identity_source' in product_columns and 'source_filename' in dataset_columns
+            if (legacy and not migrated) or (migrated and not skill_migrated) or (skill_migrated and not v4) or (v4 and not v5) or (v5 and not v6):
                 folder=path.parent/'backups';folder.mkdir(exist_ok=True)
-                with sqlite3.connect(folder/('before-'+('v5-' if v4 else 'v4-' if skill_migrated else 'skill-v3-' if migrated else 'draft-')+uid()+'.db')) as dst:src.backup(dst)
+                with sqlite3.connect(folder/('before-'+('v6-' if v5 else 'v5-' if v4 else 'v4-' if skill_migrated else 'skill-v3-' if migrated else 'draft-')+uid()+'.db')) as dst:src.backup(dst)
     Base.metadata.create_all(engine)
+    if engine.url.get_backend_name()=='sqlite':
+        with engine.begin() as conn:
+            columns={r[1] for r in conn.exec_driver_sql('pragma table_info(product)').fetchall()}
+            if 'identity_source' not in columns:conn.exec_driver_sql("alter table product add column identity_source varchar default 'row'")
+            dataset_columns={r[1] for r in conn.exec_driver_sql('pragma table_info(dataset)').fetchall()}
+            if 'source_filename' not in dataset_columns:conn.exec_driver_sql('alter table dataset add column source_filename varchar')
     if cache_engine is not None:Base.metadata.create_all(cache_engine,tables=[VisionCache.__table__,TextCache.__table__])
     with Session.begin() as s:
         if not s.get(Migration,3):s.add(Migration(version=3))
         if not s.get(Migration,4):s.add(Migration(version=4))
         if not s.get(Migration,5):s.add(Migration(version=5))
+        if not s.get(Migration,6):
+            from .identity import choose
+            for product in s.scalars(select(Product)):
+                product.anchor,product.identity_source=choose(product.fields,product.row)
+            for dataset in s.scalars(select(Dataset)):
+                if not dataset.source_filename:dataset.source_filename=dataset.name+'.xlsx'
+            s.add(Migration(version=6))
 def obj(record): return {c.name: getattr(record, c.name) for c in record.__table__.columns}
 def require(s, cls, ident):
     result = s.get(cls, ident)

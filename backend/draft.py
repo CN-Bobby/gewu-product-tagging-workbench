@@ -35,11 +35,33 @@ def cell_change(s, did, c, action):
     emit(s,did,'cell',obj(c))
     audit(s,did,action,obj(c))
 
+def result_shape(definition):
+    return definition.get('result_shape') or ('boolean' if definition.get('attribute') else 'multi_enum' if definition.get('cardinality')=='multiple' else 'scalar_enum' if definition.get('options') else 'scalar_open')
+
+def migrate_definition_shapes(s,did):
+    if s.scalar(select(Audit.id).where(Audit.dataset_id==did,Audit.action=='definition_shapes_v2')):return
+    changed=0
+    for col in s.scalars(select(DraftColumn).where(DraftColumn.dataset_id==did)):
+        if 'result_shape' not in col.definition:
+            col.definition={**col.definition,'result_shape':result_shape(col.definition)};changed+=1
+    audit(s,did,'definition_shapes_v2',{'columns':changed,'rerun':False})
+
+def revision_impact(before,after,requested=None):
+    critical=('type','source','method','result_shape','fields','cardinality','when','parser','mapping','bins','depends_on','parent_id','attribute')
+    incompatible=any(before.get(k)!=after.get(k) for k in critical)
+    incompatible=incompatible or not set(before.get('options',[])).issubset(set(after.get('options',[])))
+    calculated='invalidate_all' if incompatible else 'preserve_compatible'
+    if requested=='invalidate_all':return requested
+    if requested not in (None,'preserve_compatible','invalidate_all'):raise ValueError('impact_mode无效')
+    if requested=='preserve_compatible' and incompatible:raise ValueError('该修订改变语义或取值边界，不能保留旧结果')
+    return calculated
+
 def migrate(did):
     """Idempotent import; legacy rows remain intact, no formal versions invented."""
     with WRITE_LOCK, Session.begin() as s:
         require(s,Dataset,did)
-        if s.scalar(select(Audit.id).where(Audit.dataset_id==did,Audit.action=='draft_migration_v1')):return
+        if s.scalar(select(Audit.id).where(Audit.dataset_id==did,Audit.action=='draft_migration_v1')):
+            migrate_definition_shapes(s,did);return
         columns={}
         for schema in s.scalars(select(Schema).where(Schema.dataset_id==did,Schema.status=='locked').order_by(Schema.version)):
             for d in schema.definitions:
@@ -77,6 +99,7 @@ def migrate(did):
             s.add(col);s.flush()
             for pid in s.scalars(select(Product.id).where(Product.dataset_id==did)):calculate(s,did,pid,col)
         audit(s,did,'draft_migration_v1',{'columns':len(columns),'reversible':'legacy tables unchanged'})
+        migrate_definition_shapes(s,did)
 
 def _sheet(s,did):
     d=require(s,Dataset,did)
@@ -112,7 +135,10 @@ def state(did):
 
 def validate_definition(d,existing):
     standard=Definition.model_validate({k:v for k,v in d.items() if k in Definition.model_fields}).model_dump()
-    standard.update({k:copy.deepcopy(d[k]) for k in ('method','depends_on','mapping','bins','fields','cardinality','when','parser') if k in d})
+    if standard['source'] in ('image','both'):
+        from .capabilities import require_visual_tagging
+        require_visual_tagging()
+    standard.update({k:copy.deepcopy(d[k]) for k in ('method','depends_on','mapping','bins','fields','cardinality','when','parser','result_shape') if k in d})
     if standard.get('cardinality','auto') not in ('auto','single','multiple'):raise ValueError('cardinality需为auto/single/multiple')
     standard['judgment']=tagging_rules.judgment(d)
     if d.get('parent_id'):
@@ -127,6 +153,14 @@ def validate_definition(d,existing):
     if method=='attribute':
         if d.get('parent_id') not in existing or not isinstance(d.get('attribute'),str) or not d['attribute'].strip():raise ValueError('属性映射需要有效类别与属性名称')
         standard.update(parent_id=d['parent_id'],attribute=d['attribute'])
+    shape=standard.get('result_shape')
+    if shape is None:
+        shape='boolean' if standard.get('attribute') else 'multi_enum' if standard.get('cardinality')=='multiple' else 'scalar_enum' if standard.get('options') else 'scalar_open'
+    if shape not in ('scalar_open','scalar_enum','multi_enum','boolean'):raise ValueError('result_shape需为scalar_open/scalar_enum/multi_enum/boolean')
+    if shape=='boolean' and not standard.get('attribute'):raise ValueError('boolean结果只用于拆分后的属性列')
+    if shape=='scalar_enum' and not standard.get('options'):raise ValueError('scalar_enum需要非空候选值')
+    if shape=='multi_enum' and standard.get('cardinality')=='single':raise ValueError('single标签不能使用multi_enum')
+    standard['result_shape']=shape
     deps=standard.get('depends_on',[])
     if standard.get('when'):
         condition=standard['when']
@@ -156,7 +190,8 @@ def propose(did,title,changes):
     if not isinstance(changes,list) or not changes or len(changes)>50:raise ValueError('提案需要1–50项变更')
     with WRITE_LOCK, Session.begin() as s:
         cols={c.id:c for c in s.scalars(select(DraftColumn).where(DraftColumn.dataset_id==did))}
-        pids=set(s.scalars(select(Product.id).where(Product.dataset_id==did)))
+        product_order=list(s.scalars(select(Product.id).where(Product.dataset_id==did).order_by(Product.row)))
+        pids=set(product_order)
         clean=copy.deepcopy(changes)
         from types import SimpleNamespace
         refs={}
@@ -170,6 +205,22 @@ def propose(did,title,changes):
             return value
         clean=resolve_refs(clean)
         for change in clean:
+            if change.get('kind')=='execute' and change.get('repair_scope_id'):
+                saved=s.get(WorkbenchMeta,change['repair_scope_id'])
+                if not saved or saved.dataset_id!=did or saved.kind!='repair_scope':raise ValueError('修复范围不存在或不属于当前数据集')
+                change['targets']=saved.data.get('targets',[])
+            if change.get('kind')=='execute' and change.get('targets') is not None:
+                targets=change['targets']
+                if not isinstance(targets,list) or not targets:raise ValueError('targets需要至少一个列范围')
+                target_ids={};all_ids=[]
+                for target in targets:
+                    if not isinstance(target,dict) or not isinstance(target.get('column_id'),str):raise ValueError('target需要column_id')
+                    cid=target['column_id'];ids=target.get('product_ids',[])
+                    if not isinstance(ids,list) or not ids:raise ValueError('每个target都需要非空product_ids')
+                    if cid in target_ids:raise ValueError('targets中的column_id不可重复')
+                    target_ids[cid]=list(dict.fromkeys(ids));all_ids.extend(ids)
+                change['column_ids']=list(target_ids);change['target_product_ids']=target_ids;change['product_ids']=list(dict.fromkeys(all_ids))
+        for change in clean:
             kind=change.get('kind')
             if kind in ('add','revise'):
                 change['definition']=validate_definition(change['definition'],cols)
@@ -180,6 +231,9 @@ def propose(did,title,changes):
                     for key in ('attribute','parent_id','expanded','archived'):
                         if key in col.definition:change['definition'][key]=col.definition[key]
                     change['expected_revision']=col.revision
+                    change['impact_mode']=revision_impact(col.definition,change['definition'],change.get('impact_mode'))
+                    statuses=list(s.scalars(select(Cell.status).where(Cell.column_id==col.id)))
+                    change['impact']={'total':len(pids),'preserved':sum(x in ('ready','unknown','review') for x in statuses) if change['impact_mode']=='preserve_compatible' else 0,'invalidated':sum(x in ('ready','unknown','review','failed','stale') for x in statuses) if change['impact_mode']=='invalidate_all' else 0}
                     deps=change['definition'].get('depends_on',[])
                     def reaches(cid,seen):
                         if cid==col.id:return True
@@ -203,6 +257,10 @@ def propose(did,title,changes):
                 change['definition']=copy.deepcopy(col.definition)
             elif kind=='execute':
                 if not change.get('column_ids') or any(x not in cols for x in change['column_ids']):raise ValueError('请选择当前草稿中的标签列')
+                if len(change['column_ids'])!=1 and not change.get('target_product_ids'):raise ValueError('多列执行必须使用targets为每列明确商品范围')
+                if any(cols[x].definition.get('source') in ('image','both') for x in change['column_ids']):
+                    from .capabilities import require_visual_tagging
+                    require_visual_tagging()
                 if any(cols[x].definition.get('expanded') for x in change['column_ids']):raise ValueError('种类已拆列，请选择具体属性列执行')
                 if any(cols[x].definition.get('archived') for x in change['column_ids']):raise ValueError('请先恢复已归档列')
                 change['revisions']={x:cols[x].revision for x in change['column_ids']}
@@ -218,6 +276,26 @@ def propose(did,title,changes):
                 change['product_ids']=list(dict.fromkeys(ids))
                 if kind=='correct':
                     change['expected_edits']={pid:get_cell(s,pid,change['column_id']).edit for pid in ids}
+        invalidated={ch['column_id']:ch for ch in clean if ch.get('kind')=='revise' and ch.get('impact_mode')=='invalidate_all'}
+        for change in clean:
+            if change.get('kind')!='execute':continue
+            affected=[cid for cid in change['column_ids'] if cid in invalidated]
+            if not affected:continue
+            targets={cid:list(change.get('target_product_ids',{}).get(cid,change['product_ids'])) for cid in change['column_ids']}
+            for cid in affected:targets[cid]=list(product_order)
+            change['targets']=[{'column_id':cid,'product_ids':targets[cid]} for cid in change['column_ids']]
+            change['target_product_ids']=targets
+            change['product_ids']=list(dict.fromkeys(pid for cid in change['column_ids'] for pid in targets[cid]))
+            change['actual_scope_computed']=True
+            summaries={item['column_id']:item for item in change.get('repair_summary',[])}
+            for cid in affected:
+                col=cols[cid];cells=list(s.scalars(select(Cell).where(Cell.column_id==cid)))
+                protected=sum(bool(cell.manual) for cell in cells);method=col.definition.get('method','model')
+                summaries[cid]={'column_id':cid,'name':col.definition['name'],'failed':summaries.get(cid,{}).get('failed',0),
+                                'rerun':len(product_order)-protected,'preserved_success':0,'protected':protected,
+                                'estimated_requests':0 if method in ('text_rule','mapping','bins','attribute') else (len(product_order)-protected+4)//5,
+                                'human_values_protected':True,'reason':'定义语义或执行契约改变，后端按整列计算实际影响范围'}
+            change['repair_summary']=list(summaries.values())
         p=Proposal(dataset_id=did,title=title,changes=clean)
         s.add(p);s.flush();emit(s,did,'proposal',obj(p));return obj(p)
 
@@ -271,6 +349,7 @@ def correct(did,pid,cid,value,expected_edit=None):
         return obj(c)
 
 def _correct(s,did,c,value):
+    from .task_control import settle_owned_token
     col=require(s,DraftColumn,c.column_id)
     if c.revision!=col.revision:c.evidence={k:v for k,v in c.evidence.items() if k!='input_fingerprint'}
     if col.definition.get('attribute') and value is not None and type(value) is not bool:raise ValueError('属性单元格只能为 true/false/null')
@@ -280,6 +359,7 @@ def _correct(s,did,c,value):
         c.value=list(dict.fromkeys(value))
         if len(c.value)>1 and not col.definition.get('expanded'):
             c.status='review';attributes.propose_expansion(s,did,col,col.definition.get('options',[])+c.value)
+    settle_owned_token(s,did,c.product_id+':'+c.column_id,'人工修正')
     cell_change(s,did,c,'manual_correction');recompute(s,did,c.product_id,c.column_id)
 
 def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None):
@@ -289,6 +369,20 @@ def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None)
     with WRITE_LOCK, Session.begin() as s:
         p=require(s,Proposal,ident)
         if p.dataset_id!=did or p.status!='pending':raise ValueError('提案已处理或不属于当前工作表')
+        from .task_control import validate_repair_scope
+        for ch in p.changes:
+            if ch.get('kind')=='execute' and ch.get('repair_scope_id'):
+                item=require(s,WorkbenchMeta,ch['repair_scope_id'])
+                validate_repair_scope(s,did,item.data)
+        from .capabilities import require_visual_tagging
+        for ch in p.changes:
+            if ch['kind'] in ('add','revise') and ch['definition'].get('source') in ('image','both'):
+                require_visual_tagging()
+            if ch['kind']=='execute':
+                for cid in ch['column_ids']:
+                    source=next((x['definition'].get('source') for x in p.changes if x.get('planned_id')==cid),None)
+                    if source is None:source=require(s,DraftColumn,cid).definition.get('source')
+                    if source in ('image','both'):require_visual_tagging()
         proposed_ids=list(dict.fromkeys(pid for ch in p.changes if ch['kind']=='execute' for pid in ch['product_ids']))
         execution_scope=None
         if scope is not None:
@@ -309,11 +403,17 @@ def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None)
                     audit(s,did,'column_revision',obj(col));col.revision+=1;col.definition=d
                 for pid in s.scalars(select(Product.id).where(Product.dataset_id==did)):
                     c=get_cell(s,pid,col.id)
-                    if not c.manual:
+                    if kind=='revise' and ch.get('impact_mode')=='preserve_compatible':
+                        if not c.manual:
+                            c.revision=col.revision
+                            if c.status in ('ready','unknown','review'):
+                                c.evidence={**(c.evidence or {}),'accepted_through_revision':col.revision,'preserved_by_proposal':p.id}
+                            cell_change(s,did,c,'column_revision_preserved')
+                    elif not c.manual:
                         c.status='stale' if c.value is not None else 'pending'
                         if d.get('method') in ('mapping','bins','attribute'):calculate(s,did,pid,col)
                         else:cell_change(s,did,c,'column_changed')
-                    recompute(s,did,pid,col.id)
+                    if not (kind=='revise' and ch.get('impact_mode')=='preserve_compatible'):recompute(s,did,pid,col.id)
                 emit(s,did,'column',obj(col))
                 if d.get('expanded'):
                     for child in s.scalars(select(DraftColumn).where(DraftColumn.dataset_id==did)):
@@ -352,7 +452,9 @@ def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None)
                     frozen['definition'].setdefault('skill',tagging_rules.freeze())
                     frozen['definition'].setdefault('judgment',tagging_rules.judgment(frozen['definition']))
                     columns.append(frozen)
-                    for pid in ids:
+                    column_ids=ch.get('target_product_ids',{}).get(cid,ids)
+                    if execution_scope is not None:column_ids=[pid for pid in column_ids if pid in execution_scope]
+                    for pid in column_ids:
                         c=get_cell(s,pid,cid);token=pid+':'+cid
                         if c.manual and not ch.get('overwrite'):continue
                         if c.status in ('ready','unknown','review') and c.revision==col.revision and not ch.get('overwrite'):continue

@@ -6,28 +6,31 @@ from .db import *
 def validate_result(value,definition):
     normalized=value.get('normalized_value');attrs=value.get('attributes',[])
     if not isinstance(attrs,list):raise ValueError('逐属性证据必须是数组')
+    shape=definition.get('result_shape') or ('boolean' if definition.get('attribute') else 'multi_enum' if definition.get('cardinality')=='multiple' else 'scalar_enum' if definition.get('options') else 'scalar_open')
+    if shape in ('scalar_open','scalar_enum'):
+        if normalized is not None and not isinstance(normalized,(str,int,float)):raise ValueError('单值标签只能返回文本、数字或 null')
+        if shape=='scalar_enum' and normalized is not None and normalized not in definition.get('options',[]):raise ValueError('结果不属于已确认候选值')
+        if attrs:
+            value['format_warnings']=list(dict.fromkeys(value.get('format_warnings',[])+['标量结果附带attributes，已忽略']))
+            value['ignored_attributes']=attrs
+            value.pop('attributes',None)
+        return value
     seen=set()
     for a in attrs:
         if not isinstance(a,dict) or not isinstance(a.get('attribute'),str) or not a['attribute'].strip() or a['attribute'] in seen:raise ValueError('属性名称无效或重复')
         seen.add(a['attribute'])
         if a.get('value') is not None and type(a['value']) is not bool:raise ValueError('属性值只能是 true/false/null')
         if a.get('value') is not None and (not isinstance(a.get('evidence'),str) or not a['evidence'].strip()):raise ValueError('命中或否定必须有逐属性证据')
-    if definition.get('attribute'):
+    if shape=='boolean':
         if normalized is not None and type(normalized) is not bool:raise ValueError('属性列需要布尔值或 null')
         if normalized is not None and not value.get('evidence','').strip():raise ValueError('属性判断缺少证据')
         own=next((a for a in attrs if a['attribute']==definition['attribute']),None)
         if own and own.get('value') is not normalized:raise ValueError('属性标准值与逐属性证据矛盾')
-    elif isinstance(normalized,list):
+    elif shape=='multi_enum':
         if not normalized or any(not isinstance(v,str) for v in normalized) or len(set(normalized))!=len(normalized):raise ValueError('多属性命中列表无效')
         positives={a['attribute'] for a in attrs if a.get('value') is True}
         if set(normalized)!=positives:raise ValueError('多属性命中缺少完整逐属性证据或包含矛盾')
         if definition.get('options') and any(v not in definition['options'] for v in normalized):raise ValueError('多属性结果不属于已确认候选值')
-    else:
-        if normalized is not None and not isinstance(normalized,(str,int,float)):raise ValueError('标签值类型无效')
-        positives=[a['attribute'] for a in attrs if a.get('value') is True]
-        if len(positives)>1:raise ValueError('多个明确命中必须完整返回列表')
-        if positives and normalized!=positives[0]:raise ValueError('逐属性正命中必须与标准值一致，属性名应为具体候选')
-        if definition.get('options') and normalized is not None and normalized not in definition['options']:raise ValueError('结果不属于已确认候选值')
     return value
 
 def propose_expansion(s,did,col,names):
@@ -58,7 +61,7 @@ def expand(s,did,ch,proposal_id):
         key='attribute_'+uid()
         d={**copy.deepcopy(parent.definition),'key':key,'name':parent.definition['name']+'－'+name,'options':[],
            'definition':parent.definition['definition']+'；本列判断具体属性：'+name+'。只返回 true/false/null；未提及不等于否定。',
-           'attribute':name,'parent_id':parent.id,'expanded':False,'method':'attribute' if parent.definition.get('method') in ('mapping','bins') else 'model','depends_on':[parent.id]}
+           'attribute':name,'parent_id':parent.id,'expanded':False,'result_shape':'boolean','method':'attribute' if parent.definition.get('method') in ('mapping','bins') else 'model','depends_on':[parent.id]}
         col=DraftColumn(dataset_id=did,key=key,definition=d,origin={'proposal_id':proposal_id,'category_id':parent.id})
         s.add(col);s.flush();draft.emit(s,did,'column',obj(col))
         for pid in s.scalars(select(Product.id).where(Product.dataset_id==did)):
@@ -70,7 +73,7 @@ def expand(s,did,ch,proposal_id):
             target.evidence={'source_column':parent.id,'source_cell':obj(source),'attribute':name,'attribute_evidence':evidence,'reason':'仅迁移明确证据，其他留空'}
             if manual:target.manual={**manual,'value':value,'migrated_from':parent.id};target.edit=1
             draft.cell_change(s,did,target,'attribute_migrated')
-    parent.revision+=1;parent.definition={**parent.definition,'expanded':True}
+    parent.revision+=1;parent.definition={**parent.definition,'expanded':True,'result_shape':'multi_enum'}
     draft.emit(s,did,'column',obj(parent))
     # Pending parent candidates are retained as a group observation after conversion.
     for source in s.scalars(select(Cell).where(Cell.column_id==parent.id)):
@@ -110,7 +113,7 @@ def collapse(s,did,parent):
     children=[c for c in s.scalars(select(DraftColumn).where(DraftColumn.dataset_id==did)) if c.definition.get('parent_id')==parent.id]
     for child in children:
         child.definition={**child.definition,'archived':True};child.revision+=1;draft.emit(s,did,'column',obj(child))
-    parent.definition={**parent.definition,'expanded':False,'cardinality':'single','archived':False};parent.revision+=1
+    parent.definition={**parent.definition,'expanded':False,'cardinality':'single','archived':False,'result_shape':'scalar_enum' if parent.definition.get('options') else 'scalar_open'};parent.revision+=1
     for pid in s.scalars(select(Product.id).where(Product.dataset_id==did)):
         cell=draft.get_cell(s,pid,parent.id)
         if cell.manual:continue

@@ -37,6 +37,7 @@ def test_mapping_worker_keeps_changed_dependency_conflict(dataset):
     assert cell['conflict'] and cell['value']=='冷'
 
 def test_vision_requirement_includes_judgment(dataset,monkeypatch):
+    monkeypatch.setenv('TAG_ENABLE_VISUAL_TAGGING','1')
     did=dataset['id'];col=add(did,'color',source='image',judgment={'include':'只观察上衣'});seen=[]
     def observe(asset,model,requirements,*rest):seen.append(requirements);return {'observation':'蓝色'}
     def fake(model,messages,*args):return {'results':[{'product_id':p['product_id'],'normalized_value':'蓝色','evidence':'图片上衣'} for p in json.loads(messages[-1]['content'])]}
@@ -66,7 +67,7 @@ def test_execute_columns_follows_dependencies(dataset,monkeypatch,projected):
         calls.append(1)
         return {'results':[{'product_id':p['product_id'],'normalized_value':'蓝','evidence':'标题蓝色'} for p in json.loads(messages[-1]['content'])]}
     monkeypatch.setattr(batch,'request_json',fake)
-    p=draft.propose(did,'同时执行',[{'kind':'execute','column_ids':[target['id'],base['id']],'product_ids':[pid],'overwrite':True}]);j=draft.confirm(did,p['id'])[0]
+    p=draft.propose(did,'同时执行',[{'kind':'execute','targets':[{'column_id':target['id'],'product_ids':[pid]},{'column_id':base['id'],'product_ids':[pid]}],'overwrite':True}]);j=draft.confirm(did,p['id'])[0]
     result=run(j);assert result['status']=='completed' and len(calls)==1
     cell=draft.sheet(did)['rows'][0]['cells'][target['id']]
     assert cell['value']==(True if projected else '冷') and not cell['conflict'] and cell['status']=='ready'

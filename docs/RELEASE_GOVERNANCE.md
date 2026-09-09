@@ -2,7 +2,7 @@
 
 应用版本唯一来源为根目录 VERSION.json。后端直接读取，Vite构建注入界面；npm元数据通过 scripts/sync_version.py 生成，CI使用 --check 拒绝漂移。
 
-接管基线位于 baseline/takeover，只记录已有代码，不代表已验收发行版。当前开发分支 fix/0.4.1-closeout。main仅在里程碑验收通过时创建/推进。发布标签不可移动，安装包不可覆盖；不创建远端或上传源码。
+接管基线位于 baseline/takeover，只记录已有代码，不代表已验收发行版。当前开发分支为`feature/0.5.0-delivery`。main仅在里程碑验收通过时创建/推进。发布标签不可移动，安装包不可覆盖；不创建远端或上传源码。
 
 里程碑：0.4.1现有功能收尾 → 0.5.0-alpha.1项目模板、严格复用、独立状态 → 0.5.0-beta.1干净Windows安装验收。只有通过对应验收才能变更release_status，不能靠改版本号宣称完成。
 

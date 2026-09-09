@@ -87,6 +87,11 @@ def observation(asset,model,requirements,refresh,metrics,mlock,context=None,rule
     return {**result,'asset_id':asset['id'],'cached':False}
 
 def launch(jid):
+    with Session() as s:
+        job=require(s,BatchJob,jid)
+        if any(c['definition'].get('source') in ('image','both') for c in job.spec.get('columns',[])):
+            from .capabilities import require_visual_tagging
+            require_visual_tagging()
     with guard:
         if jid in active:raise ValueError('任务仍在执行')
         active[jid]=threading.Event()
@@ -103,6 +108,9 @@ def stop(jid,cancel=False):
 def resume(jid):
     with draft.WRITE_LOCK,Session.begin() as s:
         j=require(s,BatchJob,jid)
+        if any(c['definition'].get('source') in ('image','both') for c in j.spec.get('columns',[])):
+            from .capabilities import require_visual_tagging
+            require_visual_tagging()
         if j.status not in ('paused','partial','interrupted'):raise ValueError('任务不可恢复')
         if j.spec.get('kind')=='text_facts':text_facts.validate_resume(jid)
         j.status='queued';draft.emit(s,j.dataset_id,'job',obj(j))
