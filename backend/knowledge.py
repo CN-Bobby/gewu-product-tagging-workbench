@@ -1,7 +1,7 @@
 """Small, attributable term research. External references never become product facts."""
-import hashlib,ipaddress,socket,time
+import hashlib,html,ipaddress,socket,time
 from html.parser import HTMLParser
-from urllib.parse import urlparse,quote,urljoin
+from urllib.parse import urlparse,quote,urljoin,parse_qs
 import httpx
 from sqlalchemy import select
 from .db import *
@@ -17,6 +17,35 @@ class Text(HTMLParser):
 
 def plain(html):
     p=Text();p.feed(html);return ' '.join(' '.join(p.parts).split())
+
+class SearchResults(HTMLParser):
+    def __init__(self):super().__init__();self.items=[];self.kind=None;self.href='';self.parts=[]
+    def handle_starttag(self,tag,attrs):
+        if tag!='a':return
+        values=dict(attrs);classes=values.get('class','').split()
+        kind='title' if 'result__a' in classes else 'snippet' if 'result__snippet' in classes else None
+        if kind:self.kind=kind;self.href=values.get('href','');self.parts=[]
+    def handle_data(self,data):
+        if self.kind:self.parts.append(data)
+    def handle_endtag(self,tag):
+        if tag!='a' or not self.kind:return
+        text=' '.join(''.join(self.parts).split())
+        if self.kind=='title':self.items.append({'title':text,'href':self.href,'excerpt':''})
+        elif self.items and not self.items[-1]['excerpt']:self.items[-1]['excerpt']=text
+        self.kind=None;self.href='';self.parts=[]
+
+def search_results(body,query):
+    parser=SearchResults();parser.feed(body);tokens=[x.casefold() for x in query.split() if len(x)>=2] or [query.casefold()]
+    results=[]
+    for item in parser.items:
+        href=html.unescape(item['href']);parsed=urlparse('https:'+href if href.startswith('//') else href)
+        target=parse_qs(parsed.query).get('uddg',[href])[0] if parsed.hostname and parsed.hostname.endswith('duckduckgo.com') else href
+        target=html.unescape(target);haystack=(item['title']+' '+item['excerpt']+' '+target).casefold()
+        if not any(token in haystack for token in tokens):continue
+        if urlparse(target).scheme!='https':continue
+        results.append({'title':item['title'],'url':target,'excerpt':item['excerpt'][:1000],
+            'publisher':urlparse(target).hostname,'kind':'DuckDuckGo索引摘要，未读取来源正文，不作为产品事实','retrieved_at':now()})
+    return results[:3]
 
 def check_url(url):
     p=urlparse(url)
@@ -64,15 +93,8 @@ def research(did,query='',urls=None,scope='',refresh=False):
         except Exception as e:errors.append('术语检索失败：'+str(e)[:200])
         if not sources:
             try:
-                from xml.etree import ElementTree as ET
-                feed=ET.fromstring(fetch('https://www.bing.com/search',{'format':'rss','q':query}))
-                for item in feed.findall('./channel/item')[:3]:
-                    link=item.findtext('link','')
-                    if urlparse(link).scheme!='https':continue
-                    sources.append({'title':item.findtext('title',''),'url':link,
-                        'excerpt':plain(item.findtext('description',''))[:1000],
-                        'publisher':urlparse(link).hostname,'kind':'Bing索引摘要，未读取来源正文，不作为产品事实',
-                        'retrieved_at':now()})
+                sources=search_results(fetch('https://html.duckduckgo.com/html/',{'q':query}),query)
+                if not sources:raise ValueError('搜索结果与查询词不相关')
             except Exception as e:errors.append('补充检索失败：'+str(e)[:200])
     for url in urls:
         try:
