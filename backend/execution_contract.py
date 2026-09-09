@@ -1,12 +1,12 @@
 """Freeze prompt text at confirmation; upgrades must not silently change pending inputs."""
 import hashlib
 FILL_PREFIX='\n你是批量填表工具。按以下冻结定义和result_shape返回每个商品一项 JSON results，不能创建列或批准提案。scalar_open/scalar_enum只返回单个normalized_value，不返回attributes；multi_enum返回字符串列表及逐属性证据；boolean返回true/false/null。定义：'
-TEXT_PREFIX='\n这是上传后的文字底稿提取，不创建标签。返回JSON {"results":[{"product_id":"...","facts":[{"attribute":"中文属性","value":"中文标准值或null","raw_value":"原始值","state":"observed或conflict或unknown","reason":"简短原因","evidence":[{"field":"输入text中的字段名","quote":"逐字原文片段"}]}]}]}。每商品一项，所有证据片段必须逐字存在于对应字段。'
+TEXT_PREFIX='\n这是上传后的文字底稿提取，不创建标签。返回JSON {"results":[{"product_id":"...","facts":[{"attribute":"中文属性","value":"中文标准值或null","raw_value":"原始值","state":"observed或conflict或unknown","reason":"简短原因","evidence":[{"field":"输入text中的字段名","quote":"逐字原文片段"}]}]}]}。每商品一项。field必须原样使用输入text对象中实际存在的键名，禁止写text[\'字段\']或自行缩写；quote必须是对应字段中非空、连续、逐字一致的原文片段，不能省略中间文字。state为conflict或unknown时value必须为null。没有可定位证据的事实不要输出。'
 
 
 def snapshot():
     from .batch import VISION_RULES
-    return {'version':2,'vision_rules':VISION_RULES,'fill_prefix':FILL_PREFIX,'text_prefix':TEXT_PREFIX}
+    return {'version':3,'vision_rules':VISION_RULES,'fill_prefix':FILL_PREFIX,'text_prefix':TEXT_PREFIX}
 
 
 def require_contract(spec):

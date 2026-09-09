@@ -65,6 +65,31 @@ def test_exact_evidence_and_conflicts():
     normalized=text_facts.validate(combined,source)
     assert len(normalized['facts'])==1 and normalized['facts'][0]['value'] is None and len(normalized['facts'][0]['evidence'])==2
 
+def test_text_fact_salvage_normalizes_model_format_without_inventing_evidence():
+    source={
+        'sku':'Color: A-black 1 | Size: 13-14 Years',
+        'parameters':'Fabric type: Shell:82%Nylon+18%Elastane',
+        '商品标题':'Girls Swimsuit 3 Piece Tankini for Teen Girls',
+    }
+    value={'facts':[
+        {'attribute':'颜色','value':'黑色','state':'observed','evidence':[{'field':'text[\'sku\']','quote':'Black'}]},
+        {'attribute':'件数','value':'3件套','state':'observed','evidence':[{'field':'text[\'商品标题\']','quote':'3 Piece'}]},
+        {'attribute':'面料','value':'82%锦纶','state':'observed','evidence':[{'field':'text[\'参数\']','quote':'82%Nylon'}]},
+        {'attribute':'适用人群','value':'少女','state':'observed','evidence':[{'field':'商品标题','quote':'Teen Girls'},{'field':'sku','quote':''}]},
+        {'attribute':'颜色款名','value':'待确认','raw_value':'Blue Coconut','state':'unknown','reason':'款名语义不明确','evidence':[{'field':'sku','quote':'Color: A-black 1'}]},
+        {'attribute':'款式','value':'分体泳衣','state':'observed','evidence':[{'field':'商品标题','quote':'Tankini missing words'}]},
+    ]}
+    result=text_facts.validate(value,source,salvage=True)
+    assert [f['attribute'] for f in result['facts']]==['颜色','件数','面料','适用人群','颜色款名']
+    assert result['facts'][0]['evidence'][0]['quote']=='black'
+    assert result['facts'][1]['evidence'][0]['field']=='商品标题'
+    assert result['facts'][2]['evidence'][0]['field']=='parameters'
+    assert len(result['facts'][3]['evidence'])==1
+    assert result['facts'][4]['value'] is None and result['facts'][4]['discarded_value']=='待确认'
+    assert {w['code'] for w in result['validation_warnings']} >= {'normalized_evidence','discarded_evidence','discarded_fact','discarded_nondefinitive_value'}
+    with pytest.raises(ValueError,match='定位'):
+        text_facts.validate({'facts':[value['facts'][-1]]},source)
+
 def test_text_cancel_recovery_and_stale_result(dataset,monkeypatch):
     did=dataset['id'];j=text_facts.prepare(did)
     event=threading.Event();batch.active[j['id']]=event;batch.stop(j['id'],True);batch.execute(j['id'])

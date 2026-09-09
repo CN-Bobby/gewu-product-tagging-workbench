@@ -1,4 +1,5 @@
 """Resumable, text-only information groundwork; never creates label columns."""
+import copy
 import hashlib
 import json
 import re
@@ -63,24 +64,80 @@ def relevant(record,definition):
     fields={e['field'] for f in facts for e in f.get('evidence',[])}
     return {**record,'content':{'facts':facts},'source':{k:v for k,v in record['source'].items() if k in fields}}
 
-def validate(value,source):
+_FIELD_ALIASES={
+    '参数':['parameters','详细参数','详细信息'],
+    'parameters':['parameters','详细参数','详细信息'],
+    '详细参数':['详细参数','parameters','详细信息'],
+    '详细信息':['详细信息','parameters','详细参数'],
+    '标题':['title','商品标题'],
+    'title':['title','商品标题'],
+    '商品标题':['商品标题','title'],
+    'sku':['sku','SKU'],
+    'SKU':['SKU','sku'],
+}
+
+def _unwrapped_field(field):
+    if not isinstance(field,str):return field
+    field=field.strip()
+    match=re.fullmatch(r"(?:text|source)\s*\[\s*(['\"])(.+?)\1\s*\]",field,re.I)
+    return match.group(2).strip() if match else field
+
+def _source_match(source,field,quote):
+    """Return an exact source slice. Never manufactures or fuzzy-matches evidence."""
+    if not isinstance(quote,str) or not quote.strip():return None
+    quote=quote.strip();requested=_unwrapped_field(field)
+    keys=[]
+    def add(key):
+        if key in source and key not in keys:keys.append(key)
+    add(requested)
+    if isinstance(requested,str):
+        for key in source:
+            if key.casefold()==requested.casefold():add(key)
+        for key in _FIELD_ALIASES.get(requested,[]):add(key)
+    for key in source:add(key)
+    for key in keys:
+        text=str(source.get(key) or '')
+        index=text.find(quote)
+        mode='exact'
+        if index<0:
+            match=re.search(re.escape(quote),text,re.I)
+            if not match:continue
+            index=match.start();mode='case_insensitive'
+        return {'field':key,'quote':text[index:index+len(quote)],'mode':mode,'requested_field':field}
+    return None
+
+def validate(value,source,salvage=False):
     if not isinstance(value,dict):raise ValueError('文字底稿商品结果必须是对象')
     facts=value.get('facts')
     if not isinstance(facts,list):raise ValueError('文字底稿缺少 facts 数组')
+    facts=copy.deepcopy(facts);accepted=[];warnings=[]
     for fact in facts:
+      try:
         if not isinstance(fact,dict) or not isinstance(fact.get('attribute'),str) or not fact['attribute'].strip():raise ValueError('底稿属性缺失')
         if not re.search(r'[\u4e00-\u9fff]',fact['attribute']):raise ValueError('底稿属性名称需要中文')
         if fact.get('state') not in ('observed','conflict','unknown'):raise ValueError('底稿状态无效')
         if 'value' not in fact or (fact['value'] is not None and not isinstance(fact['value'],(str,int,float,list))):raise ValueError('底稿值类型无效')
-        if fact['state']!='observed' and fact['value'] is not None:raise ValueError('冲突或未知不得输出确定值')
+        if fact['state']!='observed' and fact['value'] is not None:
+            if not salvage:raise ValueError('冲突或未知不得输出确定值')
+            warnings.append({'code':'discarded_nondefinitive_value','attribute':fact['attribute'],'message':'未知或冲突状态中的确定值已清空'})
+            fact['discarded_value']=fact['value'];fact['value']=None
         evidence=fact.get('evidence')
         if not isinstance(evidence,list) or (fact['state'] in ('observed','conflict') and not evidence):raise ValueError('缺少原文证据')
+        normalized=[]
         for e in evidence:
-            if isinstance(e,dict) and e.get('field') not in source:
-                aliases={'参数':['parameters','详细参数','详细信息'],'标题':['title','商品标题'],'SKU':['sku']}
-                targets=[k for k in aliases.get(e.get('field'),[]) if k in source and isinstance(e.get('quote'),str) and e['quote'] in str(source[k] or '')]
-                if targets:e['original_field']=e['field'];e['field']=targets[0]
-            if not isinstance(e,dict) or e.get('field') not in source or not isinstance(e.get('quote'),str) or not e['quote'] or e['quote'] not in str(source[e['field']] or ''):raise ValueError('底稿证据无法定位到原文')
+            located=_source_match(source,e.get('field') if isinstance(e,dict) else None,e.get('quote') if isinstance(e,dict) else None)
+            if not located:
+                if not salvage:raise ValueError('底稿证据无法定位到原文')
+                warnings.append({'code':'discarded_evidence','attribute':fact['attribute'],'message':'无法定位到原文的证据项已丢弃'})
+                continue
+            item={'field':located['field'],'quote':located['quote']}
+            requested=_unwrapped_field(located['requested_field'])
+            if located['field']!=located['requested_field'] or located['mode']!='exact':
+                item['original_field']=located['requested_field'];item['normalization']=located['mode'] if located['field']==requested else 'field_and_'+located['mode']
+                warnings.append({'code':'normalized_evidence','attribute':fact['attribute'],'message':'证据字段或大小写已按原文规范化'})
+            if item not in normalized:normalized.append(item)
+        fact['evidence']=normalized
+        if fact['state'] in ('observed','conflict') and not normalized:raise ValueError('底稿证据无法定位到原文')
         if fact['state']!='observed' and not fact.get('reason'):raise ValueError('未知或冲突需要原因')
         if fact.get('reason') and not re.search(r'[\u4e00-\u9fff]',fact['reason']):raise ValueError('底稿原因需要中文')
         identifier=any(k in fact['attribute'] for k in ('品牌','型号','SKU','ASIN','编号','原始标题','原文'))
@@ -88,11 +145,15 @@ def validate(value,source):
         if not identifier:
             for v in vals:
                 if isinstance(v,str) and re.search(r'[A-Za-z]{3,}',v) and not re.search(r'[\u4e00-\u9fff]',v) and not re.fullmatch(r'[A-Z0-9 _./+\-]+',v):raise ValueError('底稿标准值需要中文，歧义款名应保留原文并标记未知')
+        accepted.append(fact)
+      except (ValueError,TypeError,AttributeError) as error:
+        if not salvage:raise
+        warnings.append({'code':'discarded_fact','attribute':fact.get('attribute') if isinstance(fact,dict) else None,'message':str(error)})
     # An explicit conflict invalidates a competing definitive value of that same attribute.
     # Keep all underlying observations, so no source silently becomes authoritative.
     merged=[];handled=set()
-    for fact in facts:
-        name=fact['attribute'];related=[f for f in facts if f['attribute']==name]
+    for fact in accepted:
+        name=fact['attribute'];related=[f for f in accepted if f['attribute']==name]
         if any(f['state']=='conflict' for f in related):
             if name in handled:continue
             handled.add(name);evidence=[]
@@ -102,7 +163,9 @@ def validate(value,source):
             merged.append({'attribute':name,'value':None,'state':'conflict','raw_value':[f.get('raw_value') for f in related],
                 'reason':'；'.join(dict.fromkeys(f.get('reason','') for f in related if f.get('reason'))),'evidence':evidence,'observations':related})
         else:merged.append(fact)
-    return {'facts':merged}
+    result={'facts':merged}
+    if warnings:result['validation_warnings']=warnings
+    return result
 
 def validate_resume(jid):
     with Session() as s:
@@ -164,7 +227,7 @@ def execute(jid):
             for value in batch.result_items(result):
                 pid=value.get('product_id')
                 if pid not in pending:continue
-                try:validated=validate(value,spec['inputs'][pid])
+                try:validated=validate(value,spec['inputs'][pid],salvage=True)
                 except (ValueError,TypeError,AttributeError) as e:
                     validation_errors[pid]=str(e)
                     with draft.WRITE_LOCK,Session.begin() as s:
