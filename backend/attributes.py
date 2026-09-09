@@ -27,8 +27,11 @@ def validate_result(value,definition):
         own=next((a for a in attrs if a['attribute']==definition['attribute']),None)
         if own and own.get('value') is not normalized:raise ValueError('属性标准值与逐属性证据矛盾')
     elif shape=='multi_enum':
-        if not normalized or any(not isinstance(v,str) for v in normalized) or len(set(normalized))!=len(normalized):raise ValueError('多属性命中列表无效')
         positives={a['attribute'] for a in attrs if a.get('value') is True}
+        if normalized is None:
+            if positives:raise ValueError('未知结果不能包含明确正命中')
+            return value
+        if not isinstance(normalized,list) or not normalized or any(not isinstance(v,str) for v in normalized) or len(set(normalized))!=len(normalized):raise ValueError('多属性命中列表无效')
         if set(normalized)!=positives:raise ValueError('多属性命中缺少完整逐属性证据或包含矛盾')
         if definition.get('options') and any(v not in definition['options'] for v in normalized):raise ValueError('多属性结果不属于已确认候选值')
     return value

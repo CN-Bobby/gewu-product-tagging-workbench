@@ -31,6 +31,9 @@ def test_result_shapes_keep_scalar_simple_and_multi_strict():
     with pytest.raises(ValueError,match='候选值'):
         attributes.validate_result({'normalized_value':'16'}, {'result_shape':'scalar_enum','options':['中童','青少年']})
     attributes.validate_result({'normalized_value':['花卉','条纹'],'attributes':[{'attribute':'花卉','value':True,'evidence':'花朵'},{'attribute':'条纹','value':True,'evidence':'条纹'}]}, {'result_shape':'multi_enum','options':['花卉','条纹']})
+    attributes.validate_result({'normalized_value':None,'evidence':'无法判断','attributes':[{'attribute':'花卉','value':None,'evidence':'图案不清楚'},{'attribute':'条纹','value':None,'evidence':'图案不清楚'}]}, {'result_shape':'multi_enum','options':['花卉','条纹']})
+    with pytest.raises(ValueError,match='正命中'):
+        attributes.validate_result({'normalized_value':None,'evidence':'矛盾','attributes':[{'attribute':'花卉','value':True,'evidence':'明确花朵'}]}, {'result_shape':'multi_enum','options':['花卉']})
 
 
 @pytest.mark.parametrize(('raw','value'),[('Color: Blue | Size: 16','16'),('Size: 4 | Color: Blue','4'),('Size: 3-4T','4'),('Size: 5T','5'),('Size: Medium',None)])
