@@ -30,6 +30,12 @@ def environment(dataset_id, session_id=None):
     home.mkdir(parents=True,exist_ok=True)
     if not (source/'config.toml').is_file():raise ValueError('请先在网页模型设置中配置服务与授权')
     config=tomllib.loads((source/'config.toml').read_text(encoding='utf-8-sig'))
+    # The settings endpoint normally migrates legacy duplicated model
+    # prefixes.  Canonicalize again here so direct API callers and a service
+    # started during the first page load cannot launch a malformed project
+    # configuration.
+    from .model_settings import _canonical_config
+    config,_=_canonical_config(config)
     # Only provider definitions are shared; never import global plugins, memory or permissions.
     providers=config.get('providers',[])
     allowed={k:v for k,v in config.items() if k in ('providers','default_model','model')}

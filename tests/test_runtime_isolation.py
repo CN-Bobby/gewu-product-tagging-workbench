@@ -52,6 +52,33 @@ def test_model_config_api_never_returns_secret(tmp_path,monkeypatch):
     with pytest.raises(ValueError):model_settings.save({'name':'test','base_url':'http://unsafe','models':['text']})
 
 
+def test_legacy_qualified_model_names_are_migrated(tmp_path,monkeypatch):
+    home=source(tmp_path,monkeypatch)
+    (home/'config.toml').write_text(
+        'default_model="test/test/text"\n'
+        '[[providers]]\nname="test"\nkind="openai"\n'
+        'base_url="https://test.invalid/v1"\napi_key_env="TEST_KEY"\n'
+        'models=["test/text","test/test-vision"]\n'
+        'default="test/test/text"\n',encoding='utf-8')
+    result=model_settings.read()
+    assert result['default_model']=='test/text'
+    assert result['providers'][0]['models']==['text','test-vision']
+    assert result['providers'][0]['model_refs']==['test/text','test/test-vision']
+    assert model_settings.defaults()==('test/text','test/test-vision')
+    saved=(home/'config.toml').read_text()
+    assert '"models" = ["text", "test-vision"]' in saved
+    assert '"default_model" = "test/text"' in saved
+
+
+def test_provider_config_accepts_legacy_duplicate_reference(tmp_path,monkeypatch):
+    home=source(tmp_path,monkeypatch)
+    from backend.vision import provider_config
+    endpoint,key,model=provider_config('test/test/text')
+    assert endpoint=='https://test.invalid/v1/chat/completions'
+    assert key=='synthetic-test-only'
+    assert model=='text'
+
+
 def test_cache_cleanup_preserves_authoritative_records_and_images(dataset):
     before=draft.sheet(dataset['id'])
     with Session.begin() as s:s.add(VisionCache(fingerprint='test-only',content={'observation':'disposable'}));s.add(TextCache(fingerprint='test-text',content={'facts':[]}))

@@ -67,6 +67,8 @@ def system_prompt():
     return SYSTEM+'\n当前部署关闭自动视觉观察和image/both标签提案。可以读取图片是否存在，但不能声称已观察图片像素。'
 
 def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_MODEL):
+    from .model_settings import normalize_reference
+    vision_model=normalize_reference(vision_model)
     path=STORAGE/'harness'/dataset_id/suffix
     path.mkdir(parents=True,exist_ok=True)
     from . import tagging_rules
@@ -107,6 +109,8 @@ def instruction_hash():
 
 class ACP:
     def __init__(self,dataset_id,model=DEFAULT_MODEL,run_id=None,product_id=None,on_event=None,session_id=None):
+        from .model_settings import normalize_reference
+        model=normalize_reference(model)
         from . import tagging_rules
         self.skill_sha256=tagging_rules.freeze()['sha256']
         self.pending={};self.counter=0;self.lock=threading.Lock();self.closed=False;self.session_id=None
@@ -191,7 +195,25 @@ class ACP:
     def prompt(self,text):
         self.text=[]
         result=self.rpc('session/prompt',{'sessionId':self.session_id,'prompt':[{'type':'text','text':text}]})
-        if result.get('stopReason') not in ('end_turn',None):raise RuntimeError('Reasonix 提前停止：'+str(result.get('stopReason')))
+        stop=result.get('stopReason')
+        if stop not in ('end_turn',None):
+            detail=result.get('error') or result.get('message') or result.get('reason')
+            if isinstance(detail,(dict,list)):
+                detail=json.dumps(detail,ensure_ascii=False)
+            parts=['Reasonix 提前停止：'+str(stop)]
+            if detail:parts.append(str(detail)[:800])
+            if stop=='error' and not detail:
+                parts.append('请检查模型服务地址、API授权和模型名称；模型名称应填写服务内名称，不要重复服务名前缀')
+            diagnostics=[]
+            for line in self.diagnostics[-3:]:
+                line=line.strip()
+                if line:
+                    import re
+                    line=re.sub(r'(?i)Bearer\s+[^\s]+','Bearer [已隐藏]',line)
+                    line=re.sub(r'(?i)(api[_-]?key|token|secret)(\s*[:=]\s*)[^,;\s]+',r'\1\2[已隐藏]',line)
+                    diagnostics.append(line[:500])
+            if diagnostics:parts.append('CLI诊断：'+' | '.join(diagnostics))
+            raise RuntimeError('；'.join(parts))
         return ''.join(self.text)
 
     def cancel(self):

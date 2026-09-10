@@ -19,14 +19,23 @@ PROMPT='''你是商品图片事实提取工具。实际观察所提供的图片�
 
 def provider_config(model_ref):
     from .runtime_isolation import provider_home
+    from .model_settings import local_model_name
     home=provider_home()
     config_path=home/'config.toml'
     if not config_path.exists():raise ValueError('未找到 Reasonix 全局配置')
     config=tomllib.loads(config_path.read_text(encoding='utf-8-sig'))
-    name,sep,model=model_ref.partition('/')
+    from .model_settings import _canonical_config
+    config,_=_canonical_config(config)
+    if not isinstance(model_ref,str) or not model_ref.strip():
+        raise ValueError('模型引用为空，请在网页模型设置中选择有效模型')
+    name,sep,model=model_ref.strip().partition('/')
     provider=next((p for p in config.get('providers',[]) if p.get('name')==name),None)
     if not provider:raise ValueError('视觉模型 provider 未在 Reasonix 中配置')
     if not sep:model=provider.get('default') or provider.get('model') or provider.get('models',[None])[0]
+    # Accept legacy values such as provider/provider/model, but send only the
+    # provider-local model id to the OpenAI-compatible endpoint.
+    model=local_model_name(name,model)
+    if not model:raise ValueError('模型引用缺少具体模型名称')
     if provider.get('kind','openai')!='openai':raise ValueError('视觉工具当前支持 Reasonix 的 OpenAI 兼容 provider；请配置对应视觉端点')
     key_name=provider.get('api_key_env')
     # Match Reasonix v1.25.1: provider secrets live in its global .env, never copy them.
