@@ -54,13 +54,17 @@ report['identity_case']={
     'raw_sku':row90['raw']['SKU'],'parent_asin':row90['raw']['父ASIN'],
     'sku_zero_rows':len(zero_rows),'all_zero_rows_use_parent_asin':True,
 }
-blocked=client.post(f"/api/drafts/{swim['id']}/profile/observe",json={'goal':'Beta视觉入口拦截验证','limit':1})
-assert blocked.status_code==400 and '暂未开放' in blocked.text
-report['visual_guard']={'status_code':blocked.status_code,'message':blocked.json()['detail']}
+assert health['capabilities']['visual_tagging'] is True
+assert health['capabilities']['visual_tagging_status']=='available'
+report['visual_capability']={
+    'enabled':True,
+    'status':'available',
+    'boundary':'本脚本不发模型请求；自动视觉与图文联合能力由单独真实模型验收报告证明。',
+}
 report['seconds']=time.perf_counter()-started
 path=args.out/'report.json';path.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
 print(json.dumps({'report':str(path),'rows':[x['rows'] for x in report['dataset_cases']],
                   'columns':[x['original_columns'] for x in report['dataset_cases']],
                   'images':[x['images'] for x in report['dataset_cases']],
-                  'identity_case':report['identity_case'],'visual_guard':report['visual_guard'],
+                  'identity_case':report['identity_case'],'visual_capability':report['visual_capability'],
                   'seconds':report['seconds']},ensure_ascii=False,indent=2))
