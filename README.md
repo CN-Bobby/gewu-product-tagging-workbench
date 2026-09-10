@@ -2,6 +2,8 @@
 
 开发和交付状态以 [交付台账](docs/DELIVERY_STATUS.md) 为准；版本规则见 [发布管理](docs/RELEASE_GOVERNANCE.md)。根 `VERSION.json` 是唯一应用版本来源。开发分支版本不代表当前服务已部署或已通过发布验收。
 
+GitHub 接管、分支推送、Release 附件和本机丢失恢复见 [GitHub 接管与发布](docs/GITHUB接管与发布.md)；数据和凭据边界见 [安全说明](SECURITY.md)。
+
 本机 Excel 商品打标应用。左侧持续 Reasonix 对话，右侧一张累积标签的工作表；SQLite 保存在本机，使用 Reasonix 已有模型授权。
 
 ## 启动
