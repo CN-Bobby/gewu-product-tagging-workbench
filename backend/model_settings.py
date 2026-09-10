@@ -146,7 +146,7 @@ def defaults():
 _TEST_IMAGE='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 
 
-def _safe_response_error(response, capability):
+def _safe_response_error(response, capability, secret=''):
     """Return a short diagnostic without echoing credentials or payloads."""
     detail=''
     try:
@@ -157,6 +157,8 @@ def _safe_response_error(response, capability):
     except Exception:
         detail=''
     detail=re.sub(r'(?i)bearer\s+[^\s]+','Bearer ***',str(detail))
+    if secret:
+        detail=detail.replace(secret,'***')
     detail=detail.replace('\n',' ').strip()[:240]
     suffix='：'+detail if detail else ''
     return f'{capability}模型验证失败（HTTP {response.status_code}）{suffix}'
@@ -176,7 +178,7 @@ def _validate_request(endpoint, api_key, model, capability, content):
     if response.status_code==404:
         raise ValueError(f'{capability}模型验证失败（模型或接口不存在，HTTP 404）')
     if response.status_code!=200:
-        raise ValueError(_safe_response_error(response,capability))
+        raise ValueError(_safe_response_error(response,capability,api_key))
     try:
         data=response.json()
     except Exception as exc:
