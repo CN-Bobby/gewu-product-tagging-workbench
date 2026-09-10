@@ -77,7 +77,6 @@ OutFile "OUTFILE"
 InstallDir "$LOCALAPPDATA\\GeWuWorkbench\\versions\\BUILDID"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
-Page directory
 Page instfiles
 UninstPage uninstConfirm
 UninstPage instfiles
@@ -105,7 +104,7 @@ Delete "$SMPROGRAMS\\格物工作台\\格物工作台 BUILDID.lnk"
 DELETEFILES
 DELETEDIRS
 Delete "$INSTDIR\\Uninstall.exe"
-RMDir "$INSTDIR"
+RMDir /r "$INSTDIR"
 DeleteRegKey HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWu-BUILDID"
 SectionEnd
 '''.replace('WINDOWSVERSION',windows_version).replace('VERSION',version['version']).replace('BUILDID',version['version']+('-'+commit[:12] if args.candidate else '')).replace('OUTFILE',str(out/('GeWuWorkbench-'+version['version']+'-Setup.exe'))).replace('APPDIR',str(app)).replace('DELETEFILES',delete_files).replace('DELETEDIRS',delete_dirs)
