@@ -111,6 +111,7 @@ class ACP:
     def __init__(self,dataset_id,model=DEFAULT_MODEL,run_id=None,product_id=None,on_event=None,session_id=None):
         from .model_settings import normalize_reference
         model=normalize_reference(model)
+        self.model=model
         from . import tagging_rules
         self.skill_sha256=tagging_rules.freeze()['sha256']
         self.pending={};self.counter=0;self.lock=threading.Lock();self.closed=False;self.session_id=None
@@ -201,6 +202,7 @@ class ACP:
             if isinstance(detail,(dict,list)):
                 detail=json.dumps(detail,ensure_ascii=False)
             parts=['Reasonix 提前停止：'+str(stop)]
+            parts.append('模型引用：'+self.model)
             if detail:parts.append(str(detail)[:800])
             if stop=='error' and not detail:
                 parts.append('请检查模型服务地址、API授权和模型名称；模型名称应填写服务内名称，不要重复服务名前缀')
