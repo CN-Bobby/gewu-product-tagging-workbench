@@ -8,7 +8,7 @@ from test_draft import add,job,run
 def test_dynamic_headers_preserved():
     wb=openpyxl.Workbook();ws=wb.active
     ws.append(['图片','父ASIN','Product Title','规格说明','详细参数','sku','2605月销','累计销量','编号'])
-    ws.append(['','B012345678','Girls 2 Piece Tankini','尺寸说明','Fabric: cotton','Size: 8-9 Years',3,18,'ABC-123'])
+    ws.append(['','SYNTHETIC-PARENT-001','Girls 2 Piece Tankini','尺寸说明','Fabric: cotton','Size: 8-9 Years',3,18,'ABC-123'])
     b=io.BytesIO();wb.save(b);ds=importer.import_file(b.getvalue(),'variant.xlsx');cat=field_catalog.read(ds['id'])
     assert ds['mapping']['title']=='Product Title'
     assert [f['role'] for f in cat['fields']][3:5]==['parameters','parameters']

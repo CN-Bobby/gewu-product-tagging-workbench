@@ -5,6 +5,7 @@ from sqlalchemy import select
 from backend.db import *
 from backend import draft,batch,text_facts,tagging_rules,attributes,draft_export,importer
 from test_draft import add,job,run
+from fixture_data import FIXTURE_PATH
 
 def fake_facts(model,messages,metrics,lock):
     inputs=json.loads(messages[-1]['content'])
@@ -27,7 +28,7 @@ def test_text_extraction_cache_and_no_vision(dataset,monkeypatch):
     monkeypatch.setattr(batch,'observation',lambda *a:pytest.fail('must not call vision'))
     j=run(text_facts.prepare(did));assert j['status']=='completed' and len(j['completed'])==10
     assert len(text_facts.records(did))==10 and not draft.sheet(did)['columns']
-    other=importer.import_file((ROOT/'测试10行.xlsx').read_bytes(),'重复文件.xlsx')['id']
+    other=importer.import_file(FIXTURE_PATH.read_bytes(),'重复文件.xlsx')['id']
     monkeypatch.setattr(batch,'request_json',lambda *a:pytest.fail('cache should satisfy upload'))
     repeated=run(text_facts.prepare(other));assert repeated['metrics']['cache_hits']==10
     assert all(r['product_id'] not in j['spec']['product_ids'] for r in text_facts.records(other))

@@ -21,7 +21,9 @@ if __name__=='__main__':
     init_db()
     with Session() as s:ds=s.scalar(select(Dataset).order_by(Dataset.created_at))
     if ds:did=ds.id
-    else:did=importer.import_file((ROOT/'测试10行.xlsx').read_bytes(),'测试10行.xlsx')['id']
+    else:
+        sample=ROOT/'tests'/'fixtures'/'sample_10_rows.xlsx'
+        did=importer.import_file(sample.read_bytes(),sample.name)['id']
     report({'dataset_id':did,'storage':str(STORAGE)})
     cols={c['key']:c for c in draft.sheet(did)['columns']}
     pieces=cols.get('pieces') or add(did,{'key':'pieces','name':'套装件数','type':'FACT','source':'text','definition':'仅根据标题和卖点明确标注的2pcs、2 piece或3 piece判断套装件数；没有明确数量则未知。禁止从图片判断。','fields':['title','bullets'],'options':['2件套','3件套']})

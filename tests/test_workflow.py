@@ -8,6 +8,7 @@ from sqlalchemy import select
 from fastapi.testclient import TestClient
 from backend import importer, service
 from backend.db import *
+from fixture_data import FIXTURE_PATH
 
 DEFS=[{'key':'color','name':'颜色','type':'FACT','definition':'仅提取标题或 SKU 中明确声明的颜色，不确定则留空','options':[],'source':'text'}]
 def schema(ds):
@@ -18,14 +19,14 @@ def finish(run):
     with Session.begin() as s:require(s,Run,run['id']).status='completed'
 
 def test_wps_images_row_binding_and_original_integrity(dataset):
-    source=Path('测试10行.xlsx').read_bytes()
+    source=FIXTURE_PATH.read_bytes()
     assert hashlib.sha256(source).hexdigest()==dataset['sha256']
     assert Path(dataset['original_file']).read_bytes()==source
     ps=service.products(dataset['id'])
     assert len(ps)==10 and len(dataset['headers'])==70
     assert [p['row'] for p in ps]==list(range(2,12))
-    assert ps[0]['anchor']=='B0G19FTZS5'
-    assert ps[-1]['anchor']=='B0GV3KV718'
+    assert ps[0]['anchor']=='SYNTHETIC-ASIN-001'
+    assert ps[-1]['anchor']=='SYNTHETIC-ASIN-010'
     assert ps[0]['raw']['Prime价格($)'] is None
     assert ps[0]['fields']['sales']==1112
     assert all(len([a for a in p['images'] if a['source']=='excel'])==1 for p in ps)
@@ -33,7 +34,7 @@ def test_wps_images_row_binding_and_original_integrity(dataset):
     assert all('DISPIMG' in p['raw']['图片'] for p in ps)
 
 def test_dataset_and_schema_version_never_overwrite(dataset):
-    d2=importer.import_file(Path('测试10行.xlsx').read_bytes(),'第二期.xlsx',workspace_id=dataset['workspace_id'])
+    d2=importer.import_file(FIXTURE_PATH.read_bytes(),'第二期.xlsx',workspace_id=dataset['workspace_id'])
     assert d2['version']==2 and dataset['version']==1
     a=schema(dataset);b=service.propose(dataset['id'],'第二个目标',[{**DEFS[0],'definition':'只分析标题的颜色声明，不用SKU'}])
     assert b['version']==2
@@ -91,13 +92,13 @@ def test_export_three_sheets_images_and_nulls(dataset):
     assert ws.cell(2,dataset['headers'].index('月销量')+1).value==1112
     assert all(c.data_type!='f' for row in ws for c in row)
     assert w['AI_Detail'].max_row==11
-    assert Path(dataset['original_file']).read_bytes()==Path('测试10行.xlsx').read_bytes()
+    assert Path(dataset['original_file']).read_bytes()==FIXTURE_PATH.read_bytes()
 
 def test_http_import_inspection_and_approval_surface(dataset):
     from backend.app import app
     with TestClient(app) as c:
         assert c.get('/api/health').status_code==200
-        p=c.post('/api/import/inspect',files={'file':('测试10行.xlsx',Path('测试10行.xlsx').read_bytes())})
+        p=c.post('/api/import/inspect',files={'file':(FIXTURE_PATH.name,FIXTURE_PATH.read_bytes())})
         assert p.status_code==200 and p.json()['embedded_images']==10
         assert c.get('/api/datasets/'+dataset['id']).json()['dataset']['stage']=='DATA_READY'
         assert c.post('/api/datasets/'+dataset['id']+'/schemas',json={'goal':'test','definitions':DEFS},headers={'origin':'https://evil.example'}).status_code==403

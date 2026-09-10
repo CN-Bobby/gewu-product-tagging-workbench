@@ -20,7 +20,8 @@ if __name__=='__main__':
     if old and old.kind=='sample':
         run=obj(old);dataset_id=old.dataset_id;schema_id=old.schema_id
     else:
-        ds=importer.import_file((ROOT/'测试10行.xlsx').read_bytes(),'自动验收_测试10行.xlsx')
+        sample=ROOT/'tests'/'fixtures'/'sample_10_rows.xlsx'
+        ds=importer.import_file(sample.read_bytes(),'自动验收_sample_10_rows.xlsx')
         sc=service.propose(ds['id'],'自动化功能验收用规则；不是用户确认的业务结论',[
             {'key':'color','name':'视觉颜色','type':'FACT','definition':'依据视觉工具返回的像素观察，列出服装可见的主要颜色组合；不把SKU色名当作图像事实','options':[],'source':'image'},
             {'key':'pattern','name':'图案','type':'FACT','definition':'依据视觉工具描述主要图案元素；纯色明确写纯色，无法观察则留空','options':[],'source':'image'},

@@ -1,0 +1,56 @@
+name: Workbench CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Check repository boundary and version
+        run: |
+          python scripts/repository_audit.py
+          python scripts/sync_version.py --check
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Build frontend
+        run: npm --prefix frontend run build
+
+      - name: Ensure verification did not edit tracked files
+        shell: pwsh
+        run: |
+          if ((git status --porcelain) -ne $null -and (git status --porcelain).Length -gt 0) {
+            git status --short
+            throw 'CI changed tracked files; use a clean, reproducible build.'
+          }

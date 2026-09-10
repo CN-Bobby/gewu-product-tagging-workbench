@@ -1,0 +1,75 @@
+name: Publish Windows Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    environment: release
+    timeout-minutes: 75
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python and Node
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies and verify release gate
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements.txt
+          npm ci --prefix frontend
+          python scripts/repository_audit.py
+          python scripts/sync_version.py --check
+          $version = (Get-Content VERSION.json -Raw | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw "tag and VERSION.json disagree" }
+          if ((Get-Content VERSION.json -Raw | ConvertFrom-Json).release_status -ne 'accepted') { throw 'release_status is not accepted' }
+          $evidence = "docs/evidence/$version.json"
+          if (-not (Test-Path $evidence)) { throw "missing sanitized evidence: $evidence" }
+          python scripts/check_release.py --evidence $evidence
+          python scripts/fetch_build_inputs.py
+
+      - name: Build and verify installer
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION.json -Raw | ConvertFrom-Json).version
+          python scripts/build_windows.py --evidence "docs/evidence/$version.json"
+          $commit = (git rev-parse HEAD).Substring(0,12)
+          python scripts/assemble_release.py --build-dir "releases/$version/$commit" --version $version --evidence "docs/evidence/$version.json"
+          python -m pytest -q
+
+      - name: Publish release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content VERSION.json -Raw | ConvertFrom-Json).version
+          $commit = (git rev-parse HEAD).Substring(0,12)
+          $out = "releases/$version/$commit"
+          $notes = @"
+          # 格物工作台 $version
+
+          - commit: $(git rev-parse HEAD)
+          - Skill、Reasonix、schema 和构建输入见 release-manifest.json
+          - 安装、升级和回退步骤见 `升级与回退说明.md`
+          - SHA256 校验见 `SHA256SUMS.txt`
+          "@
+          $notes | Set-Content -Encoding utf8 "$out/RELEASE_NOTES.md"
+          gh release create $env:GITHUB_REF_NAME --title "格物工作台 $version" --prerelease --notes-file "$out/RELEASE_NOTES.md"
+          $assets = @(Get-ChildItem -LiteralPath $out -File | Where-Object { $_.Name -ne 'RELEASE_NOTES.md' } | ForEach-Object FullName)
+          gh release upload $env:GITHUB_REF_NAME $assets

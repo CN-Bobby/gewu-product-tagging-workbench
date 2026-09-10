@@ -31,7 +31,8 @@ with sync_playwright() as pw:
     page.on('pageerror',lambda e:errors.append(str(e)))
     page.goto(BASE)
     previous=page.get_by_label('数据集',exact=True).input_value()
-    page.locator('input[type=file]').set_input_files(str(ROOT/'测试10行.xlsx'))
+    sample=ROOT/'tests'/'fixtures'/'sample_10_rows.xlsx'
+    page.locator('input[type=file]').set_input_files(str(sample))
     expect(page.get_by_text('核对表头与项目',exact=True)).to_be_visible()
     expect(page.get_by_label('映射SKU',exact=True)).not_to_have_value('')
     with page.expect_response(lambda r:r.url==BASE+'/api/import' and r.request.method=='POST') as imported:
@@ -58,7 +59,7 @@ with sync_playwright() as pw:
     expect(page.get_by_text('已保存修订1',exact=True)).to_be_visible()
     page.locator('.modal').get_by_role('button',name='关闭',exact=True).click()
     page.get_by_role('button',name='保存版本',exact=True).click()
-    page.locator('input[type=file]').set_input_files({'name':'二月验收.xlsx','mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','buffer':(ROOT/'测试10行.xlsx').read_bytes()})
+    page.locator('input[type=file]').set_input_files({'name':'二月验收.xlsx','mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','buffer':sample.read_bytes()})
     expect(page.get_by_text('核对表头与项目',exact=True)).to_be_visible()
     page.get_by_label('上传所属项目',exact=True).select_option(value=state['dataset']['workspace_id'])
     with page.expect_response(lambda r:r.url==BASE+'/api/import' and r.request.method=='POST') as imported:

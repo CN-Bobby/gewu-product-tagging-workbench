@@ -35,7 +35,8 @@ if __name__=='__main__':
     batch.request_json=traced
     try:
         with TestClient(app) as client:
-            response=client.post('/api/import',files={'file':('Skill验收10行.xlsx',(ROOT/'测试10行.xlsx').read_bytes(),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')})
+            sample=ROOT/'tests'/'fixtures'/'sample_10_rows.xlsx'
+            response=client.post('/api/import',files={'file':('Skill验收10行.xlsx',sample.read_bytes(),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')})
             assert response.status_code==200,response.text
             imported=response.json();did=imported['id'];result['dataset_id']=did;report({'dataset_id':did,'storage':str(STORAGE)})
             result['first_extraction']=wait(imported['text_job_id'])
@@ -58,7 +59,7 @@ if __name__=='__main__':
                         c=ws.cell(before['rows'].index(r)+2,index);assert c.value==value and c.data_type=='n';numeric+=1
             result['export']={'path':str(path),'rows':10,'original_fields':70,'images':10,'numeric_cells_preserved':numeric}
             # Second upload proves cache reuse without inheriting row identity.
-            second=client.post('/api/import',files={'file':('相同格式重复上传.xlsx',(ROOT/'测试10行.xlsx').read_bytes())}).json()
+            second=client.post('/api/import',files={'file':('相同格式重复上传.xlsx',sample.read_bytes())}).json()
             result['repeat_upload']=wait(second['text_job_id']);assert result['repeat_upload']['metrics']['cache_hits']==10
             assert second['id']!=did
             # Clearly synthetic records exercise multiple positive and uncertain alternatives.

@@ -19,7 +19,7 @@
 |---|---|---|
 |自动回归|已验收|104项通过；最终候选另附`ACCEPTANCE-RESULTS.json`绑定commit和报告SHA256|
 |352行与动态字段|已验收|`storage/release-verification/beta-data-f830d7b/report.json`：352行、19个原字段、352图；10行、70个原字段、10图|
-|ROW-90与SKU=0|已验收|同上：ROW-90显示父ASIN `B0F83KJBW5`，10个SKU=0行均回退父ASIN且保留原始0|
+|SKU=0回退|已验收|代表行使用父ASIN作为商品标识，所有SKU=0行均回退父ASIN且保留原始0|
 |精确修复|已验收|`storage/release-verification/beta-repair-ui-f830d7b/report.json`：跨列分别冻结尺码段与热卖SKU尺码范围；确定性修订显示整列352、预计模型请求0|
 |任务区布局|已验收|`storage/release-verification/beta-task-ui-f830d7b/report.json`：两种分辨率和三种缩放共6组，末行按钮完整可见可点|
 |真实文字模型与性能|已验收并保留限制|包内首次文字底稿2请求、零视觉；重复结果复用0请求。缺少同期旧Agent重跑，历史342秒只作来源明确的参考|

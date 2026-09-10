@@ -15,5 +15,5 @@ def database():
 @pytest.fixture
 def dataset():
     from backend.importer import import_file
-    source=Path(__file__).resolve().parents[1]/'测试10行.xlsx'
+    source=Path(__file__).resolve().parent/'fixtures'/'sample_10_rows.xlsx'
     return import_file(source.read_bytes(),source.name)

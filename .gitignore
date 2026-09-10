@@ -13,3 +13,5 @@ build/
 dist/
 releases/
 *.spec
+!tests/fixtures/
+!tests/fixtures/*.xlsx

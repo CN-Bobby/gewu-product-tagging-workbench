@@ -14,14 +14,14 @@ def workbook_bytes(headers,row):
 
 
 def test_zero_sku_falls_back_to_parent_asin_with_explicit_mapping():
-    data=workbook_bytes(['SKU','父ASIN','标题'],[0,'B0F83KJBW5','泳衣'])
+    data=workbook_bytes(['SKU','父ASIN','标题'],[0,'SYNTHETIC-PARENT-001','泳衣'])
     preview=importer.inspect(data)
-    assert preview['sample'][0]['anchor']=='B0F83KJBW5'
+    assert preview['sample'][0]['anchor']=='SYNTHETIC-PARENT-001'
     assert preview['sample'][0]['identity_source']=='parent_asin'
-    dataset=importer.import_file(data,'泳衣样本.xlsx',mapping={'sku':'SKU','parent_asin':'父ASIN','title':'标题'})
+    dataset=importer.import_file(data,'synthetic-parent.xlsx',mapping={'sku':'SKU','parent_asin':'父ASIN','title':'标题'})
     with Session() as session:product=session.scalar(select(Product).where(Product.dataset_id==dataset['id']))
-    assert product.anchor=='B0F83KJBW5' and product.identity_source=='parent_asin'
-    assert product.raw['SKU']==0 and dataset['source_filename']=='泳衣样本.xlsx'
+    assert product.anchor=='SYNTHETIC-PARENT-001' and product.identity_source=='parent_asin'
+    assert product.raw['SKU']==0 and dataset['source_filename']=='synthetic-parent.xlsx'
 
 
 def test_result_shapes_keep_scalar_simple_and_multi_strict():

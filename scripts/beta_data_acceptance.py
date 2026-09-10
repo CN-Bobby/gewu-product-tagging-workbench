@@ -47,7 +47,7 @@ sheet=get(f"/api/drafts/{swim['id']}/sheet")
 zero_rows=[row for row in sheet['rows'] if row['raw'].get('SKU') in (0,'0')]
 row90=next(row for row in sheet['rows'] if row['row']==90)
 assert row90['raw']['SKU']==0
-assert row90['anchor']=='B0F83KJBW5' and row90['identity_source']=='parent_asin'
+assert row90['anchor']==row90['raw'].get('父ASIN') and row90['identity_source']=='parent_asin'
 assert len(zero_rows)==10 and all(row['identity_source']=='parent_asin' for row in zero_rows)
 report['identity_case']={
     'row90':{key:row90[key] for key in ('row','anchor','identity_source')},

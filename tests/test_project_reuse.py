@@ -5,10 +5,11 @@ from sqlalchemy import select
 from backend import draft,batch,templates,importer,result_reuse
 from backend.db import *
 from test_draft import add,run
+from fixture_data import FIXTURE_PATH
 
 
 def new_month(dataset):
-    return importer.import_file((ROOT/'测试10行.xlsx').read_bytes(),'二月.xlsx',workspace_id=dataset['workspace_id'])
+    return importer.import_file(FIXTURE_PATH.read_bytes(),'二月.xlsx',workspace_id=dataset['workspace_id'])
 
 
 def test_template_revisions_and_months_are_independent(dataset):
@@ -23,7 +24,7 @@ def test_template_revisions_and_months_are_independent(dataset):
     second=templates.save(did,'件数标准',[column['id']],first['template_id'])
     assert second['revision']==2
     with Session() as s:assert json.dumps(require(s,TemplateRevision,first['id']).data,sort_keys=True)==original
-    unrelated=importer.import_file((ROOT/'测试10行.xlsx').read_bytes(),'其他项目.xlsx')
+    unrelated=importer.import_file(FIXTURE_PATH.read_bytes(),'其他项目.xlsx')
     with pytest.raises(ValueError,match='同项目'):templates.propose_copy(unrelated['id'],first['id'])
 
 
