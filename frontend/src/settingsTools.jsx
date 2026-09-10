@@ -1,9 +1,87 @@
 import React,{useState,useEffect} from 'react';
-export function ProviderSettings({api,onSaved}){
- const [name,setName]=useState('deepseek'),[base,setBase]=useState(''),[key,setKey]=useState(''),[models,setModels]=useState(''),[status,setStatus]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
- useEffect(()=>{api('/api/settings/models').then(value=>{setStatus(value);const provider=(value.providers||[]).find(p=>p.name===(value.default_model||'').split('/')[0])||(value.providers||[])[0];if(provider){setName(provider.name||'');setBase(provider.base_url||'');setModels((provider.models||[provider.model]).filter(Boolean).join('\n'))}}).catch(e=>setError(e.message))},[]);
- return <section><h4>模型服务与授权</h4>{status?.providers?.map(p=><p key={p.name}>{p.name} · {p.authorized?'已保存授权':'未配置授权'} · {(p.model_refs||p.models||[p.model]).join('、')}</p>)}<p>填写OpenAI兼容服务。密钥仅保存于本机，不进入商品文件、日志或分发包。</p><label>服务名称<input aria-label="模型服务名称" value={name} onChange={e=>setName(e.target.value)}/></label><label>HTTPS服务地址<input aria-label="模型服务地址" placeholder="https://服务地址/v1" value={base} onChange={e=>setBase(e.target.value)}/></label><label>服务内模型名（每行一个，文本模型放首行）<textarea aria-label="服务模型列表" value={models} onChange={e=>setModels(e.target.value)}/></label><p>模型列表填写服务内名称，例如 <code>deepseek-v4-flash</code>；不要重复填写服务名前缀。保存后系统会显示完整引用。</p><label>API密钥<input aria-label="模型授权密钥" type="password" autoComplete="new-password" value={key} onChange={e=>setKey(e.target.value)}/></label><p>修改已有服务时留空可保留原密钥。</p>{error&&<p role="alert">{error}</p>}<button disabled={busy||!base||!models} onClick={async()=>{setBusy(true);setError('');try{await api('/api/settings/models',{name,base_url:base,models:models.split('\n').map(s=>s.trim()).filter(Boolean),api_key:key});setKey('');const value=await api('/api/settings/models');setStatus(value);onSaved(value.defaults)}catch(e){setError(e.message)}finally{setBusy(false)}}}>{busy?'正在保存…':'保存本机服务配置'}</button></section>
+
+function localModel(provider,value){
+  let result=String(value||'').trim();
+  const prefix=String(provider||'').trim()+'/';
+  while(prefix!=='/'&&result.startsWith(prefix)) result=result.slice(prefix.length);
+  return result.replace(/^\/+|\/+$/g,'');
 }
+
+function validationLabel(value){
+  if(value?.status==='validated') return '已通过';
+  if(value?.status==='failed') return '验证失败';
+  return value?'待验证':'未验证';
+}
+
+export function ProviderSettings({api,onSaved}){
+  const [name,setName]=useState('deepseek');
+  const [base,setBase]=useState('');
+  const [key,setKey]=useState('');
+  const [textModel,setTextModel]=useState('');
+  const [visionModel,setVisionModel]=useState('');
+  const [status,setStatus]=useState(null);
+  const [error,setError]=useState('');
+  const [busy,setBusy]=useState(false);
+
+  const load=()=>api('/api/settings/models').then(value=>{
+    setStatus(value);
+    const provider=(value.providers||[]).find(p=>p.name===(value.default_model||'').split('/')[0])||(value.providers||[])[0];
+    if(provider){
+      setName(provider.name||'');
+      setBase(provider.base_url||'');
+      const models=(provider.models||[]).filter(Boolean);
+      setTextModel(localModel(provider.name,provider.text_model||provider.default||models[0]||''));
+      setVisionModel(localModel(provider.name,provider.vision_model||models.find(m=>/vision/i.test(m))||models[1]||models[0]||''));
+    }
+  });
+  useEffect(()=>{load().catch(e=>setError(e.message))},[]);
+
+  const textLocal=localModel(name,textModel),visionLocal=localModel(name,visionModel);
+  const textRef=name&&textLocal?`${name}/${textLocal}`:'—';
+  const visionRef=name&&visionLocal?`${name}/${visionLocal}`:'—';
+  const provider=status?.providers?.find(p=>p.name===name);
+  const validation=provider?.validation;
+  const submit=async()=>{
+    setBusy(true);setError('');
+    try{
+      await api('/api/settings/models',{name,base_url:base,text_model:textLocal,vision_model:visionLocal,api_key:key});
+      setKey('');
+      const value=await api('/api/settings/models');
+      setStatus(value);
+      onSaved(value.defaults);
+    }catch(e){setError(e.message)}finally{setBusy(false)}
+  };
+  return <section className="provider-settings">
+    <div className="settings-intro">
+      <div><span className="eyebrow">本机连接</span><h3>模型服务与授权</h3></div>
+      <p>配置保存前会分别发送一条不含商品数据的最小文本请求和视觉请求。密钥只保存在本机。</p>
+    </div>
+    <div className="settings-card">
+      <div className="settings-card-title"><strong>服务连接</strong><span>OpenAI 兼容接口</span></div>
+      <div className="settings-grid">
+        <label className="settings-field"><span className="field-label">本机服务标识</span><input aria-label="本机服务标识" value={name} onChange={e=>setName(e.target.value)} placeholder="deepseek"/><small className="field-help">本机配置别名，用于组成“服务名/模型名”，不是模型名称。</small></label>
+        <label className="settings-field"><span className="field-label">OpenAI 兼容服务地址</span><input aria-label="OpenAI兼容服务地址" value={base} onChange={e=>setBase(e.target.value)} placeholder="https://api.example.com/v1"/><small className="field-help">填写服务根地址或 /v1 地址；不要填写 API Key、用户名密码或 /chat/completions。</small></label>
+      </div>
+      <label className="settings-field"><span className="field-label">API 密钥</span><input aria-label="API密钥" type="password" autoComplete="new-password" value={key} onChange={e=>setKey(e.target.value)} placeholder={provider?.authorized?'已保存，留空以继续使用':'首次配置必填'}/><small className="field-help">本机保存，不进入商品文件、日志、安装包或 Git。修改已有服务时留空可保留原密钥。</small></label>
+    </div>
+    <div className="settings-card">
+      <div className="settings-card-title"><strong>用途模型</strong><span>填写服务内模型名</span></div>
+      <div className="settings-grid">
+        <label className="settings-field"><span className="field-label">文本模型 <b>必填</b></span><input aria-label="文本模型" value={textModel} onChange={e=>setTextModel(e.target.value)} placeholder="deepseek-v4-flash"/><small className="field-help">例如 deepseek-v4-flash。无需重复填写服务名前缀。</small></label>
+        <label className="settings-field"><span className="field-label">视觉模型 <b>必填</b></span><input aria-label="视觉模型" value={visionModel} onChange={e=>setVisionModel(e.target.value)} placeholder="deepseek-v4-flash-vision-exp"/><small className="field-help">用于主图观察；可以与文本模型填写相同名称。</small></label>
+      </div>
+      <div className="canonical-ref"><span>当前实际引用</span><div><code>文本：{textRef}</code><code>视觉：{visionRef}</code></div><small>这是系统实际发送给 Reasonix 的规范引用，用户不需要再次填写。</small></div>
+    </div>
+    <div className="settings-card status-card">
+      <div className="settings-card-title"><strong>配置状态</strong><span>{provider?.name||name||'未配置'}</span></div>
+      <div className="status-grid"><div><span>服务地址</span><b className={provider?.base_url?'ok':''}>{provider?.base_url?'已保存':'未保存'}</b></div><div><span>授权</span><b className={provider?.authorized?'ok':''}>{provider?.authorized?'已保存':'未保存'}</b></div><div><span>文本模型</span><b className={validation?.text_model===textLocal&&validation?.status==='validated'?'ok':''}>{validation?.text_model===textLocal&&validation?.status==='validated'?'可用':'待验证'}</b></div><div><span>视觉模型</span><b className={validation?.vision_model===visionLocal&&validation?.status==='validated'?'ok':''}>{validation?.vision_model===visionLocal&&validation?.status==='validated'?'可用':'待验证'}</b></div></div>
+      {validation?.validated_at&&<small className="field-help">最近验证：{new Date(validation.validated_at).toLocaleString()}</small>}
+    </div>
+    {error&&<p className="settings-error" role="alert">{error}<br/><small>原配置仍保留；请按提示修正地址、授权或模型名称后重试。</small></p>}
+    <div className="settings-actions"><button className="primary" disabled={busy||!name||!base||!textLocal||!visionLocal} onClick={submit}>{busy?'正在验证文本与视觉模型…':'验证并保存配置'}</button><span>{busy?'两项验证均通过后才会替换当前配置':'文本：'+validationLabel(validation)+' · 视觉：'+validationLabel(validation)}</span></div>
+  </section>;
+}
+
 export function StorageDialog({api,onClose}){
  const [usage,setUsage]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
  const load=()=>api('/api/storage').then(setUsage);useEffect(()=>{load().catch(e=>setError(e.message))},[]);

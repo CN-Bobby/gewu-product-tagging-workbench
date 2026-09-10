@@ -77,7 +77,23 @@ OutFile "OUTFILE"
 InstallDir "$LOCALAPPDATA\\GeWuWorkbench\\versions\\BUILDID"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
+DirText "选择程序安装目录（仅选择当前用户可写目录）"
+Page directory
 Page instfiles
+Function .onVerifyInstDir
+  ClearErrors
+  CreateDirectory "$INSTDIR"
+  IfErrors not_writable
+  FileOpen $0 "$INSTDIR\\.gewu-install-test" w
+  IfErrors not_writable
+  FileWrite $0 "ok"
+  FileClose $0
+  Delete "$INSTDIR\\.gewu-install-test"
+  Return
+not_writable:
+  MessageBox MB_ICONSTOP "请选择当前用户可写的安装目录。Program Files 等受保护目录需要管理员权限，本安装包不会申请管理员权限。"
+  Abort
+FunctionEnd
 UninstPage uninstConfirm
 UninstPage instfiles
 Section

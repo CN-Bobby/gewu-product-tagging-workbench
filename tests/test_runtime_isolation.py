@@ -45,11 +45,35 @@ def test_session_copy_backed_up_and_original_preserved(tmp_path,monkeypatch):
 
 def test_model_config_api_never_returns_secret(tmp_path,monkeypatch):
     home=source(tmp_path,monkeypatch)
+    monkeypatch.setattr(model_settings,'validate_models',lambda *args,**kwargs:{'status':'validated','validated_at':'test','text_model':args[2],'vision_model':args[3]})
     result=model_settings.save({'name':'test','base_url':'https://test.invalid/v1','models':['text','test-vision'],'api_key':'synthetic-new-secret'})
     assert 'synthetic-new-secret' not in json.dumps(result)
     assert model_settings.defaults()==('test/text','test/test-vision')
     assert 'unrelated' in (home/'config.toml').read_text()
     with pytest.raises(ValueError):model_settings.save({'name':'test','base_url':'http://unsafe','models':['text']})
+
+
+def test_new_model_fields_are_saved_and_canonicalized(tmp_path,monkeypatch):
+    home=source(tmp_path,monkeypatch)
+    monkeypatch.setattr(model_settings,'validate_models',lambda *args,**kwargs:{'status':'validated','validated_at':'test','text_model':args[2],'vision_model':args[3]})
+    result=model_settings.save({'name':'test','base_url':'https://test.invalid/v1',
+        'text_model':'test/test/text','vision_model':'test/test/test-vision','api_key':'new-secret'})
+    provider=result['providers'][0]
+    assert provider['text_model']=='text' and provider['vision_model']=='test-vision'
+    assert provider['model_refs']==['test/text','test/test-vision']
+    assert provider['validation']['status']=='validated'
+
+
+def test_validation_failure_keeps_previous_configuration(tmp_path,monkeypatch):
+    home=source(tmp_path,monkeypatch)
+    monkeypatch.setattr(model_settings,'validate_models',lambda *args,**kwargs:{'status':'validated','validated_at':'test','text_model':args[2],'vision_model':args[3]})
+    model_settings.save({'name':'test','base_url':'https://test.invalid/v1','text_model':'text','vision_model':'test-vision','api_key':'original-secret'})
+    before=(home/'config.toml').read_text(),(home/'.env').read_text()
+    def fail(*args,**kwargs): raise ValueError('视觉模型验证失败（模型或接口不存在，HTTP 404）')
+    monkeypatch.setattr(model_settings,'validate_models',fail)
+    with pytest.raises(ValueError,match='视觉模型验证失败'):
+        model_settings.save({'name':'test','base_url':'https://new.invalid/v1','text_model':'new-text','vision_model':'new-vision','api_key':'replacement-secret'})
+    assert ((home/'config.toml').read_text(),(home/'.env').read_text())==before
 
 
 def test_legacy_qualified_model_names_are_migrated(tmp_path,monkeypatch):
