@@ -18,12 +18,21 @@
     },
     {
       "version": "0.5.0-beta.2",
+      "status": "superseded",
+      "artifact_kind": "external_candidate",
+      "commit": null,
+      "tag": null,
+      "superseded_by": "0.5.0-beta.3",
+      "note": "第二次客户外测发现图形安装目录检查会误入升级备份流程，停止分发。"
+    },
+    {
+      "version": "0.5.0-beta.3",
       "status": "pending_acceptance",
       "artifact_kind": "customer_candidate",
       "commit": null,
       "tag": null,
       "superseded_by": null,
-      "note": "安装、模型配置、Ask桥接、提案去重和对话展示修复后的第二次客户测试版。"
+      "note": "废弃整套程序备份回滚，改为有效旧版原目录直接覆盖；保留全部工作台功能。"
     }
   ]
 }

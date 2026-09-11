@@ -49,13 +49,23 @@ def test_release_ledger_and_single_install_identity():
     ledger=json.loads((root/'RELEASE_LEDGER.json').read_text(encoding='utf-8'))
     current=next(item for item in ledger['versions'] if item['version']==VERSION)
     assert current['status']==version['release_status']=='pending_acceptance'
-    beta1=next(item for item in ledger['versions'] if item['version']=='0.5.0-beta.1')
-    assert beta1['status']=='superseded' and beta1['superseded_by']==VERSION
+    previous=next(item for item in ledger['versions'] if item.get('superseded_by')==VERSION)
+    assert previous['version']=='0.5.0-beta.2' and previous['status']=='superseded'
     source=(root/'scripts'/'build_windows.py').read_text(encoding='utf-8')
     assert 'InstallDirRegKey HKCU "Software\\\\GeWuWorkbench" "InstallLocation"' in source
     assert 'Uninstall\\\\GeWuWorkbench' in source
     assert '格物工作台.lnk' in source
     assert "candidate_suffix='-candidate.'+commit[:12]" in source
+    assert 'PageCallbacks DirectoryPagePre' in source
+    assert 'IfFileExists "$INSTDIR\\\\Workbench.exe" 0 stable_repair' in source
+    assert 'IfFileExists "$INSTDIR\\\\build-manifest.json" 0 stable_repair' in source
+    assert 'IfFileExists "$INSTDIR\\\\.gewu-installing" 0 stable_invalid' in source
+    assert '${DirState} "$INSTDIR" $0' in source
+    assert '${DriveSpace} "$1" "/D=F /S=M" $0' in source
+    assert 'File /r "APPDIR\\\\*"' in source
+    assert 'CopyFiles /SILENT' not in source
+    assert 'UpgradeStage' not in source and 'UpgradeBackup' not in source
+    assert '已保留或恢复原版本' not in source
 
 
 def test_customer_artifact_names_are_version_only():
@@ -64,3 +74,4 @@ def test_customer_artifact_names_are_version_only():
     assert "格物工作台-{args.version}-安装程序.exe" in source
     assert "格物工作台-{args.version}-客户分发包.zip" in source
     assert "version already promoted; increment the version" in source
+    assert "item.get('superseded_by') == args.version" in source

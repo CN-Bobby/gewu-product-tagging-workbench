@@ -87,16 +87,29 @@ InstallDirRegKey HKCU "Software\\GeWuWorkbench" "InstallLocation"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 DirText "选择程序安装目录（仅选择当前用户可写目录）"
-Page directory
+PageEx directory
+  PageCallbacks DirectoryPagePre
+PageExEnd
 Page instfiles
 Var LegacyUninstaller
-Var UpgradeStage
-Var UpgradeBackup
+Var InstallMode
+Var InstallDirCreated
 Function .onInit
   StrCpy $LegacyUninstaller ""
+  StrCpy $InstallMode "fresh"
   ReadRegStr $0 HKCU "Software\\GeWuWorkbench" "InstallLocation"
   StrCmp $0 "" find_legacy
   StrCpy $INSTDIR $0
+  IfFileExists "$INSTDIR\\Workbench.exe" 0 stable_repair
+  IfFileExists "$INSTDIR\\build-manifest.json" 0 stable_repair
+  StrCpy $InstallMode "upgrade"
+  Return
+stable_repair:
+  IfFileExists "$INSTDIR\\.gewu-installing" 0 stable_invalid
+  StrCpy $InstallMode "repair"
+  Return
+stable_invalid:
+  StrCpy $InstallMode "fresh"
   Return
 find_legacy:
   StrCpy $0 0
@@ -114,7 +127,22 @@ legacy_found:
   ${GetParent} "$LegacyUninstaller" $2
   StrCmp $2 "" init_done
   StrCpy $INSTDIR $2
+  IfFileExists "$INSTDIR\\Workbench.exe" 0 legacy_repair
+  IfFileExists "$INSTDIR\\build-manifest.json" 0 legacy_repair
+  StrCpy $InstallMode "upgrade"
+  Return
+legacy_repair:
+  IfFileExists "$INSTDIR\\.gewu-installing" 0 legacy_invalid
+  StrCpy $InstallMode "repair"
+  Return
+legacy_invalid:
+  StrCpy $InstallMode "fresh"
 init_done:
+FunctionEnd
+Function DirectoryPagePre
+  StrCmp $InstallMode "fresh" show_directory_page
+  Abort
+show_directory_page:
 FunctionEnd
 Function RemoveLegacyRegistration
   StrCpy $0 0
@@ -132,6 +160,16 @@ legacy_cleanup_next:
 legacy_cleanup_done:
 FunctionEnd
 Function .onVerifyInstDir
+  StrCpy $InstallDirCreated "0"
+  ${GetRoot} "$INSTDIR" $1
+  ${DriveSpace} "$1" "/D=F /S=M" $0
+  StrCmp $0 "" insufficient_space
+  IntCmp $0 512 space_ok insufficient_space space_ok
+space_ok:
+  ${DirState} "$INSTDIR" $2
+  StrCmp $2 -1 0 directory_exists
+  StrCpy $InstallDirCreated "1"
+directory_exists:
   ClearErrors
   CreateDirectory "$INSTDIR"
   IfErrors not_writable
@@ -140,7 +178,13 @@ Function .onVerifyInstDir
   FileWrite $0 "ok"
   FileClose $0
   Delete "$INSTDIR\\.gewu-install-test"
+  StrCmp $InstallDirCreated "1" 0 verify_done
+  RMDir "$INSTDIR"
+verify_done:
   Return
+insufficient_space:
+  MessageBox MB_ICONSTOP "安装磁盘可用空间不足。请至少保留 512 MB 可用空间后重试。"
+  Abort
 not_writable:
   MessageBox MB_ICONSTOP "请选择当前用户可写的安装目录。Program Files 等受保护目录需要管理员权限，本安装包不会申请管理员权限。"
   Abort
@@ -148,47 +192,49 @@ FunctionEnd
 UninstPage uninstConfirm
 UninstPage instfiles
 Section
-StrCpy $UpgradeStage "$INSTDIR.gewu-new"
-StrCpy $UpgradeBackup "$INSTDIR.gewu-old"
-RMDir /r "$UpgradeStage"
-RMDir /r "$UpgradeBackup"
-SetOutPath "$UpgradeStage"
-File /r "APPDIR\\*"
-IfFileExists "$UpgradeStage\\Workbench.exe" +2 0
-  Abort "新版本程序文件不完整，原版本未修改。"
-IfFileExists "$INSTDIR\\Workbench.exe" 0 replace_program
+RMDir /r "$INSTDIR.gewu-new"
+RMDir /r "$INSTDIR.gewu-old"
+StrCmp $InstallMode "upgrade" stop_old_program
+StrCmp $InstallMode "repair" install_program
+${DirState} "$INSTDIR" $0
+StrCmp $0 -1 install_program
+StrCmp $0 0 install_program
+IfFileExists "$INSTDIR\\.gewu-installing" install_program
+MessageBox MB_ICONSTOP "所选目录不是空目录，也不是有效的格物工作台安装目录。请选择一个空目录；现有文件未修改。"
+Abort
+stop_old_program:
   ClearErrors
   ExecWait '"$INSTDIR\\Workbench.exe" --stop --no-open' $0
   IfErrors stop_failed
-  IntCmp $0 0 replace_program
+  IntCmp $0 0 install_program
 stop_failed:
-  Abort "旧工作台无法安全停止，升级已取消。请关闭工作台后重试。"
-replace_program:
-IfFileExists "$INSTDIR\\*" 0 install_new
-  CreateDirectory "$UpgradeBackup"
-  ClearErrors
-  CopyFiles /SILENT "$INSTDIR\\*.*" "$UpgradeBackup"
-  IfErrors replace_failed
-  IfFileExists "$UpgradeBackup\\Workbench.exe" 0 replace_failed
-  SetOutPath "$TEMP"
-  RMDir /r "$INSTDIR"
-  IfFileExists "$INSTDIR\\*" replace_failed 0
-install_new:
+  MessageBox MB_ICONSTOP "旧工作台无法安全停止。请关闭工作台及其浏览器页面后重试；程序和数据尚未更新。"
+  Abort
+install_program:
 CreateDirectory "$INSTDIR"
+FileOpen $0 "$INSTDIR\\.gewu-installing" w
+IfErrors write_failed
+FileWrite $0 "VERSION"
+FileClose $0
+SetOutPath "$INSTDIR"
 ClearErrors
-CopyFiles /SILENT "$UpgradeStage\\*.*" "$INSTDIR"
-IfErrors restore_old
-IfFileExists "$INSTDIR\\Workbench.exe" 0 restore_old
-IfFileExists "$INSTDIR\\build-manifest.json" 0 restore_old
+SetOverwrite on
+File /r "APPDIR\\*"
+IfErrors write_failed
+IfFileExists "$INSTDIR\\Workbench.exe" 0 incomplete_program
+IfFileExists "$INSTDIR\\build-manifest.json" 0 incomplete_program
+IfFileExists "$INSTDIR\\runtime\\pythonw.exe" 0 incomplete_program
+IfFileExists "$INSTDIR\\reasonix\\reasonix.exe" 0 incomplete_program
+IfFileExists "$INSTDIR\\frontend\\dist\\index.html" 0 incomplete_program
+IfFileExists "$INSTDIR\\skills\\product-tagging\\SKILL.md" 0 incomplete_program
+Delete "$INSTDIR\\.gewu-installing"
 Goto program_ready
-restore_old:
-  RMDir /r "$INSTDIR"
-  CreateDirectory "$INSTDIR"
-  CopyFiles /SILENT "$UpgradeBackup\\*.*" "$INSTDIR"
-  RMDir /r "$UpgradeStage"
-  RMDir /r "$UpgradeBackup"
-replace_failed:
-  Abort "程序替换失败，已保留或恢复原版本。"
+write_failed:
+  MessageBox MB_ICONSTOP "程序文件写入失败，可能有文件被占用、目录不可写或磁盘空间不足。用户数据和缓存未修改；请关闭相关程序后重新运行本安装包修复。"
+  Abort
+incomplete_program:
+  MessageBox MB_ICONSTOP "程序解压不完整。用户数据和缓存未修改；请重新运行本安装包完成修复。"
+  Abort
 program_ready:
 WriteUninstaller "$INSTDIR\\Uninstall.exe"
 CreateShortCut "$DESKTOP\\格物工作台.lnk" "$INSTDIR\\Workbench.exe"
@@ -204,8 +250,8 @@ WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWuW
 Delete "$DESKTOP\\格物工作台 0.5.0-beta.1-*.lnk"
 Delete "$SMPROGRAMS\\格物工作台\\格物工作台 0.5.0-beta.1-*.lnk"
 Call RemoveLegacyRegistration
-RMDir /r "$UpgradeStage"
-RMDir /r "$UpgradeBackup"
+RMDir /r "$INSTDIR.gewu-new"
+RMDir /r "$INSTDIR.gewu-old"
 SectionEnd
 Section "Uninstall"
 ClearErrors

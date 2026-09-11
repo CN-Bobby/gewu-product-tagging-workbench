@@ -53,6 +53,10 @@ def main() -> int:
     entry = next((item for item in ledger.get('versions', []) if item.get('version') == args.version), None)
     if not entry or entry.get('status') != 'pending_acceptance':
         raise SystemExit('release ledger has no pending candidate for this version')
+    superseded = next(
+        (item.get('version') for item in ledger.get('versions', []) if item.get('superseded_by') == args.version),
+        None,
+    )
     existing = [path for path in (ROOT / 'releases' / args.version).glob('*/PROMOTION.json') if path.parent != build_dir]
     if existing:
         raise SystemExit(f'version already promoted; increment the version instead of overwriting: {existing[0]}')
@@ -114,7 +118,7 @@ def main() -> int:
         'build_id': manifest.get('build_id'),
         'commit': manifest.get('commit'),
         'status': 'pending_acceptance',
-        'supersedes': '0.5.0-beta.1',
+        'supersedes': superseded,
         'installer': {'name': customer_installer.name, 'sha256': sha256(customer_installer)},
         'distribution': {'name': distribution.name, 'sha256': sha256(distribution)},
         'tag_created': False,
