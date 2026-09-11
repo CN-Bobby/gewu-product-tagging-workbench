@@ -109,11 +109,7 @@ legacy_loop:
   Goto legacy_loop
 legacy_found:
   ReadRegStr $LegacyUninstaller HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\$1" "UninstallString"
-  StrCpy $2 $LegacyUninstaller 1
-  StrCmp $2 '$\"' 0 legacy_parent
   StrCpy $LegacyUninstaller $LegacyUninstaller -1 1
-  StrCpy $2 $LegacyUninstaller 1 -1
-  StrCmp $2 '$\"' 0 legacy_parent
   StrCpy $LegacyUninstaller $LegacyUninstaller -1
 legacy_parent:
   ${GetParent} "$LegacyUninstaller" $2
