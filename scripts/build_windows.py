@@ -111,7 +111,6 @@ legacy_found:
   ReadRegStr $LegacyUninstaller HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\$1" "UninstallString"
   StrCpy $LegacyUninstaller $LegacyUninstaller -1 1
   StrCpy $LegacyUninstaller $LegacyUninstaller -1
-legacy_parent:
   ${GetParent} "$LegacyUninstaller" $2
   StrCmp $2 "" init_done
   StrCpy $INSTDIR $2
