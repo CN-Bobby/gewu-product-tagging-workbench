@@ -185,6 +185,8 @@ restore_old:
   RMDir /r "$INSTDIR"
   CreateDirectory "$INSTDIR"
   CopyFiles /SILENT "$UpgradeBackup\\*.*" "$INSTDIR"
+  RMDir /r "$UpgradeStage"
+  RMDir /r "$UpgradeBackup"
 replace_failed:
   Abort "程序替换失败，已保留或恢复原版本。"
 program_ready:
