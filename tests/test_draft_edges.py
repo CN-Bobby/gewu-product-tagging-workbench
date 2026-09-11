@@ -30,7 +30,7 @@ def test_model_dependency_marks_stale_and_retains_late_candidate(dataset):
     with draft.WRITE_LOCK,Session.begin() as s:draft.write_result(s,require(s,BatchJob,j['id']),pid,derived,{'normalized_value':'旧的模型结果'})
     cell=draft.sheet(did)['rows'][0]['cells'][derived['id']]
     assert cell['status']=='stale' and cell['conflict']
-    assert any(p['title'].startswith('更新派生列') for p in draft.state(did)['proposals'])
+    assert any(p['title']=='更新受影响的派生标签' for p in draft.state(did)['proposals'])
 
 def test_bound_user_confirmation_only(dataset,monkeypatch):
     did=dataset['id'];p=draft.propose(did,'测试人工指令',[{'kind':'add','definition':{'key':'test','name':'测试列','type':'FACT','source':'text','definition':'测试判断定义内容','options':[]}}])

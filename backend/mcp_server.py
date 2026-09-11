@@ -153,8 +153,8 @@ if not RUN:
 
     @mcp.tool()
     def propose_changes(title:str,changes:list[dict]) -> dict:
-        """Propose ONLY; no approval. Beta accepts text, main-image and combined labels. add/revise supplies definition and judgment; execute supplies explicit column IDs and scope. Visual definitions must state observable boundaries and preserve unknown when the main image is insufficient."""
-        return draft.propose(DATASET,title,changes)
+        """Create or update this chat turn's single human-confirmed proposal group; never approve it. Exact repeats reuse the active proposal and overlapping revisions supersede the old card. Beta accepts text, main-image and combined labels. add/revise supplies definition and judgment; execute supplies explicit column IDs and scope."""
+        return draft.propose(DATASET,title,changes,use_active_turn=True)
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True,destructiveHint=False,openWorldHint=False))
     def read_tasks() -> dict:

@@ -85,4 +85,5 @@ def test_same_name_dependency_proposals_keep_column_identity(dataset):
     did=dataset['id'];base=add(did,'color');a=add(did,'first',name='分类',depends_on=[base['id']]);b=add(did,'second',name='分类',depends_on=[base['id']])
     pid=draft.sheet(did)['rows'][0]['id'];draft.correct(did,pid,base['id'],'蓝')
     proposals=[p for p in draft.state(did)['proposals'] if p['status']=='pending' and p['changes'][0].get('automatic_dependency_update')]
-    assert len(proposals)==2 and {p['changes'][0]['column_ids'][0] for p in proposals}=={a['id'],b['id']}
+    assert len(proposals)==1
+    assert {change['column_ids'][0] for change in proposals[0]['changes']}=={a['id'],b['id']}

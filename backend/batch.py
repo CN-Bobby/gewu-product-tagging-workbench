@@ -143,13 +143,15 @@ def calibration_group(rows,model,goal,refresh,metrics,mlock):
 def launch(jid):
     with Session() as s:
         job=require(s,BatchJob,jid)
+        if job.status!='queued':return False
         if any(c['definition'].get('source') in ('image','both') for c in job.spec.get('columns',[])):
             from .capabilities import require_visual_tagging
             require_visual_tagging()
     with guard:
-        if jid in active:raise ValueError('任务仍在执行')
+        if jid in active:return False
         active[jid]=threading.Event()
     threading.Thread(target=execute,args=(jid,),daemon=True).start()
+    return True
 
 def stop(jid,cancel=False):
     with guard:

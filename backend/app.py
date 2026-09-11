@@ -197,6 +197,10 @@ def chat(dataset_id:str,body:dict):return conversation.start(dataset_id,body.get
 @app.post('/api/datasets/{dataset_id}/chat/stop')
 def stop_chat(dataset_id:str):return conversation.stop(dataset_id)
 
+@app.post('/api/datasets/{dataset_id}/chat/questions/{question_id}/answer')
+def answer_chat_question(dataset_id:str,question_id:str,body:dict):
+    return conversation.answer(dataset_id,question_id,body.get('option_id',''))
+
 @app.post('/api/datasets/{dataset_id}/schemas')
 def propose(dataset_id:str,body:dict):return service.propose(dataset_id,body.get('goal',''),body.get('definitions',[]))
 
@@ -249,7 +253,7 @@ def draft_propose(did:str,body:dict):return draft.propose(did,body.get('title','
 
 @app.post('/api/drafts/{did}/proposals/{pid}/confirm')
 def draft_confirm(did:str,pid:str,body:dict):
-    result=draft.confirm(did,pid,body.get('product_ids'),body.get('sample',False),body.get('text_model'),body.get('vision_model'))
+    result=draft.confirm(did,pid,body.get('product_ids'),body.get('sample',False),body.get('text_model'),body.get('vision_model'),body.get('confirmation_key'))
     for j in result:batch.launch(j['id'])
     return result
 
@@ -258,7 +262,7 @@ def draft_reject(did:str,pid:str):
     with draft.WRITE_LOCK,Session.begin() as s:
         p=require(s,Proposal,pid)
         if p.dataset_id!=did or p.status!='pending':raise ValueError('提案不可撤回')
-        p.status='rejected';draft.emit(s,did,'proposal',obj(p));return obj(p)
+        p.status='rejected';draft.emit(s,did,'proposal',obj(p));draft.emit(s,did,'proposal_group',obj(p));return obj(p)
 
 @app.patch('/api/drafts/{did}/cells/{product_id}/{column_id}')
 def draft_correct(did:str,product_id:str,column_id:str,body:dict):return draft.correct(did,product_id,column_id,body.get('value'),body.get('expected_edit'))

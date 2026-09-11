@@ -133,10 +133,30 @@ class Experience(Record, Base):
 class Message(Record, Base):
     __tablename__ = 'conversation_message'
     dataset_id = Column(String, ForeignKey('dataset.id'), nullable=False)
+    turn_id = Column(String, index=True)
     role = Column(String)
     text = Column(String)
     status = Column(String, default='completed')
     events = Column(JSON, default=list)
+    presentation = Column(JSON, default=dict)
+    error_code = Column(String)
+    technical = Column(JSON, default=dict)
+
+class ChatQuestion(Record, Base):
+    __tablename__ = 'chat_question'
+    dataset_id = Column(String, ForeignKey('dataset.id'), nullable=False, index=True)
+    turn_id = Column(String, index=True)
+    message_id = Column(String, ForeignKey('conversation_message.id'), nullable=False, index=True)
+    tool_call_id = Column(String)
+    question_key = Column(String)
+    header = Column(String)
+    prompt = Column(String, nullable=False)
+    options = Column(JSON, default=list)
+    status = Column(String, default='pending')
+    selected_option_id = Column(String)
+    selected_label = Column(String)
+    answered_at = Column(String)
+    error_code = Column(String)
 
 class Observation(Record, Base):
     __tablename__ = 'image_observation'
@@ -179,6 +199,12 @@ class Cell(Record, Base):
 class Proposal(Record, Base):
     __tablename__ = 'change_proposal'
     dataset_id = Column(String, ForeignKey('dataset.id'), nullable=False)
+    group_id = Column(String, index=True)
+    group_revision = Column(Integer, default=1)
+    fingerprint = Column(String, index=True)
+    origin_turn_id = Column(String, index=True)
+    superseded_by = Column(String)
+    confirmation_key = Column(String)
     title = Column(String)
     changes = Column(JSON)
     status = Column(String, default='pending')
@@ -280,9 +306,13 @@ def init_db():
             product_columns={r[1] for r in src.execute("pragma table_info(product)").fetchall()} if src.execute("select 1 from sqlite_master where type='table' and name='product'").fetchone() else set()
             dataset_columns={r[1] for r in src.execute("pragma table_info(dataset)").fetchall()} if src.execute("select 1 from sqlite_master where type='table' and name='dataset'").fetchone() else set()
             v6='identity_source' in product_columns and 'source_filename' in dataset_columns
-            if (legacy and not migrated) or (migrated and not skill_migrated) or (skill_migrated and not v4) or (v4 and not v5) or (v5 and not v6):
+            message_columns={r[1] for r in src.execute("pragma table_info(conversation_message)").fetchall()} if src.execute("select 1 from sqlite_master where type='table' and name='conversation_message'").fetchone() else set()
+            proposal_columns={r[1] for r in src.execute("pragma table_info(change_proposal)").fetchall()} if src.execute("select 1 from sqlite_master where type='table' and name='change_proposal'").fetchone() else set()
+            question_table=bool(src.execute("select 1 from sqlite_master where type='table' and name='chat_question'").fetchone())
+            v7=question_table and {'turn_id','presentation','error_code','technical'}<=message_columns and {'group_id','group_revision','fingerprint','origin_turn_id','superseded_by','confirmation_key'}<=proposal_columns
+            if (legacy and not migrated) or (migrated and not skill_migrated) or (skill_migrated and not v4) or (v4 and not v5) or (v5 and not v6) or (v6 and not v7):
                 folder=path.parent/'backups';folder.mkdir(exist_ok=True)
-                with sqlite3.connect(folder/('before-'+('v6-' if v5 else 'v5-' if v4 else 'v4-' if skill_migrated else 'skill-v3-' if migrated else 'draft-')+uid()+'.db')) as dst:src.backup(dst)
+                with sqlite3.connect(folder/('before-'+('v7-' if v6 else 'v6-' if v5 else 'v5-' if v4 else 'v4-' if skill_migrated else 'skill-v3-' if migrated else 'draft-')+uid()+'.db')) as dst:src.backup(dst)
     Base.metadata.create_all(engine)
     if engine.url.get_backend_name()=='sqlite':
         with engine.begin() as conn:
@@ -290,6 +320,16 @@ def init_db():
             if 'identity_source' not in columns:conn.exec_driver_sql("alter table product add column identity_source varchar default 'row'")
             dataset_columns={r[1] for r in conn.exec_driver_sql('pragma table_info(dataset)').fetchall()}
             if 'source_filename' not in dataset_columns:conn.exec_driver_sql('alter table dataset add column source_filename varchar')
+            message_columns={r[1] for r in conn.exec_driver_sql('pragma table_info(conversation_message)').fetchall()}
+            for name,kind in [('turn_id','varchar'),('presentation','json'),('error_code','varchar'),('technical','json')]:
+                if name not in message_columns:conn.exec_driver_sql(f'alter table conversation_message add column {name} {kind}')
+            proposal_columns={r[1] for r in conn.exec_driver_sql('pragma table_info(change_proposal)').fetchall()}
+            for name,kind in [('group_id','varchar'),('group_revision','integer'),('fingerprint','varchar'),('origin_turn_id','varchar'),('superseded_by','varchar'),('confirmation_key','varchar')]:
+                if name not in proposal_columns:conn.exec_driver_sql(f'alter table change_proposal add column {name} {kind}')
+            conn.exec_driver_sql('create index if not exists ix_conversation_message_turn_id on conversation_message (turn_id)')
+            conn.exec_driver_sql('create index if not exists ix_change_proposal_group_id on change_proposal (group_id)')
+            conn.exec_driver_sql('create index if not exists ix_change_proposal_fingerprint on change_proposal (fingerprint)')
+            conn.exec_driver_sql('create index if not exists ix_change_proposal_origin_turn_id on change_proposal (origin_turn_id)')
     if cache_engine is not None:Base.metadata.create_all(cache_engine,tables=[VisionCache.__table__,TextCache.__table__])
     with Session.begin() as s:
         if not s.get(Migration,3):s.add(Migration(version=3))
@@ -302,6 +342,17 @@ def init_db():
             for dataset in s.scalars(select(Dataset)):
                 if not dataset.source_filename:dataset.source_filename=dataset.name+'.xlsx'
             s.add(Migration(version=6))
+        if not s.get(Migration,7):
+            for proposal in s.scalars(select(Proposal)):
+                if not proposal.group_id:proposal.group_id=proposal.id
+                if not proposal.group_revision:proposal.group_revision=1
+            for item in s.scalars(select(WorkbenchMeta).where(WorkbenchMeta.kind=='active_chat_turn')):
+                s.delete(item)
+            for message in s.scalars(select(Message).where(Message.status=='running')):
+                message.status='interrupted'
+            for question in s.scalars(select(ChatQuestion).where(ChatQuestion.status=='pending')):
+                question.status='interrupted';question.error_code='reasonix_process_error'
+            s.add(Migration(version=7))
 def obj(record): return {c.name: getattr(record, c.name) for c in record.__table__.columns}
 def require(s, cls, ident):
     result = s.get(cls, ident)

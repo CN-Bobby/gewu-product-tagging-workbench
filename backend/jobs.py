@@ -12,6 +12,9 @@ def recover():
     with Session.begin() as s:
         for r in s.scalars(select(Run).where(Run.status.in_(['running','queued']))):r.status='interrupted'
         for m in s.scalars(select(Message).where(Message.status=='running')):m.status='interrupted'
+        for q in s.scalars(select(ChatQuestion).where(ChatQuestion.status=='pending')):
+            q.status='interrupted';q.error_code='reasonix_process_error'
+        for item in s.scalars(select(WorkbenchMeta).where(WorkbenchMeta.kind=='active_chat_turn')):s.delete(item)
 
 def launch_run(run_id):
     with lock:

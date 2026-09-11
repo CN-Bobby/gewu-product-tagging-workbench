@@ -1,5 +1,6 @@
 """One continuously editable worksheet. All writes share the same transaction boundary."""
 import copy
+import hashlib
 import json
 import threading
 from sqlalchemy import select, func
@@ -128,7 +129,7 @@ def state(did):
     with Session() as s:
         migration=s.scalar(select(Audit).where(Audit.dataset_id==did,Audit.action=='draft_migration_v1'))
         data['legacy_message_ids']=list(s.scalars(select(Message.id).where(Message.dataset_id==did,Message.created_at<migration.created_at))) if migration else []
-        data.update(proposals=[obj(x) for x in s.scalars(select(Proposal).where(Proposal.dataset_id==did).order_by(Proposal.created_at.desc()))],jobs=[obj(x) for x in s.scalars(select(BatchJob).where(BatchJob.dataset_id==did).order_by(BatchJob.created_at.desc()))],versions=[{'id':x.id,'version':x.version,'created_at':x.created_at} for x in s.scalars(select(Snapshot).where(Snapshot.dataset_id==did).order_by(Snapshot.version))],messages=[obj(x) for x in s.scalars(select(Message).where(Message.dataset_id==did).order_by(Message.created_at))],cursor=s.scalar(select(func.max(DraftEvent.id)).where(DraftEvent.dataset_id==did)) or 0)
+        data.update(proposals=[obj(x) for x in s.scalars(select(Proposal).where(Proposal.dataset_id==did).order_by(Proposal.created_at.desc()))],jobs=[obj(x) for x in s.scalars(select(BatchJob).where(BatchJob.dataset_id==did).order_by(BatchJob.created_at.desc()))],versions=[{'id':x.id,'version':x.version,'created_at':x.created_at} for x in s.scalars(select(Snapshot).where(Snapshot.dataset_id==did).order_by(Snapshot.version))],messages=[obj(x) for x in s.scalars(select(Message).where(Message.dataset_id==did).order_by(Message.created_at))],questions=[obj(x) for x in s.scalars(select(ChatQuestion).where(ChatQuestion.dataset_id==did).order_by(ChatQuestion.created_at))],cursor=s.scalar(select(func.max(DraftEvent.id)).where(DraftEvent.dataset_id==did)) or 0)
         from .task_control import brief
         data['jobs']=[brief(j)|{'archived':bool((s.get(WorkbenchMeta,'job:'+j['id']).data if s.get(WorkbenchMeta,'job:'+j['id']) else {}).get('archived'))} for j in data['jobs']]
     return data
@@ -185,7 +186,121 @@ def validate_definition(d,existing):
             last_max=high
     return standard
 
-def propose(did,title,changes):
+def _split_execute(changes):
+    result=[]
+    for change in changes:
+        columns=change.get('column_ids',[]) if change.get('kind')=='execute' else []
+        if len(columns)<=1:
+            result.append(copy.deepcopy(change));continue
+        targets=change.get('target_product_ids',{})
+        summaries={x.get('column_id'):x for x in change.get('repair_summary',[]) if isinstance(x,dict)}
+        for cid in columns:
+            item=copy.deepcopy(change);ids=list(targets.get(cid,change.get('product_ids',[])))
+            item['column_ids']=[cid];item['product_ids']=ids
+            if targets:item['target_product_ids']={cid:ids};item['targets']=[{'column_id':cid,'product_ids':ids}]
+            if item.get('revisions'):item['revisions']={cid:item['revisions'][cid]}
+            if summaries.get(cid):item['repair_summary']=[summaries[cid]]
+            elif 'repair_summary' in item:item['repair_summary']=[]
+            result.append(item)
+    return result
+
+def _planned_keys(changes):
+    return {ch.get('planned_id'):'column-key:'+ch.get('definition',{}).get('key','') for ch in changes if ch.get('kind')=='add' and ch.get('planned_id')}
+
+def _change_entities(change,planned):
+    kind=change.get('kind')
+    if kind=='add':return {'column-key:'+change.get('definition',{}).get('key','')}
+    if kind in ('revise','expand','collapse','archive_column','restore_column'):
+        return {'column:'+str(change.get('column_id'))}
+    if kind=='execute':
+        return {planned.get(cid,'column:'+str(cid)) for cid in change.get('column_ids',[])}
+    if kind=='correct':
+        return {'cell:'+str(change.get('column_id'))+':'+str(pid) for pid in change.get('product_ids',[])}
+    return {'change:'+str(kind)}
+
+def _proposal_entities(changes):
+    changes=_split_execute(changes);planned=_planned_keys(changes)
+    return set().union(*(_change_entities(ch,planned) for ch in changes)) if changes else set()
+
+def _merge_changes(previous,new):
+    previous=_split_execute(previous);new=_split_execute(new)
+    previous_planned=_planned_keys(previous);new_planned=_planned_keys(new)
+    incoming=set().union(*(_change_entities(ch,new_planned) for ch in new)) if new else set()
+    kept=[ch for ch in previous if _change_entities(ch,previous_planned).isdisjoint(incoming)]
+    return _combine_execute(kept+new)
+
+def _combine_execute(changes):
+    """Keep exact per-column targets while presenting compatible executions as one change."""
+    result=[];groups={}
+    excluded={'column_ids','product_ids','target_product_ids','targets','revisions','repair_summary'}
+    for change in changes:
+        if change.get('kind')!='execute':result.append(change);continue
+        key=json.dumps({k:_canonical(v) for k,v in change.items() if k not in excluded},ensure_ascii=False,sort_keys=True)
+        group=groups.get(key)
+        if group is None:
+            group=copy.deepcopy(change);group['column_ids']=[];group['product_ids']=[];group['target_product_ids']={};group['revisions']={};group['repair_summary']=[]
+            groups[key]=group;result.append(group)
+        for cid in change.get('column_ids',[]):
+            if cid not in group['column_ids']:group['column_ids'].append(cid)
+            ids=change.get('target_product_ids',{}).get(cid,change.get('product_ids',[]))
+            group['target_product_ids'][cid]=list(dict.fromkeys(ids))
+            group['product_ids']=list(dict.fromkeys(group['product_ids']+ids))
+            if cid in change.get('revisions',{}):group['revisions'][cid]=change['revisions'][cid]
+        group['repair_summary']+=copy.deepcopy(change.get('repair_summary',[]))
+    for group in groups.values():
+        group['targets']=[{'column_id':cid,'product_ids':group['target_product_ids'][cid]} for cid in group['column_ids']]
+        if not group['repair_summary']:group.pop('repair_summary',None)
+    return result
+
+def _canonical(value,planned=None,key=None):
+    planned=planned or {}
+    if isinstance(value,str):return planned.get(value,value)
+    if isinstance(value,dict):
+        ignored={'planned_id','impact','repair_summary','actual_scope_computed'}
+        return {k:_canonical(v,planned,k) for k,v in sorted(value.items()) if k not in ignored}
+    if isinstance(value,list):
+        items=[_canonical(v,planned,key) for v in value]
+        if key in ('product_ids','column_ids','attributes'):return sorted(items,key=lambda x:json.dumps(x,ensure_ascii=False,sort_keys=True))
+        return items
+    return value
+
+def proposal_fingerprint(changes):
+    changes=_combine_execute(_split_execute(changes));planned={k:v for k,v in _planned_keys(changes).items()}
+    payload=_canonical(changes,planned)
+    return hashlib.sha256(json.dumps(payload,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+
+def _active_turn(s,did):
+    item=s.get(WorkbenchMeta,'active-chat:'+did)
+    return item.data.get('turn_id') if item and item.kind=='active_chat_turn' else None
+
+def _store_proposal(s,did,title,changes,origin_turn_id=None):
+    changes=copy.deepcopy(changes);fingerprint=proposal_fingerprint(changes)
+    pending=list(s.scalars(select(Proposal).where(Proposal.dataset_id==did,Proposal.status=='pending').order_by(Proposal.created_at)))
+    duplicate=next((p for p in reversed(pending) if (p.fingerprint or proposal_fingerprint(p.changes or []))==fingerprint),None)
+    if duplicate:
+        if not duplicate.fingerprint:duplicate.fingerprint=fingerprint
+        result=obj(duplicate);result['merge_action']='reused';return result
+    entities=_proposal_entities(changes)
+    related=[]
+    for proposal in pending:
+        same_turn=bool(origin_turn_id and proposal.origin_turn_id==origin_turn_id)
+        overlaps=not _proposal_entities(proposal.changes or []).isdisjoint(entities)
+        if same_turn or overlaps:related.append(proposal)
+    merged=[]
+    for proposal in related:merged=_merge_changes(merged,proposal.changes or [])
+    merged=_merge_changes(merged,changes) if related else changes
+    ident=uid();group_id=(related[-1].group_id or related[-1].id) if related else ident
+    revision=max([p.group_revision or 1 for p in related],default=0)+1
+    record=Proposal(id=ident,dataset_id=did,group_id=group_id,group_revision=revision,
+                    fingerprint=proposal_fingerprint(merged),origin_turn_id=origin_turn_id,
+                    title=title,changes=merged)
+    s.add(record)
+    for proposal in related:
+        proposal.status='superseded';proposal.superseded_by=ident;emit(s,did,'proposal',obj(proposal));emit(s,did,'proposal_group',obj(proposal))
+    s.flush();emit(s,did,'proposal',obj(record));emit(s,did,'proposal_group',obj(record))
+    result=obj(record);result['merge_action']='merged' if related else 'created';return result
+
+def propose(did,title,changes,origin_turn_id=None,use_active_turn=False):
     migrate(did)
     if not isinstance(changes,list) or not changes or len(changes)>50:raise ValueError('提案需要1–50项变更')
     with WRITE_LOCK, Session.begin() as s:
@@ -296,8 +411,8 @@ def propose(did,title,changes):
                                 'estimated_requests':0 if method in ('text_rule','mapping','bins','attribute') else (len(product_order)-protected+4)//5,
                                 'human_values_protected':True,'reason':'定义语义或执行契约改变，后端按整列计算实际影响范围'}
             change['repair_summary']=list(summaries.values())
-        p=Proposal(dataset_id=did,title=title,changes=clean)
-        s.add(p);s.flush();emit(s,did,'proposal',obj(p));return obj(p)
+        if use_active_turn and not origin_turn_id:origin_turn_id=_active_turn(s,did)
+        return _store_proposal(s,did,title,clean,origin_turn_id)
 
 def recompute(s,did,pid,upstream,visited=None):
     visited=visited or set()
@@ -309,14 +424,20 @@ def recompute(s,did,pid,upstream,visited=None):
         if d.get('method') in ('mapping','bins','attribute'):calculate(s,did,pid,col)
         else:
             c.status='stale';cell_change(s,did,c,'dependency_stale')
-            title='更新派生列：'+d['name']
+            title='更新受影响的派生标签'
             candidates=s.scalars(select(Proposal).where(Proposal.dataset_id==did,Proposal.status=='pending')).all()
-            proposal=next((p for p in candidates if len(p.changes)==1 and p.changes[0].get('kind')=='execute' and p.changes[0].get('column_ids')==[col.id] and p.changes[0].get('automatic_dependency_update')),None)
-            change={'kind':'execute','column_ids':[col.id],'product_ids':[pid],'revisions':{col.id:col.revision},'overwrite':True,'refresh_images':False,'automatic_dependency_update':True}
+            proposal=next((p for p in candidates if any(ch.get('automatic_dependency_update') and ch.get('automatic_source_column')==upstream for ch in (p.changes or []))),None)
+            change={'kind':'execute','column_ids':[col.id],'product_ids':[pid],'revisions':{col.id:col.revision},'overwrite':True,'refresh_images':False,'automatic_dependency_update':True,'automatic_source_column':upstream}
             if proposal:
-                old=proposal.changes[0];change['product_ids']=list(dict.fromkeys(old['product_ids']+[pid]));proposal.changes=[change]
-            else:proposal=Proposal(dataset_id=did,title=title,changes=[change]);s.add(proposal)
-            s.flush();emit(s,did,'proposal',obj(proposal))
+                changes=copy.deepcopy(proposal.changes or [])
+                old=next((x for x in changes if x.get('column_ids')==[col.id]),None)
+                if old:
+                    change['product_ids']=list(dict.fromkeys(old['product_ids']+[pid]));changes[changes.index(old)]=change
+                else:changes.append(change)
+                proposal.changes=changes;proposal.fingerprint=proposal_fingerprint(changes)
+            else:
+                ident=uid();proposal=Proposal(id=ident,dataset_id=did,group_id=ident,group_revision=1,title=title,changes=[change],fingerprint=proposal_fingerprint([change]));s.add(proposal)
+            s.flush();emit(s,did,'proposal',obj(proposal));emit(s,did,'proposal_group',obj(proposal))
         recompute(s,did,pid,col.id,visited|{col.id})
 
 def derived_value(d,source_value,source_status):
@@ -362,13 +483,17 @@ def _correct(s,did,c,value):
     settle_owned_token(s,did,c.product_id+':'+c.column_id,'人工修正')
     cell_change(s,did,c,'manual_correction');recompute(s,did,c.product_id,c.column_id)
 
-def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None):
+def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None,confirmation_key=None):
     from .model_settings import defaults
     DEFAULT_MODEL,VISION_MODEL=defaults()
     jobs=[]
     with WRITE_LOCK, Session.begin() as s:
         p=require(s,Proposal,ident)
-        if p.dataset_id!=did or p.status!='pending':raise ValueError('提案已处理或不属于当前工作表')
+        if p.dataset_id!=did:raise ValueError('提案不属于当前工作表')
+        if p.status=='confirmed' and confirmation_key and p.confirmation_key==confirmation_key:
+            return [obj(j) for j in s.scalars(select(BatchJob).where(BatchJob.proposal_id==p.id).order_by(BatchJob.created_at))]
+        if p.status!='pending':raise ValueError('提案已处理、已替换或不可确认')
+        if confirmation_key is not None and (not isinstance(confirmation_key,str) or not confirmation_key.strip() or len(confirmation_key)>100):raise ValueError('确认请求标识无效')
         from .task_control import validate_repair_scope
         for ch in p.changes:
             if ch.get('kind')=='execute' and ch.get('repair_scope_id'):
@@ -465,7 +590,7 @@ def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None)
                         c.status='pending';cell_change(s,did,c,'queued')
                 job=BatchJob(id=jid,dataset_id=did,proposal_id=p.id,spec={'product_ids':ids,'columns':columns,'expected':expected,'text_model':text_model or DEFAULT_MODEL,'vision_model':vision_model or VISION_MODEL,'refresh_images':bool(ch.get('refresh_images')),'reuse_results':bool(ch.get('reuse_results')),'force_recompute':bool(ch.get('force_recompute')),'sample':sample},metrics={})
                 s.add(job);s.flush();jobs.append(obj(job));emit(s,did,'job',obj(job))
-        p.status='confirmed';p.confirmed_at=now();emit(s,did,'proposal',obj(p));audit(s,did,'human_confirmed_proposal',{'id':p.id,'scope':scope,'sample':sample})
+        p.status='confirmed';p.confirmed_at=now();p.confirmation_key=confirmation_key;emit(s,did,'proposal',obj(p));emit(s,did,'proposal_group',obj(p));audit(s,did,'human_confirmed_proposal',{'id':p.id,'scope':scope,'sample':sample,'confirmation_key':confirmation_key})
     return jobs
 
 def write_result(s,job,pid,col,value):

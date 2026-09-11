@@ -47,9 +47,10 @@ def propose_expansion(s,did,col,names):
     ch={'kind':'expand','column_id':parent.id,'attributes':names,'expected_revision':parent.revision}
     if p:
         ch['attributes']=list(dict.fromkeys(p.changes[0]['attributes']+names));p.changes=[ch]
+        p.fingerprint=draft.proposal_fingerprint(p.changes)
     else:
-        p=Proposal(dataset_id=did,title=('追加属性：' if parent.definition.get('expanded') else '整类拆列：')+parent.definition['name'],changes=[ch]);s.add(p)
-    s.flush();draft.emit(s,did,'proposal',obj(p))
+        ident=uid();p=Proposal(id=ident,dataset_id=did,group_id=ident,group_revision=1,title=('追加属性：' if parent.definition.get('expanded') else '整类拆列：')+parent.definition['name'],changes=[ch],fingerprint=draft.proposal_fingerprint([ch]));s.add(p)
+    s.flush();draft.emit(s,did,'proposal',obj(p));draft.emit(s,did,'proposal_group',obj(p))
 
 def expand(s,did,ch,proposal_id):
     from . import draft

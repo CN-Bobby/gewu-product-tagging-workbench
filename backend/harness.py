@@ -3,17 +3,43 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
 import tomllib
+import uuid
 from pathlib import Path
 from .db import ROOT, STORAGE
 
 DEFAULT_MODEL='deepseek/deepseek-v4-flash'
 VISION_MODEL='deepseek/deepseek-v4-flash-vision-exp'
+
+ERROR_MESSAGES={
+    'interaction_waiting':'Reasonix 正在等待你的选择。',
+    'interaction_cancelled':'本次问题已停止，未执行任何任务。',
+    'interaction_bridge_error':'Reasonix 需要你选择，但网页未能完成问题交互。请重新发送最后一条消息。',
+    'unsupported_question':'当前问题格式不受支持，已转为普通讨论；未执行任何任务。',
+    'tool_permission_denied':'Reasonix 尝试调用工作台未开放的工具，已阻止。',
+    'provider_auth_error':'模型服务授权失败，请检查 API 密钥。',
+    'provider_model_error':'模型不存在或不支持当前请求，请检查模型名称。',
+    'provider_network_error':'模型服务无法连接或请求超时。',
+    'reasonix_process_error':'Reasonix 进程异常退出，请查看技术详情。',
+    'unknown_acp_error':'Reasonix 会话异常结束，未执行后续操作。',
+}
+
+def _redact_text(value,limit=800):
+    text=str(value or '')
+    text=re.sub(r'(?i)Bearer\s+[^\s,;]+','Bearer [已隐藏]',text)
+    text=re.sub(r'(?i)(api[_-]?key|authorization|token|secret)(\s*[:=]\s*)[^,;\s]+',r'\1\2[已隐藏]',text)
+    return text[:limit]
+
+class HarnessError(RuntimeError):
+    def __init__(self,code,message=None,technical=None):
+        self.code=code;self.message=message or ERROR_MESSAGES.get(code,ERROR_MESSAGES['unknown_acp_error']);self.technical=technical or {}
+        super().__init__(self.message)
 
 def executable():
     configured=os.environ.get('REASONIX_EXE')
@@ -56,8 +82,9 @@ SYSTEM='''你是商品打标工作台的持续对话协调员。默认用中文�
 聚合使用 method=mapping、depends_on=[上游column_id]、mapping={原值:中文新值}；数值区间用 method=bins、bins=[{min:含下界,max:不含上界,value:中文}]。映射由程序计算，不调用模型。
 执行用 kind=execute,targets=[{column_id,product_ids}]；每一列必须明确自己的商品范围。新增与执行应组成一份提案：changes先add再execute，target.column_id使用"$新列key"引用。普通筛选先query_scope；失败修复必须使用propose_failed_repair生成服务器冻结的精确范围。一次人工确认完成建列与执行。不要直接逐商品调用视觉或填表，批处理由应用直接请求模型。
 修正用 kind=correct,column_id,product_ids,value。每个提案简要说明影响列、商品范围、是否重新看图、是否覆盖结果。
-不要调用CLI ask工具，所有澄清直接用普通中文回复，在网页同一对话里等待用户。读取字段用read_fields，条件圈选用query_scope；不能要求用户收集内部ID。执行范围与可见列无关。未知实际请求次数/成本不能承诺一次识图或零增量成本；先read_tasks再报告进度，不猜测不存在的界面操作。
-产品术语或品类建议需要外部依据时，使用research_knowledge实际查询并引用返回的来源；已确认资料用read_knowledge。知识只能指导关注点，不能补造本行事实。需要图片概览时inspect_representative_images按当前目标看代表样本，明确覆盖数量和失败。不把文字取样称为全量识图。\n用户确定满意时自行保存V1/V2；不能把每轮讨论称为正式版本。回答简洁清楚，不输出隐藏推理。
+会影响标签定义、候选值、判断边界或执行范围且没有安全默认值时，可以调用 ask。每次最多3题，每题2–3个互斥选项，推荐项放第一位，multiSelect=false。不要询问工作台能够读取的信息，不重复确认用户已明确决定的内容。ask只收集业务意见，不能代表确认提案或授权执行。
+读取字段用read_fields，条件圈选用query_scope；不能要求用户收集内部ID。执行范围与可见列无关。未知实际请求次数/成本不能承诺一次识图或零增量成本；先read_tasks再报告进度，不猜测不存在的界面操作。
+产品术语或品类建议需要外部依据时，使用research_knowledge实际查询并引用返回的来源；已确认资料用read_knowledge。知识只能指导关注点，不能补造本行事实。需要图片概览时inspect_representative_images按当前目标看代表样本，明确覆盖数量和失败。不把文字取样称为全量识图。\n用户确定满意时自行保存V1/V2；不能把每轮讨论称为正式版本。面向用户的正文先写“当前判断”或“执行结果”，再完整说明业务证据、分类边界和方案利弊。不要写“我先读取”“现在调用”“参数错误后重试”等操作旁白，不输出MCP名、内部ID、接口参数、编码过程或隐藏推理；这些由工作台操作记录展示。
 '''
 
 def system_prompt():
@@ -117,6 +144,8 @@ class ACP:
         self.pending={};self.counter=0;self.lock=threading.Lock();self.closed=False;self.session_id=None
         self.on_event=on_event or (lambda _:None)
         self.text=[];self.diagnostics=[]
+        self.tool_calls={};self.pending_questions={};self.question_lock=threading.Lock()
+        self.current_issue=None;self.last_tool_failure=None;self.user_cancelled=False;self.ask_seen=False;self.question_count=0
         cwd=runtime_dir(dataset_id,run_id or 'chat',product_id,model if run_id else VISION_MODEL)
         from .runtime_isolation import environment,mark_resumed
         isolated_env=environment(dataset_id,session_id)
@@ -171,13 +200,30 @@ class ACP:
                             text=u.get('content',{}).get('text','');self.text.append(text)
                             self.on_event({'type':'text','text':text})
                         elif kind in ('tool_call','tool_call_update'):
-                            self.on_event({'type':'tool','title':u.get('title','工具执行'),'status':u.get('status'),'toolCallId':u.get('toolCallId')})
+                            tid=u.get('toolCallId');previous=self.tool_calls.get(tid,{})
+                            current={**previous,**{k:u.get(k) for k in ('title','kind','status','rawInput') if u.get(k) is not None}}
+                            self.tool_calls[tid]=current
+                            if u.get('status')=='failed':self.last_tool_failure={'tool':current.get('title','工具执行'),'detail':'工具返回失败'}
+                            title=current.get('title','工具执行')
+                            if title=='use_capability':title='正在读取工作台信息'
+                            elif title=='ask':title='等待你的选择'
+                            self.on_event({'type':'tool','title':title,'status':u.get('status'),'toolCallId':tid})
                         # Deliberately do not store/emit agent_thought_chunk.
                     elif 'id' in msg:
                         if msg['method']=='session/request_permission':
-                            self.on_event({'type':'permission_denied','title':'该操作不在商品工作台授权工具范围内'})
-                            result={'outcome':{'outcome':'cancelled'}}
-                            self._send({'jsonrpc':'2.0','id':msg['id'],'result':result})
+                            question=self._business_question(msg)
+                            if question and not question.get('error'):
+                                with self.question_lock:self.pending_questions[question['id']]={**question,'request_id':msg['id']}
+                                self.ask_seen=True;self.question_count+=1;self.on_event(question)
+                            elif question:
+                                self.current_issue={'code':'unsupported_question','message':question['error']}
+                                self._send({'jsonrpc':'2.0','id':msg['id'],'result':{'outcome':{'outcome':'cancelled'}}})
+                                self.on_event({'type':'interaction_error','code':'unsupported_question','title':question['error']})
+                            else:
+                                tool=(msg.get('params',{}).get('toolCall',{}).get('title') or '未知工具').split()[0]
+                                self.current_issue={'code':'tool_permission_denied','message':f'Reasonix 尝试调用工作台未开放的工具“{tool}”，已阻止。'}
+                                self.on_event({'type':'permission_denied','code':'tool_permission_denied','title':self.current_issue['message']})
+                                self._send({'jsonrpc':'2.0','id':msg['id'],'result':{'outcome':{'outcome':'cancelled'}}})
                         else:self._send({'jsonrpc':'2.0','id':msg['id'],'error':{'code':-32601,'message':'Client method not supported'}})
                 elif 'id' in msg:
                     f=self.pending.get(msg['id'])
@@ -185,8 +231,57 @@ class ACP:
                         if 'error' in msg:f.set_exception(RuntimeError(str(msg['error'].get('message','ACP error'))))
                         else:f.set_result(msg.get('result',{}))
         finally:
+            with self.question_lock:
+                interrupted=list(self.pending_questions.values());self.pending_questions.clear()
+            for question in interrupted:self.on_event({'type':'question_interrupted','id':question['id'],'code':'reasonix_process_error'})
             for f in list(self.pending.values()):
                 if not f.done():f.set_exception(RuntimeError('Reasonix 连接已断开'))
+
+    def _business_question(self,msg):
+        params=msg.get('params',{});tool=params.get('toolCall',{});tid=str(tool.get('toolCallId',''))
+        if not (tid.startswith('ask-') and tool.get('kind')=='other'):return None
+        raw=tool.get('rawInput')
+        if isinstance(raw,str):
+            try:raw=json.loads(raw)
+            except json.JSONDecodeError:raw=None
+        if not isinstance(raw,dict):return {'error':'Reasonix 提问缺少结构化内容，已停止等待。'}
+        prompt=str(raw.get('question','')).strip();header=str(raw.get('header','')).strip();options=raw.get('options')
+        if raw.get('multi') is True or raw.get('multiSelect') is True:return {'error':'当前网页暂不支持多选问题，请让 Reasonix 改为单选后重试。'}
+        if self.question_count>=3:return {'error':'单次回复的问题超过3个，请合并关键选择后重试。'}
+        if not str(raw.get('id','')).strip() or not prompt or not isinstance(options,list) or not 2<=len(options)<=3:return {'error':'问题需要有效标识和2至3个互斥选项。'}
+        offered=[x for x in params.get('options',[]) if isinstance(x,dict) and x.get('kind')=='allow_once']
+        if len(offered)!=len(options):return {'error':'Reasonix 问题选项与 ACP 返回通道不一致。'}
+        result=[]
+        for raw_option,wire in zip(options,offered):
+            if isinstance(raw_option,str):label=raw_option;description=''
+            elif isinstance(raw_option,dict):
+                label=raw_option.get('label') or raw_option.get('Label') or raw_option.get('name') or raw_option.get('title')
+                description=raw_option.get('description') or raw_option.get('Description') or raw_option.get('detail') or ''
+            else:label='';description=''
+            wire_id=wire.get('optionId') or wire.get('option_id')
+            if not str(label or '').strip() or not wire_id:
+                return {'error':'Reasonix 问题包含无效选项。'}
+            result.append({'option_id':str(wire_id),'label':str(label).strip()[:200],'description':str(description).strip()[:500]})
+        return {'type':'question','id':uuid.uuid4().hex,'tool_call_id':tid,'question_key':str(raw.get('id',''))[:200],
+                'header':header[:200],'prompt':prompt[:1000],'options':result,'status':'pending'}
+
+    def answer_question(self,question_id,option_id):
+        with self.question_lock:
+            question=self.pending_questions.get(question_id)
+            if not question:raise ValueError('问题已结束或 Reasonix 会话已中断')
+            offered={x['option_id'] for x in question['options']}
+            if option_id not in offered:raise ValueError('所选答案不属于当前问题')
+            self._send({'jsonrpc':'2.0','id':question['request_id'],'result':{'outcome':{'outcome':'selected','optionId':option_id}}})
+            self.pending_questions.pop(question_id,None)
+        return question
+
+    def cancel_questions(self):
+        with self.question_lock:
+            questions=list(self.pending_questions.values());self.pending_questions.clear()
+        for question in questions:
+            try:self._send({'jsonrpc':'2.0','id':question['request_id'],'result':{'outcome':{'outcome':'cancelled'}}})
+            except (RuntimeError,OSError):pass
+        return [q['id'] for q in questions]
 
     def _stderr(self):
         for line in self.proc.stderr:
@@ -194,32 +289,52 @@ class ACP:
             self.diagnostics.append(line[-500:]);self.diagnostics=self.diagnostics[-10:]
 
     def prompt(self,text):
-        self.text=[]
-        result=self.rpc('session/prompt',{'sessionId':self.session_id,'prompt':[{'type':'text','text':text}]})
+        self.text=[];self.current_issue=None;self.last_tool_failure=None;self.user_cancelled=False;self.ask_seen=False;self.question_count=0
+        result=self.rpc('session/prompt',{'sessionId':self.session_id,'prompt':[{'type':'text','text':text}]},timeout=None)
         stop=result.get('stopReason')
+        if self.user_cancelled:
+            raise HarnessError('interaction_cancelled',technical=self._technical(stop,None))
+        if self.current_issue:
+            raise HarnessError(self.current_issue['code'],self.current_issue['message'],self._technical(stop,None))
         if stop not in ('end_turn',None):
             detail=result.get('error') or result.get('message') or result.get('reason')
             if isinstance(detail,(dict,list)):
                 detail=json.dumps(detail,ensure_ascii=False)
-            parts=['Reasonix 提前停止：'+str(stop)]
-            parts.append('模型引用：'+self.model)
-            if detail:parts.append(str(detail)[:800])
-            if stop=='error' and not detail:
-                parts.append('请检查模型服务地址、API授权和模型名称；模型名称应填写服务内名称，不要重复服务名前缀')
-            diagnostics=[]
-            for line in self.diagnostics[-3:]:
-                line=line.strip()
-                if line:
-                    import re
-                    line=re.sub(r'(?i)Bearer\s+[^\s]+','Bearer [已隐藏]',line)
-                    line=re.sub(r'(?i)(api[_-]?key|token|secret)(\s*[:=]\s*)[^,;\s]+',r'\1\2[已隐藏]',line)
-                    diagnostics.append(line[:500])
-            if diagnostics:parts.append('CLI诊断：'+' | '.join(diagnostics))
-            raise RuntimeError('；'.join(parts))
+            code,message=self._classify_error(stop,detail)
+            raise HarnessError(code,message,self._technical(stop,detail))
         return ''.join(self.text)
+
+    def _safe_diagnostics(self):
+        result=[]
+        for line in self.diagnostics[-3:]:
+            line=line.strip()
+            if not line:continue
+            result.append(_redact_text(line,500))
+        return result
+
+    def _classify_error(self,stop,detail):
+        if self.user_cancelled:return 'interaction_cancelled',ERROR_MESSAGES['interaction_cancelled']
+        if self.current_issue:return self.current_issue['code'],self.current_issue['message']
+        combined=' '.join([str(detail or ''),str((self.last_tool_failure or {}).get('detail','')),*self._safe_diagnostics()])
+        statuses=[int(x) for x in re.findall(r'HTTP/\S+\s+(\d{3})',combined)]
+        if any(x in (401,403) for x in statuses):return 'provider_auth_error',ERROR_MESSAGES['provider_auth_error']
+        if 404 in statuses:return 'provider_model_error',ERROR_MESSAGES['provider_model_error']
+        lower=combined.lower()
+        if not any(x==200 for x in statuses) and any(x in lower for x in ('model_not_found','unknown model','model does not exist','unsupported model')):
+            return 'provider_model_error',ERROR_MESSAGES['provider_model_error']
+        if any(x in lower for x in ('timed out','timeout','connection refused','connection reset','name resolution','dns')) and not any(x==200 for x in statuses):
+            return 'provider_network_error',ERROR_MESSAGES['provider_network_error']
+        if self.ask_seen:return 'interaction_bridge_error',ERROR_MESSAGES['interaction_bridge_error']
+        if self.proc.poll() is not None:return 'reasonix_process_error',ERROR_MESSAGES['reasonix_process_error']
+        return 'unknown_acp_error',ERROR_MESSAGES['unknown_acp_error']
+
+    def _technical(self,stop,detail):
+        return {'stop_reason':str(stop),'model':self.model,'detail':_redact_text(detail) if detail else None,
+                'last_tool':self.last_tool_failure,'diagnostics':self._safe_diagnostics()}
 
     def cancel(self):
         if self.session_id and not self.closed:
+            self.user_cancelled=True;self.cancel_questions()
             try:self._send({'jsonrpc':'2.0','method':'session/cancel','params':{'sessionId':self.session_id}})
             except (RuntimeError,OSError):pass
 
