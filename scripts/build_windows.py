@@ -218,7 +218,7 @@ FileWrite $0 "VERSION"
 FileClose $0
 SetOutPath "$INSTDIR"
 ClearErrors
-SetOverwrite on
+SetOverwrite try
 File /r "APPDIR\\*"
 IfErrors write_failed
 IfFileExists "$INSTDIR\\Workbench.exe" 0 incomplete_program

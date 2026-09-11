@@ -63,6 +63,7 @@ def test_release_ledger_and_single_install_identity():
     assert '${DirState} "$INSTDIR" $0' in source
     assert '${DriveSpace} "$1" "/D=F /S=M" $0' in source
     assert 'File /r "APPDIR\\\\*"' in source
+    assert 'SetOverwrite try' in source
     assert 'CopyFiles /SILENT' not in source
     assert 'UpgradeStage' not in source and 'UpgradeBackup' not in source
     assert '已保留或恢复原版本' not in source
