@@ -165,16 +165,26 @@ stop_failed:
   Abort "旧工作台无法安全停止，升级已取消。请关闭工作台后重试。"
 replace_program:
 IfFileExists "$INSTDIR\\*" 0 install_new
-  Rename "$INSTDIR" "$UpgradeBackup"
+  CreateDirectory "$UpgradeBackup"
+  ClearErrors
+  CopyFiles /SILENT "$INSTDIR\\*.*" "$UpgradeBackup"
   IfErrors replace_failed
+  IfFileExists "$UpgradeBackup\\Workbench.exe" 0 replace_failed
+  SetOutPath "$TEMP"
+  RMDir /r "$INSTDIR"
+  IfFileExists "$INSTDIR\\*" replace_failed 0
 install_new:
-RMDir "$INSTDIR"
-Rename "$UpgradeStage" "$INSTDIR"
+CreateDirectory "$INSTDIR"
+ClearErrors
+CopyFiles /SILENT "$UpgradeStage\\*.*" "$INSTDIR"
 IfErrors restore_old
+IfFileExists "$INSTDIR\\Workbench.exe" 0 restore_old
+IfFileExists "$INSTDIR\\build-manifest.json" 0 restore_old
 Goto program_ready
 restore_old:
   RMDir /r "$INSTDIR"
-  Rename "$UpgradeBackup" "$INSTDIR"
+  CreateDirectory "$INSTDIR"
+  CopyFiles /SILENT "$UpgradeBackup\\*.*" "$INSTDIR"
 replace_failed:
   Abort "程序替换失败，已保留或恢复原版本。"
 program_ready:
@@ -192,6 +202,7 @@ WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWuW
 Delete "$DESKTOP\\格物工作台 0.5.0-beta.1-*.lnk"
 Delete "$SMPROGRAMS\\格物工作台\\格物工作台 0.5.0-beta.1-*.lnk"
 Call RemoveLegacyRegistration
+RMDir /r "$UpgradeStage"
 RMDir /r "$UpgradeBackup"
 SectionEnd
 Section "Uninstall"
