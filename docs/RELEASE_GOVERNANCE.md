@@ -1,14 +1,14 @@
 # 版本与发布规则
 
-应用版本唯一来源为根目录 VERSION.json。后端直接读取，Vite构建注入界面；npm元数据通过 scripts/sync_version.py 生成，CI使用 --check 拒绝漂移。
+应用版本唯一来源为根目录 VERSION.json。后端直接读取，Vite构建注入界面；npm元数据通过 scripts/sync_version.py 生成，CI使用 --check 拒绝漂移。RELEASE_LEDGER.json记录不可复用的客户版本序列和替代关系。
 
 接管基线位于 baseline/takeover，只记录已有代码，不代表已验收发行版。当前开发分支为`feature/0.5.0-delivery`。main仅在里程碑验收通过时创建/推进。发布标签不可移动，安装包不可覆盖；不创建远端或上传源码。
 
-里程碑：0.4.1现有功能收尾 → 0.5.0-alpha.1项目模板、严格复用、独立状态 → 0.5.0-beta.1干净Windows安装验收。只有通过对应验收才能变更release_status，不能靠改版本号宣称完成。
+里程碑：0.4.1现有功能收尾 → 0.5.0-alpha.1项目模板、严格复用、独立状态 → 0.5.0-beta.1首次外测 → 0.5.0-beta.2修复后外测。只有通过对应验收才能变更release_status，不能靠改版本号宣称完成。
 
 所有任务冻结application_build：应用版本、commit、dirty和源码摘要。Skill独立版本及内容摘要、Reasonix二进制版本及摘要、数据库递增迁移编号分别进入发布清单。商品V1/V2不是软件版本。
 
-正式发布必须来自干净Git树，精确锁定依赖，测试报告绑定commit。构建附件存入releases/<version>，不进入源码Git；已有目录拒绝覆盖。发布清单记录构建时间、操作系统、Python、Skill和依赖版本。测试数据、SQLite、会话、密钥和客户原图禁止打包。
+正式发布必须来自干净Git树，精确锁定依赖，测试报告绑定commit。内部候选文件名使用`<版本>-candidate.<短commit>`；客户提升文件只含产品名和版本号。客户附件一旦提升即冻结，任何变化递增`beta.N`，禁止使用“修复版、最新版、最终版”或覆盖同版本。构建附件存入releases/<version>，不进入源码Git；已有目录拒绝覆盖。发布清单记录构建时间、操作系统、Python、Skill和依赖版本。测试数据、SQLite、会话、密钥和客户原图禁止打包。
 
 升级前同时考虑数据库与Reasonix会话状态备份。新版在隔离副本验证恢复旧会话ID；失败列为阻塞，禁止静默创建新会话。安装器不得覆盖客户数据；二进制回退必须检查状态格式兼容性。
 

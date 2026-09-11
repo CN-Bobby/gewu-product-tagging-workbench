@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "customer_version": "SemVer prerelease sequence",
+    "internal_build_id": "<version>+<12-character Git commit>",
+    "freeze_rule": "Once a customer artifact is promoted, any changed artifact requires a new version.",
+    "stable_shortcut": "格物工作台"
+  },
+  "versions": [
+    {
+      "version": "0.5.0-beta.1",
+      "status": "superseded",
+      "artifact_kind": "external_candidate",
+      "commit": "0396b9e8fbf7998b800b094f926c8959ec718d27",
+      "tag": null,
+      "superseded_by": "0.5.0-beta.2",
+      "note": "首次客户外测候选；其余同版本构建均为未提升的内部候选。"
+    },
+    {
+      "version": "0.5.0-beta.2",
+      "status": "pending_acceptance",
+      "artifact_kind": "customer_candidate",
+      "commit": null,
+      "tag": null,
+      "superseded_by": null,
+      "note": "安装、模型配置、Ask桥接、提案去重和对话展示修复后的第二次客户测试版。"
+    }
+  ]
+}

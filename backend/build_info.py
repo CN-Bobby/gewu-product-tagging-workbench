@@ -6,7 +6,8 @@ from functools import lru_cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = json.loads((ROOT / 'VERSION.json').read_text(encoding='utf-8'))['version']
+VERSION_DATA = json.loads((ROOT / 'VERSION.json').read_text(encoding='utf-8'))
+VERSION = VERSION_DATA['version']
 
 @lru_cache(maxsize=1)
 def build_info():
@@ -30,4 +31,7 @@ def build_info():
         dirty = bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True))
     except (OSError, subprocess.CalledProcessError):
         commit, dirty = None, True
-    return {'version': VERSION, 'commit': commit, 'dirty': dirty, 'source_sha256': digest.hexdigest(), 'release': False}
+    short_commit = commit[:12] if commit else 'untracked'
+    return {'version': VERSION, 'build_id': f'{VERSION}+{short_commit}',
+            'release_status': VERSION_DATA.get('release_status', 'unknown'),
+            'commit': commit, 'dirty': dirty, 'source_sha256': digest.hexdigest(), 'release': False}

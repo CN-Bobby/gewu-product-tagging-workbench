@@ -11,6 +11,8 @@ def test_version_is_consistent():
     assert VERSION==json.loads((root/'frontend/package.json').read_text())['version']
     from backend.app import health
     assert health()['version']==VERSION
+    assert health()['build_id'].startswith(VERSION+'+')
+    assert health()['release_status']=='pending_acceptance'
     assert len(health()['source_sha256'])==64
 
 def test_task_build_is_frozen_at_creation(dataset):
@@ -39,3 +41,26 @@ def test_desktop_launcher_keeps_runtime_cache_out_of_install_directory():
     source=(root/'scripts'/'DesktopLauncher.cs').read_text(encoding='utf-8')
     assert 'start.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"]="1"' in source
     assert '!Occupied(port)&&StorageReleased(data)' in source
+
+
+def test_release_ledger_and_single_install_identity():
+    root=Path(__file__).resolve().parents[1]
+    version=json.loads((root/'VERSION.json').read_text(encoding='utf-8'))
+    ledger=json.loads((root/'RELEASE_LEDGER.json').read_text(encoding='utf-8'))
+    current=next(item for item in ledger['versions'] if item['version']==VERSION)
+    assert current['status']==version['release_status']=='pending_acceptance'
+    beta1=next(item for item in ledger['versions'] if item['version']=='0.5.0-beta.1')
+    assert beta1['status']=='superseded' and beta1['superseded_by']==VERSION
+    source=(root/'scripts'/'build_windows.py').read_text(encoding='utf-8')
+    assert 'InstallDirRegKey HKCU "Software\\\\GeWuWorkbench" "InstallLocation"' in source
+    assert 'Uninstall\\\\GeWuWorkbench' in source
+    assert '格物工作台.lnk' in source
+    assert "candidate_suffix='-candidate.'+commit[:12]" in source
+
+
+def test_customer_artifact_names_are_version_only():
+    root=Path(__file__).resolve().parents[1]
+    source=(root/'scripts'/'assemble_release.py').read_text(encoding='utf-8')
+    assert "格物工作台-{args.version}-安装程序.exe" in source
+    assert "格物工作台-{args.version}-客户分发包.zip" in source
+    assert "version already promoted; increment the version" in source

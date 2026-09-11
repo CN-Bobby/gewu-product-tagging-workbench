@@ -28,10 +28,10 @@ def zip_tree(source: Path, target: Path, prefix: str) -> None:
 
 
 def zip_assets(build_dir: Path, target: Path) -> None:
-    excluded = {target.name, target.name + '.sha256', 'app'}
+    excluded = {target.name, target.name + '.sha256', 'app', 'PROMOTION.json'}
     with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(build_dir.iterdir()):
-            if path.name in excluded or not path.is_file():
+            if path.name in excluded or '-candidate.' in path.name or not path.is_file():
                 continue
             archive.write(path, f'GeWuWorkbench-{build_dir.parent.name}/{path.name}')
 
@@ -48,6 +48,24 @@ def main() -> int:
     evidence = args.evidence.resolve()
     if not evidence.is_file():
         raise SystemExit(f'evidence file is missing: {evidence}')
+
+    ledger = json.loads((ROOT / 'RELEASE_LEDGER.json').read_text(encoding='utf-8'))
+    entry = next((item for item in ledger.get('versions', []) if item.get('version') == args.version), None)
+    if not entry or entry.get('status') != 'pending_acceptance':
+        raise SystemExit('release ledger has no pending candidate for this version')
+    existing = [path for path in (ROOT / 'releases' / args.version).glob('*/PROMOTION.json') if path.parent != build_dir]
+    if existing:
+        raise SystemExit(f'version already promoted; increment the version instead of overwriting: {existing[0]}')
+    manifest = json.loads((build_dir / 'release-manifest.json').read_text(encoding='utf-8'))
+    if manifest.get('version') != args.version or manifest.get('release_status') != 'pending_acceptance':
+        raise SystemExit('build manifest and requested promotion disagree')
+    candidates = list(build_dir.glob(f'格物工作台-{args.version}-candidate.*-安装程序.exe'))
+    if len(candidates) != 1:
+        raise SystemExit('expected exactly one internal candidate installer')
+    customer_installer = build_dir / f'格物工作台-{args.version}-安装程序.exe'
+    if customer_installer.exists():
+        raise SystemExit('customer installer already exists; refusing to overwrite')
+    shutil.copy2(candidates[0], customer_installer)
 
     mapping = {
         ROOT / 'docs' / 'CUSTOMER_GUIDE.md': '客户使用说明.md',
@@ -73,7 +91,7 @@ def main() -> int:
                 continue
             archive.write(path, f'evidence/{path.name}')
 
-    distribution = build_dir / f'GeWuWorkbench-{args.version}-客户分发包.zip'
+    distribution = build_dir / f'格物工作台-{args.version}-客户分发包.zip'
     sidecar = distribution.with_name(distribution.name + '.sha256')
     for path in (distribution, sidecar):
         if path.exists():
@@ -82,7 +100,7 @@ def main() -> int:
     excluded = {build_dir / 'SHA256SUMS.txt', build_dir / 'app', distribution, sidecar}
     lines = []
     for path in sorted(build_dir.iterdir()):
-        if path in excluded or not path.is_file():
+        if path in excluded or '-candidate.' in path.name or not path.is_file():
             continue
         lines.append(f'{sha256(path)}  {path.name}\n')
     (build_dir / 'SHA256SUMS.txt').write_text(''.join(lines), encoding='utf-8')
@@ -91,6 +109,18 @@ def main() -> int:
     # the sidecar so the checksum file inside the package is not circular.
     zip_assets(build_dir, distribution)
     sidecar.write_text(f'{sha256(distribution)}  {distribution.name}\n', encoding='utf-8')
+    promotion = {
+        'version': args.version,
+        'build_id': manifest.get('build_id'),
+        'commit': manifest.get('commit'),
+        'status': 'pending_acceptance',
+        'supersedes': '0.5.0-beta.1',
+        'installer': {'name': customer_installer.name, 'sha256': sha256(customer_installer)},
+        'distribution': {'name': distribution.name, 'sha256': sha256(distribution)},
+        'tag_created': False,
+        'github_release_created': False,
+    }
+    (build_dir / 'PROMOTION.json').write_text(json.dumps(promotion, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps({'build_dir': str(build_dir), 'distribution': str(distribution), 'sha256': sha256(distribution)}, ensure_ascii=False))
     return 0
 

@@ -4,6 +4,10 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 parser=argparse.ArgumentParser();parser.add_argument('--candidate',action='store_true');parser.add_argument('--evidence',type=Path);args=parser.parse_args()
 version=json.loads((ROOT/'VERSION.json').read_text(encoding='utf-8'))
+ledger=json.loads((ROOT/'RELEASE_LEDGER.json').read_text(encoding='utf-8'))
+ledger_entry=next((item for item in ledger.get('versions',[]) if item.get('version')==version['version']),None)
+if not ledger_entry or ledger_entry.get('status')!=version.get('release_status'):
+    raise SystemExit('VERSION.json and RELEASE_LEDGER.json disagree')
 if subprocess.check_output(['git','status','--porcelain'],cwd=ROOT,text=True).strip():raise SystemExit('Build requires clean Git worktree')
 if not args.candidate:
     gate=[sys.executable,str(ROOT/'scripts/check_release.py')]
@@ -23,7 +27,7 @@ for directory in ('backend','skills/product-tagging','docs'):
 (app/'scripts').mkdir()
 shutil.copy2(ROOT/'scripts/desktop_bootstrap.py',app/'scripts/desktop_bootstrap.py')
 shutil.copy2(ROOT/'scripts/restore_backup.py',app/'scripts/restore_backup.py')
-for name in ('VERSION.json','requirements-runtime.lock.txt','requirements-runtime-hashed.txt'):
+for name in ('VERSION.json','RELEASE_LEDGER.json','requirements-runtime.lock.txt','requirements-runtime-hashed.txt'):
     shutil.copy2(ROOT/name,app/name)
 runtime=app/'runtime'
 with zipfile.ZipFile(tools/'python-3.14.3-embed-amd64.zip') as archive:archive.extractall(runtime)
@@ -54,7 +58,8 @@ subprocess.run([str(compiler),'/nologo','/target:winexe','/reference:System.Wind
     '/reference:System.Web.Extensions.dll','/out:'+str(app/'Workbench.exe'),str(ROOT/'scripts/DesktopLauncher.cs'),str(assembly)],check=True)
 sys.path.insert(0,str(ROOT));from backend.build_info import build_info
 from backend.tagging_rules import freeze
-manifest={**build_info(),'commit':commit,'dirty':False,'release':not args.candidate,'built_at':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(),
+manifest={**build_info(),'version':version['version'],'build_id':version['version']+'+'+commit[:12],
+    'release_status':version['release_status'],'commit':commit,'dirty':False,'release':not args.candidate,'built_at':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(),
     'skill':{k:v for k,v in freeze().items() if k in ('version','sha256')},
     'reasonix':{'version':version['reasonix_baseline'],'sha256':sha(binary)},'database_migration':version['schema_version'],
     'python':{'version':'3.14.3','sha256':pins['python-3.14.3-embed-amd64.zip']['sha256']},
@@ -65,7 +70,10 @@ shutil.copy2(app/'build-manifest.json',out/'release-manifest.json')
 if args.evidence:shutil.copy2(args.evidence,out/'release-evidence.json')
 delete_files='\n'.join('Delete "$INSTDIR\\'+p.relative_to(app).as_posix().replace('/','\\')+'"' for p in app.rglob('*') if p.is_file())
 delete_dirs='\n'.join('RMDir "$INSTDIR\\'+p.relative_to(app).as_posix().replace('/','\\')+'"' for p in sorted((p for p in app.rglob('*') if p.is_dir()),key=lambda p:len(p.parts),reverse=True))
+candidate_suffix='-candidate.'+commit[:12] if args.candidate else ''
+installer_name=f'格物工作台-{version["version"]}{candidate_suffix}-安装程序.exe'
 nsis='''Unicode true
+!include "FileFunc.nsh"
 Name "格物商品打标工作台 VERSION"
 VIProductVersion "WINDOWSVERSION"
 VIAddVersionKey "ProductName" "GeWu Product Tagging Workbench"
@@ -74,12 +82,60 @@ VIAddVersionKey "FileVersion" "WINDOWSVERSION"
 VIAddVersionKey "FileDescription" "GeWu Workbench Installer"
 VIAddVersionKey "LegalCopyright" "GeWu Workbench"
 OutFile "OUTFILE"
-InstallDir "$LOCALAPPDATA\\GeWuWorkbench\\versions\\BUILDID"
+InstallDir "$LOCALAPPDATA\\GeWuWorkbench\\app"
+InstallDirRegKey HKCU "Software\\GeWuWorkbench" "InstallLocation"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 DirText "选择程序安装目录（仅选择当前用户可写目录）"
 Page directory
 Page instfiles
+Var LegacyUninstaller
+Var UpgradeStage
+Var UpgradeBackup
+Function .onInit
+  StrCpy $LegacyUninstaller ""
+  ReadRegStr $0 HKCU "Software\\GeWuWorkbench" "InstallLocation"
+  StrCmp $0 "" find_legacy
+  StrCpy $INSTDIR $0
+  Return
+find_legacy:
+  StrCpy $0 0
+legacy_loop:
+  EnumRegKey $1 HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall" $0
+  StrCmp $1 "" init_done
+  StrCpy $2 $1 5
+  StrCmp $2 "GeWu-" legacy_found
+  IntOp $0 $0 + 1
+  Goto legacy_loop
+legacy_found:
+  ReadRegStr $LegacyUninstaller HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\$1" "UninstallString"
+  StrCpy $2 $LegacyUninstaller 1
+  StrCmp $2 '$\"' 0 legacy_parent
+  StrCpy $LegacyUninstaller $LegacyUninstaller -1 1
+  StrCpy $2 $LegacyUninstaller 1 -1
+  StrCmp $2 '$\"' 0 legacy_parent
+  StrCpy $LegacyUninstaller $LegacyUninstaller -1
+legacy_parent:
+  ${GetParent} "$LegacyUninstaller" $2
+  StrCmp $2 "" init_done
+  StrCpy $INSTDIR $2
+init_done:
+FunctionEnd
+Function RemoveLegacyRegistration
+  StrCpy $0 0
+legacy_cleanup_loop:
+  EnumRegKey $1 HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall" $0
+  StrCmp $1 "" legacy_cleanup_done
+  StrCpy $2 $1 5
+  StrCmp $2 "GeWu-" 0 legacy_cleanup_next
+  DeleteRegKey HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\$1"
+  StrCpy $0 0
+  Goto legacy_cleanup_loop
+legacy_cleanup_next:
+  IntOp $0 $0 + 1
+  Goto legacy_cleanup_loop
+legacy_cleanup_done:
+FunctionEnd
 Function .onVerifyInstDir
   ClearErrors
   CreateDirectory "$INSTDIR"
@@ -97,15 +153,51 @@ FunctionEnd
 UninstPage uninstConfirm
 UninstPage instfiles
 Section
-SetOutPath "$INSTDIR"
+StrCpy $UpgradeStage "$INSTDIR.gewu-new"
+StrCpy $UpgradeBackup "$INSTDIR.gewu-old"
+RMDir /r "$UpgradeStage"
+RMDir /r "$UpgradeBackup"
+SetOutPath "$UpgradeStage"
 File /r "APPDIR\\*"
-CreateShortCut "$DESKTOP\\格物工作台 BUILDID.lnk" "$INSTDIR\\Workbench.exe"
-CreateDirectory "$SMPROGRAMS\\格物工作台"
-CreateShortCut "$SMPROGRAMS\\格物工作台\\格物工作台 BUILDID.lnk" "$INSTDIR\\Workbench.exe"
+IfFileExists "$UpgradeStage\\Workbench.exe" +2 0
+  Abort "新版本程序文件不完整，原版本未修改。"
+IfFileExists "$INSTDIR\\Workbench.exe" 0 replace_program
+  ClearErrors
+  ExecWait '"$INSTDIR\\Workbench.exe" --stop --no-open' $0
+  IfErrors stop_failed
+  IntCmp $0 0 replace_program
+stop_failed:
+  Abort "旧工作台无法安全停止，升级已取消。请关闭工作台后重试。"
+replace_program:
+IfFileExists "$INSTDIR\\*" 0 install_new
+  Rename "$INSTDIR" "$UpgradeBackup"
+  IfErrors replace_failed
+install_new:
+RMDir "$INSTDIR"
+Rename "$UpgradeStage" "$INSTDIR"
+IfErrors restore_old
+Goto program_ready
+restore_old:
+  RMDir /r "$INSTDIR"
+  Rename "$UpgradeBackup" "$INSTDIR"
+replace_failed:
+  Abort "程序替换失败，已保留或恢复原版本。"
+program_ready:
 WriteUninstaller "$INSTDIR\\Uninstall.exe"
-WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWu-BUILDID" "DisplayName" "格物工作台 BUILDID"
-WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWu-BUILDID" "UninstallString" '"$INSTDIR\\Uninstall.exe"'
-WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWu-BUILDID" "DisplayVersion" "VERSION"
+CreateShortCut "$DESKTOP\\格物工作台.lnk" "$INSTDIR\\Workbench.exe"
+CreateDirectory "$SMPROGRAMS\\格物工作台"
+CreateShortCut "$SMPROGRAMS\\格物工作台\\格物工作台.lnk" "$INSTDIR\\Workbench.exe"
+WriteRegStr HKCU "Software\\GeWuWorkbench" "InstallLocation" "$INSTDIR"
+WriteRegStr HKCU "Software\\GeWuWorkbench" "Version" "VERSION"
+WriteRegStr HKCU "Software\\GeWuWorkbench" "Commit" "COMMIT"
+WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWuWorkbench" "DisplayName" "格物工作台"
+WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWuWorkbench" "UninstallString" '"$INSTDIR\\Uninstall.exe"'
+WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWuWorkbench" "InstallLocation" "$INSTDIR"
+WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWuWorkbench" "DisplayVersion" "VERSION"
+Delete "$DESKTOP\\格物工作台 0.5.0-beta.1-*.lnk"
+Delete "$SMPROGRAMS\\格物工作台\\格物工作台 0.5.0-beta.1-*.lnk"
+Call RemoveLegacyRegistration
+RMDir /r "$UpgradeBackup"
 SectionEnd
 Section "Uninstall"
 ClearErrors
@@ -115,15 +207,16 @@ IntCmp $0 0 stop_done
 stop_failed:
 Abort "Workbench could not stop. Close it before uninstalling."
 stop_done:
-Delete "$DESKTOP\\格物工作台 BUILDID.lnk"
-Delete "$SMPROGRAMS\\格物工作台\\格物工作台 BUILDID.lnk"
+Delete "$DESKTOP\\格物工作台.lnk"
+Delete "$SMPROGRAMS\\格物工作台\\格物工作台.lnk"
 DELETEFILES
 DELETEDIRS
 Delete "$INSTDIR\\Uninstall.exe"
 RMDir /r "$INSTDIR"
-DeleteRegKey HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWu-BUILDID"
+DeleteRegKey HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GeWuWorkbench"
+DeleteRegKey HKCU "Software\\GeWuWorkbench"
 SectionEnd
-'''.replace('WINDOWSVERSION',windows_version).replace('VERSION',version['version']).replace('BUILDID',version['version']+('-'+commit[:12] if args.candidate else '')).replace('OUTFILE',str(out/('GeWuWorkbench-'+version['version']+'-Setup.exe'))).replace('APPDIR',str(app)).replace('DELETEFILES',delete_files).replace('DELETEDIRS',delete_dirs)
+'''.replace('WINDOWSVERSION',windows_version).replace('VERSION',version['version']).replace('COMMIT',commit).replace('OUTFILE',str(out/installer_name)).replace('APPDIR',str(app)).replace('DELETEFILES',delete_files).replace('DELETEDIRS',delete_dirs)
 (out/'installer.nsi').write_text(nsis,encoding='utf-8-sig')
 subprocess.run([str(tools/'nsis-3.12/makensis.exe'),'/WX',str(out/'installer.nsi')],check=True)
 with zipfile.ZipFile(out/'source.zip','w',zipfile.ZIP_DEFLATED) as archive:
