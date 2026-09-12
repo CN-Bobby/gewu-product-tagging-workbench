@@ -50,9 +50,11 @@
       "version": "0.5.0-beta.5",
       "status": "pending_acceptance",
       "artifact_kind": "internal_candidate",
-      "commit": null,
+      "commit": "575333ac1b37099b81cd66ae55414f6f623a2385",
       "tag": null,
       "superseded_by": null,
+      "candidate_installer": "格物工作台-0.5.0-beta.5-candidate.575333ac1b37-安装程序.exe",
+      "candidate_sha256": "0edd4007f1f8fbc3fc75d79c72b43b2e8f869af30218b3e3bc95d59efe05e74a",
       "note": "Ask恢复、多项目/多对话、图片对话、多个具名Key与模型选择、商品补充图绑定及已有人工标签原列续打的集成候选；真实商品识别效果与干净Windows安装仍需用户验收。"
     }
   ]
