@@ -4,7 +4,7 @@
 
 使用一个私有 GitHub 仓库。源码、Skill、测试、构建脚本、锁定依赖、版本记录和脱敏过程证据进入 Git；`storage/`、`releases/`、客户表格、图片、SQLite、缓存、Reasonix 会话和凭据不进入 Git。
 
-保留本地已有提交历史和三个开发分支：`baseline/takeover`、`fix/0.4.1-closeout`、`feature/0.5.0-delivery`。外部干净 Windows 验收通过前，不创建 `main` 或 `v0.5.0-beta.3`。
+保留本地已有提交历史和三个开发分支：`baseline/takeover`、`fix/0.4.1-closeout`、`feature/0.5.0-delivery`。外部验收确认后已创建默认分支 `main`，并将 `main` 与交付分支推进到 commit `14603bff0ad9678699817d22d793437bcbdf7398`。
 
 ## 首次接管
 
@@ -19,7 +19,7 @@ git push origin baseline/takeover fix/0.4.1-closeout feature/0.5.0-delivery
 
 ## Release
 
-验收通过后，从干净工作区创建不可移动标签 `v0.5.0-beta.3`，发布 GitHub Pre-release。安装程序、客户分发 ZIP、源代码 ZIP、验收证据、发布清单、SHA256、许可证和说明作为 Release 附件，不提交到 Git 历史。
+当前已从 commit `14603bff0ad9678699817d22d793437bcbdf7398` 创建不可移动标签 `v0.5.0-beta.3`，并发布 GitHub Pre-release：https://github.com/CN-Bobby/gewu-product-tagging-workbench/releases/tag/v0.5.0-beta.3。安装程序、客户分发 ZIP、源代码 ZIP、验收证据、发布清单、SHA256、许可证和说明作为 Release 附件，不提交到 Git 历史。源码仍保留 `pending_acceptance`，因此该 Release 是客户试用预发布，不代表正式版。
 
 Release 说明必须引用应用版本、commit、构建时间、Skill SHA256、Reasonix 版本与 SHA256、schema 版本、安装/升级/回退步骤和已知限制。`SHA256SUMS.txt` 校验全部附件，分发 ZIP 另附 `.sha256` 文件。
 
