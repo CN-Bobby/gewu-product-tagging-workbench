@@ -1,0 +1,6 @@
+{"case":"apparel_entity_color","category":"apparel","forms":["multi_component"],"goal":"主商品颜色","good":"杯身/服装主体按区域记录底色、拼色和印花；配件与饰边不覆盖主体色","bad":"把白色滚边认作白色内衬，把配件颜色并入主色"}
+{"case":"drinkware_variant","category":"drinkware","forms":["multi_variant"],"goal":"杯身主色","good":"只取当前杯身最大连续区域；颜色缩略图记为variant_reference","bad":"把缩略图所有颜色都打到当前商品"}
+{"case":"mount_system","category":"electronics","forms":["mounting_system"],"goal":"固定结构","good":"识别基座—连接臂—磁吸/夹持端关系，手机和汽车为演示物","bad":"将手机识别成随附件或由圆环推断无线充电"}
+{"case":"dense_charms","category":"craft_components","forms":["homogeneous_collection"],"goal":"主题分布","good":"先判断集合级多主题与布局，仅对相关区域抽样","bad":"整图精确枚举数百个吊坠并自动拆列"}
+{"case":"toy_makeup_kit","category":"toys_activity_kits","forms":["heterogeneous_kit"],"goal":"套装组成","good":"按玩具材料、工具、装饰和可复用收纳盒分组","bad":"把儿童演示计入套装，凭外观断言无毒可水洗"}
+{"case":"kids_audio","category":"electronics","forms":["electronic_system"],"goal":"系统组成","good":"主机、麦克风和外部手机分角色；正背面是多视角","bad":"把界面图标当作已支持应用，把灯带外观当作RGB功能"}

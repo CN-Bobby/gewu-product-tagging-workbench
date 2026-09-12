@@ -1,6 +1,6 @@
 # 交付台账
 
-目标：0.5.0-beta.3；当前源码：0.5.0-beta.3候选，已绑定 commit `14603bff0ad9678699817d22d793437bcbdf7398`，并创建标签 `v0.5.0-beta.3` 和 GitHub Pre-release。0.5.0-beta.2因图形安装缺陷停止分发并由本版取代；beta.3仍是客户试用预发布，正式版未发布。
+当前开发目标：0.5.0-beta.4（商品通识打标 Skill 0.5.0 集成），已在版本台账中取代beta.3，但尚未绑定构建提交、标签或客户分发包。最近实际发布的历史客户试用包仍为0.5.0-beta.3，绑定 commit `14603bff0ad9678699817d22d793437bcbdf7398` 与 GitHub Pre-release；beta.4通过完整自动化和真实语义验收前不对外发布。
 
 GitHub Release：https://github.com/CN-Bobby/gewu-product-tagging-workbench/releases/tag/v0.5.0-beta.3。构建时的 `ACCEPTANCE-RESULTS.json` 保留当时的待外部验收快照；随后用户已确认另一台 Windows 完成安装验证。
 

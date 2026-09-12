@@ -38,9 +38,8 @@ def fingerprint(product,column,spec,entry,vision_requirements):
     if definition['source'] in ('image','both'):
         endpoint,_,model=provider_config(spec['vision_model'])
         from .image_inputs import selection
-        image_input=selection(product)
-        asset=image_input['asset']
-        contract.update(images=[pixels(asset['path'])],image_input_policy=image_input['input_policy'],vision_model=[spec['vision_model'],endpoint,model],
+        image_input=selection(product,definition.get('input_policy','single_main_image_v1'))
+        contract.update(images=[pixels(asset['path']) for asset in image_input['assets']],image_input_policy=image_input['input_policy'],crop_policy=image_input.get('crop_policy'),vision_model=[spec['vision_model'],endpoint,model],
                         vision_prompt=execution['vision_rules'],vision_requirements=vision_requirements)
     return digest(contract)
 

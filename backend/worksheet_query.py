@@ -5,6 +5,48 @@ from sqlalchemy import select
 from .db import *
 from . import draft
 
+def representative_rows(data,cap=60):
+    """Deterministic round-robin across broad category/text/asset strata, deduping images."""
+    from . import tagging_rules
+    buckets={};seen=set()
+    for row in data['rows']:
+        image_key=tuple(a.get('sha256') for a in row['assets'] if a.get('path')) or (row['id'],)
+        if image_key in seen:continue
+        seen.add(image_key)
+        routed=tagging_rules.route({},'advisor',{'raw':row.get('raw',{}),'fields':row.get('fields',{})})
+        category=(routed['categories'] or ['uncategorized'])[0]
+        nonempty=sum(v not in (None,'') for v in row.get('raw',{}).values())
+        asset_band='multi_image' if sum(bool(a.get('path')) for a in row['assets'])>1 else 'single_image'
+        stratum=(category,asset_band,min(nonempty//3,3))
+        buckets.setdefault(stratum,[]).append(row)
+    chosen=[];groups=list(buckets.values());index=0
+    while groups and len(chosen)<cap:
+        next_groups=[]
+        for group in groups:
+            if index<len(group):chosen.append(group[index])
+            if index+1<len(group):next_groups.append(group)
+            if len(chosen)>=cap:break
+        groups=next_groups;index+=1
+    return chosen
+
+def aggregate_visual_groups(groups,total,sample_ids):
+    """Cross-group synthesis without another image call."""
+    ready=[g for g in groups if g.get('status')=='ready']
+    patterns=[];candidates=[];include=[];exclude=[];unresolved=[]
+    for group in ready:
+        patterns.extend(group.get('patterns',[]));candidates.extend(group.get('candidate_values',[]));unresolved.extend(group.get('unresolved',[]))
+        for result in group.get('results',[]):
+            candidates.extend(result.get('candidate_values',[]));unresolved.extend(result.get('unknown',[]))
+        boundary=group.get('boundaries') or {};include.extend(boundary.get('include',[]));exclude.extend(boundary.get('exclude',[]))
+    unique=lambda values:list(dict.fromkeys(json.dumps(x,ensure_ascii=False,sort_keys=True) for x in values))
+    decode=lambda values:[json.loads(x) for x in unique(values)]
+    recent=[set(json.dumps(x,ensure_ascii=False,sort_keys=True) for x in g.get('candidate_values',[])+g.get('patterns',[])) for g in ready[-2:]]
+    stable=len(recent)>=2 and not (recent[-1]-recent[-2]) and not unresolved
+    return {'scope':'dataset_standard','sample_ids':sample_ids,'sample_count':len(sample_ids),'total':total,
+            'coverage':len(sample_ids)/total if total else 0,'candidate_values':decode(candidates),'patterns':decode(patterns),
+            'boundaries':{'include':decode(include),'exclude':decode(exclude)},'unresolved':decode(unresolved),
+            'stability':{'stable':stable,'rule':'连续两组无新增候选/模式且无未决项'},'confirmed':False,'revision':1}
+
 def display(value):
     if value is None:return ''
     if value is True:return '✓'
@@ -80,45 +122,62 @@ def profile(did):
     for f in field_catalog.read(did)['fields']:
         values=[r['raw'].get(f['name']) for r in data['rows']];count=Counter(display(v) for v in values if v not in (None,''))
         result['fields'].append({**f,'distinct':len(count),'missing':sum(v in (None,'') for v in values),'top_values':count.most_common(12)})
-    # Stable representative coverage across distinct images; no claim of observed visual semantics.
-    seen=set();sample=[]
-    for r in data['rows']:
-        key=tuple(a.get('sha256') for a in r['assets'] if a.get('path')) or (r['id'],)
-        if key not in seen:sample.append(r['id']);seen.add(key)
-    if len(sample)>24:sample=[sample[i*(len(sample)-1)//23] for i in range(24)]
+    # Diverse, stable coverage across broad category/text/asset strata; no visual semantic claim.
+    sample=[r['id'] for r in representative_rows(data,60)]
     result['representative_product_ids']=sample
     with Session() as s:
         latest=s.scalar(select(WorkbenchMeta).where(WorkbenchMeta.dataset_id==did,WorkbenchMeta.kind=='visual_overview').order_by(WorkbenchMeta.updated_at.desc(),WorkbenchMeta.id.desc()))
         if latest:
             value=latest.data
-            result['latest_visual_overview']={'overview_id':latest.id,'goal':value.get('goal'),'sample_count':value.get('sample_count'),'successful':value.get('successful'),'input_policy':value.get('input_policy'),'basis':value.get('basis'),'groups':[{'patterns':g.get('patterns',[]),'coverage_note':g.get('coverage_note'),'results':g.get('results',[])} for g in value.get('groups',[]) if g.get('status')=='ready'],'created_at':value.get('created_at')}
+            result['latest_visual_overview']={'overview_id':latest.id,'goal':value.get('goal'),'sample_count':value.get('sample_count'),'successful':value.get('successful'),'input_policy':value.get('input_policy'),'basis':value.get('basis'),'visual_standard':value.get('visual_standard'),'full_scan_estimate':value.get('full_scan_estimate'),'groups':[{'patterns':g.get('patterns',[]),'candidate_values':g.get('candidate_values',[]),'boundaries':g.get('boundaries',{}),'unresolved':g.get('unresolved',[]),'coverage_note':g.get('coverage_note'),'results':g.get('results',[])} for g in value.get('groups',[]) if g.get('status')=='ready'],'created_at':value.get('created_at')}
     return result
 
-def visual_overview(did,goal,limit=24):
-    """Compare representative main images in six-product groups."""
+def visual_overview(did,goal,limit=24,full_scan=False,confirmed_full_scan=False):
+    """Adaptively compare diverse main-image samples and synthesize a dataset-level draft standard."""
     from concurrent.futures import ThreadPoolExecutor
     import threading,time
     from . import batch
     from .model_settings import defaults
     VISION_MODEL=defaults()[1]
     if not isinstance(goal,str) or not 3<=len(goal)<=2000:raise ValueError('请说明本次希望观察的结构或图案问题')
-    if type(limit) is not int or not 1<=limit<=24:raise ValueError('代表样本数为1–24')
-    summary=profile(did);ids=summary['representative_product_ids'][:limit];data=draft.sheet(did);rows=[r for r in data['rows'] if r['id'] in ids];metrics={};lock=threading.Lock();start=time.perf_counter()
-    groups=[rows[i:i+6] for i in range(0,len(rows),6)]
+    if type(limit) is not int or not 1<=limit<=60:raise ValueError('代表样本上限为1–60')
+    data=draft.sheet(did);summary=profile(did);all_rows=([r for r in data['rows'] if any(a.get('path') for a in r['assets'])] if full_scan else representative_rows(data,60))
+    estimate_images=len(all_rows) if full_scan else min(limit,len(all_rows));estimate_requests=(estimate_images+5)//6
+    estimated={'image_count':estimate_images,'group_size':6,'estimated_vision_requests':estimate_requests,
+               'estimated_input_tokens':estimate_images*900+estimate_requests*1600,'estimated_output_tokens':estimate_requests*1200,
+               'estimated_currency_cost':None,'estimate_basis':'每张图按约900输入token、每组提示约1600输入token、输出约1200token粗估；实际由供应商返回usage为准',
+               'note':'当前模型配置未保存单价，不能伪造金额；填入模型价格后才能换算付费成本'}
+    if full_scan and not confirmed_full_scan:
+        return {'status':'confirmation_required','goal':goal,'total':len(data['rows']),'full_scan_estimate':estimated,'message':'全量看图尚未执行；请确认预计图片数与请求数后重试'}
+    target=min(len(all_rows),len(all_rows) if full_scan else limit);rows=all_rows[:target];metrics={'stage':'calibration'};lock=threading.Lock();start=time.perf_counter()
     def observe(group):
         try:
             compared=batch.calibration_group(group,VISION_MODEL,goal,False,metrics,lock)
             by_id={item['product_id']:item for item in compared['products']}
-            return [{'status':'ready','product_ids':[row['id'] for row in group],'patterns':compared['patterns'],'coverage_note':compared['coverage_note'],'cached':compared['cached'],'results':[{'product_id':row['id'],'row':row['row'],'anchor':row['anchor'],**by_id[row['id']]} for row in group]}]
+            return [{'status':'ready','product_ids':[row['id'] for row in group],'patterns':compared['patterns'],'candidate_values':compared.get('candidate_values',[]),'boundaries':compared.get('boundaries',{'include':[],'exclude':[]}),'unresolved':compared.get('unresolved',[]),'new_type_count':compared.get('new_type_count',0),'coverage_note':compared['coverage_note'],'cached':compared['cached'],'results':[{'product_id':row['id'],'row':row['row'],'anchor':row['anchor'],**by_id[row['id']]} for row in group]}]
         except Exception as e:
             if len(group)>1:
                 middle=len(group)//2
                 return observe(group[:middle])+observe(group[middle:])
             return [{'status':'failed','product_ids':[group[0]['id']],'error':str(e)[:500]}]
-    with ThreadPoolExecutor(max_workers=3) as pool:group_results=[item for result in pool.map(observe,groups) for item in result]
+    # User-specified limit is the hard cap. Observe 6–10 first, then expand while novelty/uncertainty remains.
+    initial=min(target,10);observed=0;group_results=[]
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        while observed<target:
+            stage_end=initial if observed<initial else min(target,24 if observed<24 else 60 if not full_scan else target)
+            stage=[rows[i:i+6] for i in range(observed,stage_end,6)]
+            group_results.extend(item for result in pool.map(observe,stage) for item in result);observed=stage_end
+            ready=[g for g in group_results if g['status']=='ready']
+            recent=ready[-2:]
+            novelty=any(g.get('new_type_count',0) or g.get('candidate_values') or g.get('unresolved') for g in recent)
+            pattern_sets=[set(json.dumps(x,ensure_ascii=False,sort_keys=True) for x in g.get('patterns',[])) for g in recent]
+            if len(pattern_sets)>=2 and pattern_sets[-1]-pattern_sets[-2]:novelty=True
+            if not full_scan and observed>=initial and not novelty:break
+            if not full_scan and observed>=24 and not any(g.get('unresolved') or g.get('new_type_count',0) for g in recent):break
     results=[item for group in group_results if group['status']=='ready' for item in group['results']]
-    metrics['wall_seconds']=time.perf_counter()-start
-    value={'goal':goal,'total':summary['total'],'sample_count':len(rows),'successful':len(results),'input_policy':'single_main_image_v1','group_size':6,'basis':'按去重主图稳定取代表样本，每组最多6件比较；结论只覆盖这些样本，不代表全量已看图','groups':group_results,'results':results,'metrics':metrics,'created_at':now()}
+    sample_ids=[r['product_id'] for r in results];standard=aggregate_visual_groups(group_results,summary['total'],sample_ids);standard.update(goal=goal,input_policy='single_main_image_v1',failed_product_ids=[pid for g in group_results if g['status']=='failed' for pid in g['product_ids']])
+    metrics['wall_seconds']=time.perf_counter()-start;metrics['requested_limit']=limit;metrics['adaptive_stop_at']=len(sample_ids)
+    value={'goal':goal,'total':summary['total'],'sample_count':len(sample_ids),'successful':len(results),'input_policy':'single_main_image_v1','group_size':6,'basis':'按大类、文字完整度和图片形态分层去重抽样，每组最多6件；结论只覆盖所列样本，不代表全量已看图','groups':group_results,'results':results,'visual_standard':standard,'full_scan':bool(full_scan),'full_scan_estimate':estimated,'metrics':metrics,'created_at':now()}
     with draft.WRITE_LOCK,Session.begin() as s:
-        ident=uid();value['overview_id']=ident;record=WorkbenchMeta(id=ident,dataset_id=did,kind='visual_overview',data=value);s.add(record);audit(s,did,'visual_overview',{'overview_id':ident,'goal':goal,'sample_count':len(rows),'successful':value['successful'],'input_policy':value['input_policy']})
+        ident=uid();value['overview_id']=ident;record=WorkbenchMeta(id=ident,dataset_id=did,kind='visual_overview',data=value);s.add(record);audit(s,did,'visual_overview',{'overview_id':ident,'goal':goal,'sample_count':value['sample_count'],'successful':value['successful'],'input_policy':value['input_policy'],'full_scan':bool(full_scan)})
     return value

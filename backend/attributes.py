@@ -52,6 +52,26 @@ def propose_expansion(s,did,col,names):
         ident=uid();p=Proposal(id=ident,dataset_id=did,group_id=ident,group_revision=1,title=('追加属性：' if parent.definition.get('expanded') else '整类拆列：')+parent.definition['name'],changes=[ch],fingerprint=draft.proposal_fingerprint([ch]));s.add(p)
     s.flush();draft.emit(s,did,'proposal',obj(p));draft.emit(s,did,'proposal_group',obj(p))
 
+def record_definition_gap(s,did,col,names,job=None,product_id=None):
+    """Aggregate discoveries without creating mid-run proposal cards."""
+    policy=col.definition.get('expansion_policy','end_of_task_suggestion')
+    if policy!='end_of_task_suggestion':return
+    names=list(dict.fromkeys(n.strip() for n in names if isinstance(n,str) and n.strip()))
+    if not names:return
+    scope=job.id if job is not None else 'manual'
+    ident=f'definition-gap:{scope}:{col.id}'
+    item=s.get(WorkbenchMeta,ident)
+    data=dict(item.data or {}) if item else {'column_id':col.id,'column_name':col.definition['name'],'job_id':job.id if job is not None else None,'values':[],'product_ids':[],'status':'pending_review'}
+    data['values']=list(dict.fromkeys(data.get('values',[])+names))
+    if product_id:data['product_ids']=list(dict.fromkeys(data.get('product_ids',[])+[product_id]))[:20]
+    data['count']=len(data['values']);data['updated_at']=now()
+    if item:item.data=data;item.updated_at=now()
+    else:s.add(WorkbenchMeta(id=ident,dataset_id=did,kind='definition_gap',data=data))
+    if job is not None:
+        metrics=dict(job.metrics or {});gaps=dict(metrics.get('definition_gaps') or {})
+        gaps[col.id]={'column_id':col.id,'column_name':col.definition['name'],'values':data['values'],'count':data['count'],'status':'pending_review'}
+        metrics['definition_gaps']=gaps;job.metrics=metrics
+
 def expand(s,did,ch,proposal_id):
     from . import draft
     parent=require(s,DraftColumn,ch['column_id'])
@@ -66,6 +86,9 @@ def expand(s,did,ch,proposal_id):
         d={**copy.deepcopy(parent.definition),'key':key,'name':parent.definition['name']+'－'+name,'options':[],
            'definition':parent.definition['definition']+'；本列判断具体属性：'+name+'。只返回 true/false/null；未提及不等于否定。',
            'attribute':name,'parent_id':parent.id,'expanded':False,'result_shape':'boolean','method':'attribute' if parent.definition.get('method') in ('mapping','bins') else 'model','depends_on':[parent.id]}
+        if d.get('skill'):
+            from . import tagging_rules
+            d['runtime_profile']=tagging_rules.compile_runtime_profile(d,'execution',d['skill'])
         col=DraftColumn(dataset_id=did,key=key,definition=d,origin={'proposal_id':proposal_id,'category_id':parent.id})
         s.add(col);s.flush();draft.emit(s,did,'column',obj(col))
         for pid in s.scalars(select(Product.id).where(Product.dataset_id==did)):
@@ -103,13 +126,13 @@ def expansion_evidence(s,pid,parent,name,children):
 def on_result(s,job,col,cell,result):
     names=[a['attribute'] for a in result.get('attributes',[]) if a.get('value') is True]
     if col.definition.get('parent_id'):
-        if names:propose_expansion(s,job.dataset_id,col,names)
+        if names:record_definition_gap(s,job.dataset_id,col,names,job,cell.product_id)
     elif isinstance(cell.value,list):
         if len(cell.value)>1:
-            cell.status='review'
-            if col.definition.get('cardinality')=='single':cell.evidence={**cell.evidence,'review_reason':'互斥单选出现多个候选，需修正规则或结果；未自动拆列'}
-            else:propose_expansion(s,job.dataset_id,col,col.definition.get('options',[])+names)
-        elif len(cell.value)==1:cell.value=cell.value[0]
+            if col.definition.get('result_shape')!='multi_enum':
+                cell.status='review';cell.evidence={**cell.evidence,'review_reason':'单值标签出现多个明确命中，需修正规则或结果；未自动拆列'}
+            if col.definition.get('cardinality')!='single':record_definition_gap(s,job.dataset_id,col,col.definition.get('options',[])+names,job,cell.product_id)
+        elif len(cell.value)==1 and col.definition.get('result_shape')!='multi_enum':cell.value=cell.value[0]
 
 def collapse(s,did,parent):
     """Reversible display change; original children and their evidence remain in snapshots and draft."""

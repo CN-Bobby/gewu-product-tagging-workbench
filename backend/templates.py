@@ -64,7 +64,7 @@ def propose_copy(did,revision_id,execute=False,product_ids=None):
         d['depends_on']=[refs[x] for x in d.get('depends_on',[])]
         if d.get('parent_id'):d['parent_id']=refs[d['parent_id']]
         if d.get('when'):d['when']['column_id']=refs[d['when']['column_id']]
-        d.pop('skill',None)
+        d.pop('skill',None);d.pop('runtime_profile',None);d.pop('visual_standard_id',None);d.pop('visual_standard',None)
         changes.append({'kind':'add','definition':d,'template_source':{'template_id':revision.template_id,'revision':revision.revision,'revision_id':revision.id,'source_dataset_id':payload['source_dataset_id'],'source_column_id':c['id']}})
         if c['id'] in payload['selected_column_ids'] and not d.get('expanded'):execute_refs.append('$'+key)
     if execute:

@@ -125,11 +125,15 @@ def test_text_wait_and_dependency_resume(dataset,monkeypatch):
     while (tag['id'] in batch.active or pre['id'] in batch.active) and time.time()<deadline:time.sleep(.05)
     with Session() as s:assert require(s,BatchJob,tag['id']).status=='completed'
 
-def test_manual_multiple_keeps_candidate_and_requires_confirmation(dataset):
+def test_manual_multiple_collects_gap_then_user_proposes_expansion(dataset):
     did=dataset['id'];c=add(did,'pattern');pid=draft.sheet(did)['rows'][0]['id']
     draft.correct(did,pid,c['id'],['花卉','条纹'])
     state=draft.state(did);assert len(state['columns'])==1 and state['rows'][0]['cells'][c['id']]['status']=='review'
-    prop=next(p for p in state['proposals'] if p['status']=='pending' and p['changes'][0]['kind']=='expand')
+    assert not any(p['status']=='pending' and p['changes'][0]['kind']=='expand' for p in state['proposals'])
+    with Session() as s:
+        gap=s.get(WorkbenchMeta,'definition-gap:manual:'+c['id'])
+        assert gap.data['values']==['花卉','条纹'] and gap.data['status']=='pending_review'
+    prop=draft.propose(did,'用户选择后拆列',[{'kind':'expand','column_id':c['id'],'attributes':['花卉','条纹']}])
     draft.confirm(did,prop['id'])
     assert all(r['manual'] for cid,r in draft.sheet(did)['rows'][0]['cells'].items() if cid!=c['id'])
 
@@ -144,7 +148,10 @@ def test_multi_expand_manual_migration_snapshot_and_export(dataset):
     with Session.begin() as s:
         task=require(s,BatchJob,j['id']);draft.write_result(s,task,pid,col,multi_value());task.status='completed'
     state=draft.state(did);assert state['rows'][0]['cells'][col['id']]['status']=='review'
-    proposal=next(p for p in state['proposals'] if p['changes'][0]['kind']=='expand');draft.confirm(did,proposal['id'])
+    assert not any(p['status']=='pending' and p['changes'][0]['kind']=='expand' for p in state['proposals'])
+    with Session() as s:
+        saved=require(s,BatchJob,j['id']);assert saved.metrics['definition_gaps'][col['id']]['values']==['花卉','条纹','波点']
+    proposal=draft.propose(did,'用户整理后拆列',[{'kind':'expand','column_id':col['id'],'attributes':['花卉','条纹','波点']}]);draft.confirm(did,proposal['id'])
     state=draft.sheet(did);children={c['definition']['attribute']:c for c in state['columns'] if c['definition'].get('parent_id')==col['id']}
     assert len(children)==3 and len({c['id'] for c in children.values()})==3
     assert state['rows'][0]['cells'][children['波点']['id']]['value'] is False

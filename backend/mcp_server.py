@@ -78,10 +78,18 @@ if not RUN:
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True,destructiveHint=False,openWorldHint=False))
     def read_tagging_rules(topic:str='core') -> dict:
-        """Read trusted versioned product-tagging rules. Topics: core, text, attributes, normalization, tools, output. No state changes."""
+        """Read trusted versioned product-tagging rules. Topic may be core, a legacy topic, or a module ID returned by route_tagging_skill. No state changes."""
         from . import tagging_rules
         bundle=tagging_rules.freeze()
         return {'topic':topic,'version':bundle['version'],'sha256':bundle['sha256'],'content':tagging_rules.read(topic)}
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True,destructiveHint=False,openWorldHint=False))
+    def route_tagging_skill(definition:dict,mode:str='advisor') -> dict:
+        """Compile a compact read-only tagging profile and list only the Skill modules relevant to this task. Modes: advisor, definition, calibration, execution, repair."""
+        from . import tagging_rules
+        if mode not in ('advisor','definition','calibration','execution','repair'):raise ValueError('未知Skill模式')
+        bundle=tagging_rules.freeze();profile=tagging_rules.compile_runtime_profile(definition,mode,bundle)
+        return {'version':bundle['version'],'skill_sha256':bundle['sha256'],'runtime_profile':profile,'modules':[{'id':mid,'sha256':profile['module_hashes'].get(mid)} for mid in profile['module_ids']]}
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True,destructiveHint=False,openWorldHint=False))
     def read_worksheet(offset:int=0,limit:int=5) -> dict:
@@ -134,10 +142,10 @@ if not RUN:
 
     if visual_tagging_enabled():
         @mcp.tool()
-        def inspect_representative_images(goal:str,limit:int=24) -> dict:
-            """Compare up to 24 deterministic representative products in groups of six, using exactly one main image per product. Records sample IDs, observations, failures and timings; does not change labels."""
+        def inspect_representative_images(goal:str,limit:int=24,full_scan:bool=False,confirmed_full_scan:bool=False) -> dict:
+            """Adaptively compare 6–60 diverse representative main images in groups of six, then synthesize a cross-group visual standard. full_scan first returns a request/cost plan unless confirmed_full_scan is true. Does not change labels."""
             from .worksheet_query import visual_overview
-            return visual_overview(DATASET,goal,limit)
+            return visual_overview(DATASET,goal,limit,full_scan,confirmed_full_scan)
 
     @mcp.tool()
     def research_knowledge(query:str='',urls:list[str]|None=None,scope:str='') -> dict:
@@ -153,12 +161,12 @@ if not RUN:
 
     @mcp.tool()
     def propose_changes(title:str,changes:list[dict]) -> dict:
-        """Create or update this chat turn's single human-confirmed proposal group; never approve it. Exact repeats reuse the active proposal and overlapping revisions supersede the old card. Beta accepts text, main-image and combined labels. add/revise supplies definition and judgment; execute supplies explicit column IDs and scope."""
+        """Create or update this chat turn's single human-confirmed proposal group; never approve it. add/revise may supply judgment, target_scope, dimension, product_category, product_forms, visual_standard_id, input_policy and expansion_policy. execute supplies exact column IDs and scope. Never convert definition gaps into expand changes until the user selects values."""
         return draft.propose(DATASET,title,changes,use_active_turn=True)
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True,destructiveHint=False,openWorldHint=False))
     def read_tasks() -> dict:
-        """Read proposals and batch job progress, timings and failures. Does not execute or confirm anything."""
+        """Read proposals, batch progress, token/image/cache metrics, failures and end-of-task definition_gaps. Definition gaps are pending review, not approved split-column proposals. Does not execute or confirm anything."""
         with Session() as s:
             jobs=[]
             for j in s.scalars(select(BatchJob).where(BatchJob.dataset_id==DATASET).order_by(BatchJob.created_at.desc()).limit(10)):

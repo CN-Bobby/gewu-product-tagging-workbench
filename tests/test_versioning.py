@@ -50,7 +50,7 @@ def test_release_ledger_and_single_install_identity():
     current=next(item for item in ledger['versions'] if item['version']==VERSION)
     assert current['status']==version['release_status']=='pending_acceptance'
     previous=next(item for item in ledger['versions'] if item.get('superseded_by')==VERSION)
-    assert previous['version']=='0.5.0-beta.2' and previous['status']=='superseded'
+    assert previous['version']=='0.5.0-beta.3' and previous['status']=='superseded'
     source=(root/'scripts'/'build_windows.py').read_text(encoding='utf-8')
     assert 'InstallDirRegKey HKCU "Software\\\\GeWuWorkbench" "InstallLocation"' in source
     assert 'Uninstall\\\\GeWuWorkbench' in source

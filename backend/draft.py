@@ -48,7 +48,7 @@ def migrate_definition_shapes(s,did):
     audit(s,did,'definition_shapes_v2',{'columns':changed,'rerun':False})
 
 def revision_impact(before,after,requested=None):
-    critical=('type','source','method','result_shape','fields','cardinality','when','parser','mapping','bins','depends_on','parent_id','attribute')
+    critical=('type','source','method','result_shape','fields','cardinality','when','parser','mapping','bins','depends_on','parent_id','attribute','target_scope','dimension','product_category','product_forms','input_policy','visual_standard_id')
     incompatible=any(before.get(k)!=after.get(k) for k in critical)
     incompatible=incompatible or not set(before.get('options',[])).issubset(set(after.get('options',[])))
     calculated='invalidate_all' if incompatible else 'preserve_compatible'
@@ -139,8 +139,17 @@ def validate_definition(d,existing):
     if standard['source'] in ('image','both'):
         from .capabilities import require_visual_tagging
         require_visual_tagging()
-    standard.update({k:copy.deepcopy(d[k]) for k in ('method','depends_on','mapping','bins','fields','cardinality','when','parser','result_shape') if k in d})
+    standard.update({k:copy.deepcopy(d[k]) for k in ('method','depends_on','mapping','bins','fields','cardinality','when','parser','result_shape','target_scope','dimension','product_category','product_forms','input_policy','visual_standard_id','expansion_policy') if k in d})
     if standard.get('cardinality','auto') not in ('auto','single','multiple'):raise ValueError('cardinality需为auto/single/multiple')
+    expansion_policy=standard.setdefault('expansion_policy','end_of_task_suggestion')
+    if expansion_policy not in ('never','end_of_task_suggestion','manual_only'):raise ValueError('expansion_policy需为never/end_of_task_suggestion/manual_only')
+    if standard.get('input_policy','single_main_image_v1') not in ('single_main_image_v1','single_main_with_quadrant_crops_v1','screenshot_grid_crops_v1','main_plus_supplemental_v1'):raise ValueError('未知图片输入策略')
+    if standard['source']=='text' and standard.get('input_policy') not in (None,'single_main_image_v1'):raise ValueError('纯文字标签不能选择图片输入策略')
+    if 'target_scope' in standard and (not isinstance(standard['target_scope'],str) or not standard['target_scope'].strip()):raise ValueError('target_scope需为非空文本')
+    for routing_key in ('dimension','product_category'):
+        if routing_key in standard and not (isinstance(standard[routing_key],str) or isinstance(standard[routing_key],list) and all(isinstance(x,str) for x in standard[routing_key])):raise ValueError(routing_key+'需为文本或字符串数组')
+    if 'visual_standard_id' in standard and (standard['source'] not in ('image','both') or not isinstance(standard['visual_standard_id'],str)):raise ValueError('visual_standard_id只用于图片或图文标签')
+    if 'product_forms' in standard and (not isinstance(standard['product_forms'],list) or not all(isinstance(x,str) for x in standard['product_forms'])):raise ValueError('product_forms需为字符串数组')
     standard['judgment']=tagging_rules.judgment(d)
     if d.get('parent_id'):
         if d['parent_id'] not in existing or not isinstance(d.get('attribute'),str):raise ValueError('属性列需要有效的父类别')
@@ -479,9 +488,20 @@ def _correct(s,did,c,value):
         if not value or any(not isinstance(v,str) or not v.strip() for v in value):raise ValueError('多个命中需为非空属性名称列表')
         c.value=list(dict.fromkeys(value))
         if len(c.value)>1 and not col.definition.get('expanded'):
-            c.status='review';attributes.propose_expansion(s,did,col,col.definition.get('options',[])+c.value)
+            c.status='review';attributes.record_definition_gap(s,did,col,col.definition.get('options',[])+c.value,product_id=c.product_id)
     settle_owned_token(s,did,c.product_id+':'+c.column_id,'人工修正')
     cell_change(s,did,c,'manual_correction');recompute(s,did,c.product_id,c.column_id)
+
+def attach_visual_standard(s,did,definition,proposal_id):
+    ident=definition.get('visual_standard_id')
+    if not ident:return definition
+    item=require(s,WorkbenchMeta,ident)
+    if item.dataset_id!=did or item.kind!='visual_overview' or not isinstance(item.data.get('visual_standard'),dict):raise ValueError('视觉标准不存在或不属于当前数据集')
+    standard=copy.deepcopy(item.data['visual_standard']);standard['confirmed']=True;standard['confirmed_at']=now();standard['confirmed_by_proposal']=proposal_id
+    data=dict(item.data);data['visual_standard']=standard;item.data=data;item.updated_at=now()
+    compact={k:standard.get(k) for k in ('scope','sample_ids','sample_count','total','coverage','candidate_values','boundaries','unresolved','stability','revision','confirmed')}
+    compact['overview_id']=ident;compact['sha256']=hashlib.sha256(json.dumps(compact,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
+    return {**definition,'visual_standard':compact}
 
 def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None,confirmation_key=None):
     from .model_settings import defaults
@@ -518,7 +538,7 @@ def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None,
         for ch in p.changes:
             kind=ch['kind']
             if kind in ('add','revise'):
-                d={**copy.deepcopy(ch['definition']),'skill':tagging_rules.freeze()}
+                d=tagging_rules.prepare_definition(attach_visual_standard(s,did,copy.deepcopy(ch['definition']),p.id))
                 if kind=='add':
                     if s.scalar(select(DraftColumn.id).where(DraftColumn.dataset_id==did,DraftColumn.key==d['key'])):raise ValueError('标签 key 已存在，请提出修改定义')
                     col=DraftColumn(id=ch.get('planned_id') or uid(),dataset_id=did,key=d['key'],definition=d,origin={'proposal_id':p.id,**({'template':ch['template_source']} if ch.get('template_source') else {})});s.add(col);s.flush()
@@ -544,7 +564,10 @@ def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None,
                     for child in s.scalars(select(DraftColumn).where(DraftColumn.dataset_id==did)):
                         if child.definition.get('parent_id')!=col.id:continue
                         a=child.definition['attribute'];child.revision+=1
-                        child.definition={**child.definition,'definition':d['definition']+'；判断具体属性：'+a,'name':d['name']+'－'+a,'judgment':copy.deepcopy(d['judgment']),'source':d['source'],'fields':d.get('fields',d['judgment']['fields']),'method':'attribute' if d.get('method') in ('mapping','bins') else 'model','skill':copy.deepcopy(d['skill'])}
+                        child_definition={**child.definition,'definition':d['definition']+'；判断具体属性：'+a,'name':d['name']+'－'+a,'judgment':copy.deepcopy(d['judgment']),'source':d['source'],'fields':d.get('fields',d['judgment']['fields']),'method':'attribute' if d.get('method') in ('mapping','bins') else 'model','skill':copy.deepcopy(d['skill'])}
+                        for key in ('target_scope','dimension','product_category','product_forms','input_policy','visual_standard','visual_standard_id','expansion_policy'):
+                            if key in d:child_definition[key]=copy.deepcopy(d[key])
+                        child_definition['runtime_profile']=tagging_rules.compile_runtime_profile(child_definition,'execution',child_definition['skill']);child.definition=child_definition
                         emit(s,did,'column',obj(child))
                     for pid in s.scalars(select(Product.id).where(Product.dataset_id==did)):recompute(s,did,pid,col.id)
             elif kind=='expand':attributes.expand(s,did,ch,p.id)
@@ -574,7 +597,10 @@ def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None,
                     col=require(s,DraftColumn,cid)
                     if col.revision!=ch['revisions'][cid]:raise ValueError('规则已改变，请重新提出执行提案')
                     frozen=copy.deepcopy(obj(col))
-                    frozen['definition'].setdefault('skill',tagging_rules.freeze())
+                    if 'skill' not in frozen['definition']:
+                        frozen['definition']=tagging_rules.prepare_definition(frozen['definition'])
+                    elif 'runtime_profile' not in frozen['definition']:
+                        frozen['definition']['runtime_profile']=tagging_rules.compile_runtime_profile(frozen['definition'],'execution',frozen['definition']['skill'])
                     frozen['definition'].setdefault('judgment',tagging_rules.judgment(frozen['definition']))
                     columns.append(frozen)
                     column_ids=ch.get('target_product_ids',{}).get(cid,ids)

@@ -14,7 +14,10 @@ def test_new_attribute_reuses_discovering_cell_evidence(dataset):
     j=job(did,child,[pid])
     with Session.begin() as s:
         task=require(s,BatchJob,j['id']);draft.write_result(s,task,pid,child,{'normalized_value':False,'evidence':'无花卉，有条纹','attributes':[{'attribute':'花卉','value':False,'evidence':'无花卉'},{'attribute':'条纹','value':True,'evidence':'有条纹'}]});task.status='completed'
-    pending=next(p for p in draft.state(did)['proposals'] if p['status']=='pending' and p['changes'][0]['kind']=='expand')
+    assert not any(p['status']=='pending' and p['changes'][0]['kind']=='expand' for p in draft.state(did)['proposals'])
+    with Session() as s:
+        gap=s.get(WorkbenchMeta,'definition-gap:'+j['id']+':'+child['id']);assert gap.data['values']==['条纹']
+    pending=draft.propose(did,'用户从待整理特征中选择条纹',[{'kind':'expand','column_id':parent['id'],'attributes':['条纹']}])
     draft.confirm(did,pending['id']);data=draft.sheet(did);stripe=next(c for c in data['columns'] if c['definition'].get('attribute')=='条纹')
     cell=data['rows'][0]['cells'][stripe['id']]
     assert cell['value'] is True and child['id'] in json.dumps(cell['evidence'])

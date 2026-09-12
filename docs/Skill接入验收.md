@@ -1,4 +1,6 @@
-# 商品标签工程 Skill 接入验收 · 0.3.0
+# 商品标签工程 Skill 接入验收 · 0.3.0（历史记录）
+
+> 当前模块化 Skill 为0.5.0，工作台集成与新验收门槛见 `PRODUCT_TAGGING_SKILL_0.5.0.md`。本页只保留早期单体Skill的实际验证证据。
 
 交付 Skill 0.1.0：`skills/product-tagging/SKILL.md`、五份参考、正反例、manifest 与接入说明。应用从同一来源注入 Reasonix，并把确认后的判断规则及完整 Skill 快照发送给直接批处理模型；版本与哈希保留在结果证据。Skill 包不是用户全局配置安装，不改变其他 Reasonix 项目。
 

@@ -77,14 +77,15 @@ SYSTEM='''你是商品打标工作台的持续对话协调员。默认用中文�
 服务标识是 product_workbench（下划线）；工具能力标识形如 mcp__product_workbench__read_tagging_rules，使用真实能力目录，不猜连字符别名。
 先 read_worksheet 读取当前草稿和真实数据。所有轮次累积在同一表中；用户可随时讨论、增列、改定义、修正、聚合、执行，没有固定阶段，也不强制抽样审核。
 通过 propose_changes 提案，不能自行确认。用户在工作台按钮确认后才生效。不要将用户一句自然语言伪造成人工批准。
-新增列 kind=add，修改列 kind=revise 并提供 column_id；definition 包含 key/name/type/definition/options/source(text/image/both)。
+新增列 kind=add，修改列 kind=revise 并提供 column_id；definition 包含 key/name/type/definition/options/source(text/image/both)，并按需写 target_scope、dimension、product_category、product_forms、visual_standard_id、input_policy、expansion_policy。默认 expansion_policy=end_of_task_suggestion；默认 input_policy=single_main_image_v1，只有用户明确需要密集裁切、榜单截图网格或补充图时才选择对应版本化策略。
 纯文字能确认的标签如套装件数使用 source=text，可用 fields 指定所需字段。只有必要时才重新看图。
 聚合使用 method=mapping、depends_on=[上游column_id]、mapping={原值:中文新值}；数值区间用 method=bins、bins=[{min:含下界,max:不含上界,value:中文}]。映射由程序计算，不调用模型。
 执行用 kind=execute,targets=[{column_id,product_ids}]；每一列必须明确自己的商品范围。新增与执行应组成一份提案：changes先add再execute，target.column_id使用"$新列key"引用。普通筛选先query_scope；失败修复必须使用propose_failed_repair生成服务器冻结的精确范围。一次人工确认完成建列与执行。不要直接逐商品调用视觉或填表，批处理由应用直接请求模型。
 修正用 kind=correct,column_id,product_ids,value。每个提案简要说明影响列、商品范围、是否重新看图、是否覆盖结果。
 会影响标签定义、候选值、判断边界或执行范围且没有安全默认值时，可以调用 ask。每次最多3题，每题2–3个互斥选项，推荐项放第一位，multiSelect=false。不要询问工作台能够读取的信息，不重复确认用户已明确决定的内容。ask只收集业务意见，不能代表确认提案或授权执行。
 读取字段用read_fields，条件圈选用query_scope；不能要求用户收集内部ID。执行范围与可见列无关。未知实际请求次数/成本不能承诺一次识图或零增量成本；先read_tasks再报告进度，不猜测不存在的界面操作。
-产品术语或品类建议需要外部依据时，使用research_knowledge实际查询并引用返回的来源；已确认资料用read_knowledge。知识只能指导关注点，不能补造本行事实。需要图片概览时inspect_representative_images按当前目标看代表样本，明确覆盖数量和失败。不把文字取样称为全量识图。\n用户确定满意时自行保存V1/V2；不能把每轮讨论称为正式版本。面向用户的正文先写“当前判断”或“执行结果”，再完整说明业务证据、分类边界和方案利弊。不要写“我先读取”“现在调用”“参数错误后重试”等操作旁白，不输出MCP名、内部ID、接口参数、编码过程或隐藏推理；这些由工作台操作记录展示。
+产品术语或品类建议需要外部依据时，使用research_knowledge实际查询并引用返回的来源；已确认资料用read_knowledge。知识只能指导关注点，不能补造本行事实。讨论、定义、校准、执行或修复标签前先用route_tagging_skill得到紧凑运行配置，再按返回的模块ID读取必要规则，不要读取整套模块。需要图片概览时inspect_representative_images按当前目标看代表样本，明确覆盖数量和失败；返回的visual_standard仍需用户确认。全量看图必须先展示请求/成本计划，用户明确确认后才能执行。不把文字取样或代表样本称为全量识图。
+执行中出现定义外候选时只作为任务末“待整理特征”汇总，不在对话中逐条生成拆列卡片；只有用户选择后才提出一次expand方案。\n用户确定满意时自行保存V1/V2；不能把每轮讨论称为正式版本。面向用户的正文先写“当前判断”或“执行结果”，再完整说明业务证据、分类边界和方案利弊。不要写“我先读取”“现在调用”“参数错误后重试”等操作旁白，不输出MCP名、内部ID、接口参数、编码过程或隐藏推理；这些由工作台操作记录展示。
 '''
 
 def system_prompt():
@@ -100,7 +101,7 @@ def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_M
     path.mkdir(parents=True,exist_ok=True)
     from . import tagging_rules
     bundle=tagging_rules.freeze()
-    (path/'PRODUCT_ANALYST_AGENT.md').write_text(LEGACY_SYSTEM if suffix!='chat' else system_prompt()+'\n\n'+tagging_rules.read('core')+'\n可用只读 read_tagging_rules(topic=core/text/attributes/normalization/tools/output)。先按主题读取细则；read_worksheet 含文字底稿。判断规则通过 definition.judgment 传递。拆列使用 kind=expand,column_id,attributes。当前Skill版本 '+bundle['version']+' SHA256 '+bundle['sha256'],encoding='utf-8')
+    (path/'PRODUCT_ANALYST_AGENT.md').write_text(LEGACY_SYSTEM if suffix!='chat' else system_prompt()+'\n\n'+tagging_rules.read('core')+'\n先调用 route_tagging_skill，再用 read_tagging_rules 读取返回的少量模块ID；兼容主题为core/text/attributes/normalization/tools/output。read_worksheet 含文字底稿。判断规则通过 definition.judgment 传递。拆列使用 kind=expand,column_id,attributes，必须由用户从任务末待整理特征中选择。当前Skill版本 '+bundle['version']+' SHA256 '+bundle['sha256'],encoding='utf-8')
     # Project-scoped config only. Provider credentials and user configuration remain owned by Reasonix.
     from .runtime_isolation import provider_home
     environment={'PYTHONPATH':str(ROOT),'TAG_STORAGE':str(STORAGE),'TAG_PROVIDER_HOME':str(provider_home()),'TAG_DATASET_ID':dataset_id,'PYTHONIOENCODING':'utf-8','TAG_VISION_MODEL':vision_model,'TAG_MCP_PROTOCOL':'draft-v3-skill-'+bundle['sha256'][:12]}
@@ -112,7 +113,7 @@ def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_M
     other_plugins=[]
     global_config=Path(os.environ.get('APPDATA',str(Path.home()/'.config')))/'reasonix'/'config.toml'
     if global_config.exists():other_plugins=[p['name'] for p in tomllib.loads(global_config.read_text(encoding='utf-8-sig')).get('plugins',[]) if p.get('name')!='product_workbench']
-    names=['read_worksheet','read_product_source','read_tasks','propose_changes','read_tagging_rules','read_fields','query_scope','read_profile','research_knowledge','read_knowledge']
+    names=['read_worksheet','read_product_source','read_tasks','propose_changes','read_tagging_rules','route_tagging_skill','read_fields','query_scope','read_profile','research_knowledge','read_knowledge']
     from .capabilities import visual_tagging_enabled
     if visual_tagging_enabled():names.append('inspect_representative_images')
     allowed=['mcp_connect__product_workbench']+['mcp__product_workbench__'+n for n in names]

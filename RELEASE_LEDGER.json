@@ -27,15 +27,24 @@
     },
     {
       "version": "0.5.0-beta.3",
-      "status": "pending_acceptance",
+      "status": "superseded",
       "artifact_kind": "customer_candidate",
       "commit": "14603bff0ad9678699817d22d793437bcbdf7398",
       "tag": "v0.5.0-beta.3",
       "release_url": "https://github.com/CN-Bobby/gewu-product-tagging-workbench/releases/tag/v0.5.0-beta.3",
       "published_at": "2026-09-12T02:31:54Z",
       "distribution_status": "published_prerelease",
+      "superseded_by": "0.5.0-beta.4",
+      "note": "废弃整套程序备份回滚，改为有效旧版原目录直接覆盖；保留全部工作台功能。已发布为历史客户试用 Pre-release，后由商品通识打标 beta.4 候选取代。"
+    },
+    {
+      "version": "0.5.0-beta.4",
+      "status": "pending_acceptance",
+      "artifact_kind": "internal_candidate",
+      "commit": null,
+      "tag": null,
       "superseded_by": null,
-      "note": "废弃整套程序备份回滚，改为有效旧版原目录直接覆盖；保留全部工作台功能。已按外部验收确认发布为 GitHub Pre-release；源码 release_status 仍保留 pending_acceptance，正式版未发布。"
+      "note": "商品通识打标 Skill 0.5.0 与工作台运行时路由、自适应视觉校准、显式图片策略和任务末定义缺口整理的集成候选；完成验收前不发布标签或客户分发包。"
     }
   ]
 }
