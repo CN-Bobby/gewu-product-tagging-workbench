@@ -1,6 +1,6 @@
 # 交付台账
 
-当前开发目标：0.5.0-beta.4（商品通识打标 Skill 0.5.0 集成），已在版本台账中取代beta.3，但尚未绑定构建提交、标签或客户分发包。最近实际发布的历史客户试用包仍为0.5.0-beta.3，绑定 commit `14603bff0ad9678699817d22d793437bcbdf7398` 与 GitHub Pre-release；beta.4通过完整自动化和真实语义验收前不对外发布。
+当前开发目标：0.5.0-beta.5（Ask恢复、图片对话、多Key/模型、多会话与原列续打），已在版本台账中取代beta.4；构建提交和候选安装包在本轮交付时冻结。最近实际发布的历史客户试用包仍为0.5.0-beta.3；beta.5完成真实语义、升级回退和干净Windows验收前保持 `pending_acceptance`，不创建正式发布标签。
 
 GitHub Release：https://github.com/CN-Bobby/gewu-product-tagging-workbench/releases/tag/v0.5.0-beta.3。构建时的 `ACCEPTANCE-RESULTS.json` 保留当时的待外部验收快照；随后用户已确认另一台 Windows 完成安装验证。
 

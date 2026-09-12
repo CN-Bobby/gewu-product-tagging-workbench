@@ -23,8 +23,8 @@ def result_items(result):
     if any(not isinstance(x,dict) for x in items):raise ValueError('response.results[]：每个商品结果必须是对象')
     return items
 
-def request_json(model_ref,messages,metrics,metric_lock):
-    endpoint,key,model=provider_config(model_ref)
+def request_json(model_ref,messages,metrics,metric_lock,credential_id=None):
+    endpoint,key,model=provider_config(model_ref,credential_id)
     body={'model':model,'messages':messages,'response_format':{'type':'json_object'},'max_tokens':8192}
     if 'deepseek' in model:body['thinking']={'type':'disabled'}
     for attempt in range(3):
@@ -70,7 +70,7 @@ VISION_RULES='''观察每件商品唯一指定的主图及按需提供的文字�
 CALIBRATION_RULES='''你在比较一组不同商品的主图，为标签定义形成视觉底稿。每张图片前都有不可变product_id。先区分主商品、组成件、配件、变体示意、演示物、人物环境、包装和文字图标，再按目标观察功能/结构/材质/主题/外观。只陈述直接可见证据；外观纹理不等于真实材质，场景或界面不证明功能。跨商品归纳候选值、共同模式和容易混淆的include/exclude边界，但不要创建或批准标签，也不要声称看过未提供商品。
 返回中文JSON：{"products":[{"product_id":"原样ID","observation":"客观观察","entities":[{"role":"primary_product","name":"实体"}],"features":["带实体和区域的可见特征"],"candidate_values":[],"unknown":[]}],"patterns":[],"candidate_values":[],"boundaries":{"include":[],"exclude":[]},"unresolved":[],"new_type_count":0,"coverage_note":"本组只覆盖所列主图"}。'''
 
-def observation(asset,model,requirements,refresh,metrics,mlock,context=None,rules=None,image_input=None):
+def observation(asset,model,requirements,refresh,metrics,mlock,context=None,rules=None,image_input=None,credential_id=None):
     from .execution_contract import model_identity
     rules=rules if rules is not None else VISION_RULES
     image_input=image_input or {'asset':asset,'assets':[asset],'input_policy':'single_main_image_v1','crop_policy':None}
@@ -102,7 +102,8 @@ def observation(asset,model,requirements,refresh,metrics,mlock,context=None,rule
                         add_image(im.crop(box),f'截图网格区域 {y*columns+x+1}/{rows*columns}')
     with mlock:metrics['vision_images_sent']=metrics.get('vision_images_sent',0)+sum(1 for item in content if item.get('type')=='image_url')
     if context:content.append({'type':'text','text':'商品文字证据（与图片冲突时保留各自来源，不擅自覆盖）：'+json.dumps(context,ensure_ascii=False)})
-    result=request_json(model,[{'role':'system','content':rules+requirements},{'role':'user','content':content}],metrics,mlock)
+    args=(model,[{'role':'system','content':rules+requirements},{'role':'user','content':content}],metrics,mlock)
+    result=request_json(*args,credential_id) if credential_id else request_json(*args)
     if not isinstance(result,dict):raise ValueError('视觉观察应为JSON对象')
     if not isinstance(result.get('observation'),str):raise ValueError('视觉观察结构不完整')
     result.setdefault('entities',[]);result.setdefault('relationships',[]);result.setdefault('dimensions',{});result.setdefault('parts',[]);result.setdefault('unknown',[]);result.setdefault('conflicts',[]);result.setdefault('scope','image')
@@ -254,7 +255,7 @@ def execute(jid):
                 from .image_inputs import selection
                 image_input=selection(p,policy);asset=image_input['asset']
                 # Keep reusable observations pixel-grounded. source=both text joins at final classification.
-                value=observation(asset,spec['vision_model'],requirements_shared,spec.get('refresh_images'),metrics,mlock,None,contract['vision_rules'],image_input)
+                value=observation(asset,spec['vision_model'],requirements_shared,spec.get('refresh_images'),metrics,mlock,None,contract['vision_rules'],image_input,spec.get('vision_credential_id'))
                 value={**value,'image_input_policy':image_input['input_policy'],'available_local_images':image_input['available_local_images'],'supplemental_images_ignored':image_input['supplemental_images_ignored']}
                 with mlock:
                     metrics['main_image_observations']=metrics.get('main_image_observations',0)+1
@@ -366,13 +367,13 @@ def execute(jid):
                         save(pid,col,{**v,'visual':pending[pid].get('visual'),'text_record':pending[pid].get('text_record'),'model':spec['text_model']});pending.pop(pid)
                     return validation_errors
                 messages=[{'role':'system','content':rules+contract['fill_prefix']+json.dumps(definition,ensure_ascii=False)},{'role':'user','content':json.dumps(inputs,ensure_ascii=False)}]
-                validation_errors=consume(request_json(spec['text_model'],messages,metrics,mlock),1)
+                validation_errors=consume(request_json(spec['text_model'],messages,metrics,mlock,spec['text_credential_id']) if spec.get('text_credential_id') else request_json(spec['text_model'],messages,metrics,mlock),1)
                 if pending:
                     retry_errors={pid:validation_errors.get(pid,'结果缺失') for pid in pending}
                     with mlock:metrics['format_repair_requests']=metrics.get('format_repair_requests',0)+1
                     retry_messages=[{'role':'system','content':rules+contract['fill_prefix']+json.dumps(definition,ensure_ascii=False)+contract['format_repair_prefix']+json.dumps(retry_errors,ensure_ascii=False)},
                                     {'role':'user','content':json.dumps(list(pending.values()),ensure_ascii=False)}]
-                    second=consume(request_json(spec['text_model'],retry_messages,metrics,mlock),2)
+                    second=consume(request_json(spec['text_model'],retry_messages,metrics,mlock,spec['text_credential_id']) if spec.get('text_credential_id') else request_json(spec['text_model'],retry_messages,metrics,mlock),2)
                     validation_errors.update(second)
                 if pending:raise ValueError('结果校验失败：'+json.dumps(validation_errors,ensure_ascii=False) if validation_errors else '部分商品结果缺失或不符合标签候选值')
             except Exception as e:

@@ -53,6 +53,9 @@ def settings_models():return {**model_settings.read(),'defaults':model_settings.
 @app.post('/api/settings/models')
 def settings_models_save(body:dict):return model_settings.save(body)
 
+@app.post('/api/settings/models/{provider}/credentials/{credential_id}/{action}')
+def settings_credential_action(provider:str,credential_id:str,action:str):return model_settings.credential_action(provider,credential_id,action)
+
 @app.get('/api/storage')
 def storage_usage():return storage_management.usage()
 
@@ -70,6 +73,16 @@ def fields_confirm(did:str,body:dict):return field_catalog.confirm(did,body['fie
 
 @app.post('/api/drafts/{did}/query')
 def query_rows(did:str,body:dict):return worksheet_query.query(did,body.get('filters'),body.get('search',''),body.get('facet'),body.get('save',False),body.get('job_id'))
+
+@app.post('/api/drafts/{did}/source-labels')
+def adopt_source_label(did:str,body:dict):
+    from .source_labels import adopt
+    return adopt(did,body)
+
+@app.post('/api/drafts/{did}/source-labels/{column_id}')
+def source_label_status(did:str,column_id:str,body:dict):
+    from .source_labels import set_active
+    return set_active(did,column_id,body.get('active'))
 
 @app.get('/api/drafts/{did}/profile')
 def data_profile(did:str):return worksheet_query.profile(did)
@@ -192,13 +205,57 @@ def asset(asset_id:str):
         return FileResponse(a.path)
 
 @app.post('/api/datasets/{dataset_id}/chat')
-def chat(dataset_id:str,body:dict):return conversation.start(dataset_id,body.get('text',''),body.get('model') or model_settings.defaults()[0],body.get('proposal_id'),body.get('vision_model'))
+def chat(dataset_id:str,body:dict):return conversation.start(dataset_id,body.get('text',''),body.get('model') or model_settings.defaults()[0],body.get('proposal_id'),body.get('vision_model'),body.get('conversation_id'),body.get('attachment_ids') or [],body.get('text_credential_id'),body.get('vision_credential_id'))
+
+@app.get('/api/datasets/{did}/conversations')
+def conversations_list(did:str):
+    from .chat_threads import listing
+    return listing(did)
+
+@app.post('/api/datasets/{did}/conversations')
+def conversations_create(did:str,body:dict):
+    from .chat_threads import create
+    return create(did,body.get('name','新对话'))
+
+@app.post('/api/datasets/{did}/conversations/{cid}')
+def conversations_update(did:str,cid:str,body:dict):
+    from .chat_threads import update
+    return update(did,cid,body)
+
+@app.delete('/api/datasets/{did}/conversations/{cid}')
+def conversations_delete(did:str,cid:str):
+    from .chat_threads import destroy
+    return destroy(did,cid)
+
+@app.post('/api/datasets/{did}/conversations/{cid}/attachments')
+async def conversation_attachments(did:str,cid:str,files:list[UploadFile]=File(...)):
+    from .chat_images import upload,MAX_FILE
+    payload=[]
+    for f in files:
+        data=await f.read(MAX_FILE+1);payload.append((f.filename,data))
+    return upload(did,cid,payload)
+
+@app.get('/api/datasets/{did}/conversations/{cid}/attachments/{aid}')
+def conversation_attachment(did:str,cid:str,aid:str,thumbnail:bool=False):
+    from .chat_images import require_attachment
+    with Session() as s:
+        item=require_attachment(s,did,cid,aid);path=item.data['thumb_path' if thumbnail else 'path'];mime='image/jpeg' if thumbnail else item.data['mime']
+    return FileResponse(path,media_type=mime)
+
+@app.post('/api/datasets/{did}/conversations/{cid}/attachments/{aid}/bind')
+def conversation_attachment_bind(did:str,cid:str,aid:str,body:dict):
+    from .chat_images import bind
+    return bind(did,cid,aid,body.get('product_id',''))
 
 @app.post('/api/datasets/{dataset_id}/chat/stop')
 def stop_chat(dataset_id:str):return conversation.stop(dataset_id)
 
 @app.post('/api/datasets/{dataset_id}/chat/questions/{question_id}/answer')
 def answer_chat_question(dataset_id:str,question_id:str,body:dict):
+    with Session() as s:managed=s.get(WorkbenchMeta,'business-question:'+question_id) is not None
+    if managed:
+        from .business_questions import answer
+        return answer(dataset_id,question_id,body.get('option_ids') or ([body['option_id']] if body.get('option_id') else []),body.get('text',''),body.get('skip',False))
     return conversation.answer(dataset_id,question_id,body.get('option_id',''))
 
 @app.post('/api/datasets/{dataset_id}/schemas')
@@ -253,7 +310,7 @@ def draft_propose(did:str,body:dict):return draft.propose(did,body.get('title','
 
 @app.post('/api/drafts/{did}/proposals/{pid}/confirm')
 def draft_confirm(did:str,pid:str,body:dict):
-    result=draft.confirm(did,pid,body.get('product_ids'),body.get('sample',False),body.get('text_model'),body.get('vision_model'),body.get('confirmation_key'))
+    result=draft.confirm(did,pid,body.get('product_ids'),body.get('sample',False),body.get('text_model'),body.get('vision_model'),body.get('confirmation_key'),body.get('text_credential_id'),body.get('vision_credential_id'))
     for j in result:batch.launch(j['id'])
     return result
 

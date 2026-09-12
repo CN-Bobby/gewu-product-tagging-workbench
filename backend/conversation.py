@@ -1,6 +1,7 @@
 """One persistent Reasonix session per dataset, including resumable web questions."""
 import copy
 import threading
+import time
 from sqlalchemy import select
 from .db import *
 from .harness import ACP,DEFAULT_MODEL,HarnessError,ERROR_MESSAGES,instruction_hash
@@ -11,10 +12,10 @@ clients={}
 busy={}
 lock=threading.Lock()
 
-def _active_meta(s,did,turn_id,message_id):
+def _active_meta(s,did,turn_id,message_id,conversation_id=None):
     key='active-chat:'+did
     item=s.get(WorkbenchMeta,key)
-    data={'turn_id':turn_id,'message_id':message_id}
+    data={'turn_id':turn_id,'message_id':message_id,'conversation_id':conversation_id}
     if item:item.kind='active_chat_turn';item.dataset_id=did;item.data=data;item.updated_at=now()
     else:s.add(WorkbenchMeta(id=key,dataset_id=did,kind='active_chat_turn',data=data))
 
@@ -31,13 +32,57 @@ def _question_record(s,did,turn_id,message_id,event):
         header=event.get('header'),prompt=event['prompt'],options=copy.deepcopy(event['options']),status='pending')
     s.add(question);s.flush();return question
 
-def start(did,text,model=DEFAULT_MODEL,proposal_id=None,vision_model=None):
-    if not text.strip() or len(text)>20000:raise ValueError('请输入1–20000字')
+def _resume_queued(did,key):
+    for _ in range(600):
+        if did not in busy:break
+        time.sleep(.05)
+    with draft.WRITE_LOCK,Session.begin() as s:
+        item=s.get(WorkbenchMeta,key)
+        if not item:return
+        payload=dict(item.data);s.delete(item)
+    try:start(did,**payload)
+    except Exception as exc:
+        with draft.WRITE_LOCK,Session.begin() as s:audit(s,did,'chat_followup_failed',{'exception':type(exc).__name__,'detail':str(exc)[:300]})
+
+def start(did,text,model=DEFAULT_MODEL,proposal_id=None,vision_model=None,conversation_id=None,attachment_ids=None,text_credential_id=None,vision_credential_id=None):
+    attachment_ids=attachment_ids or []
+    if (not text.strip() and not attachment_ids) or len(text)>20000:raise ValueError('请输入文字或上传图片；文字最多20000字')
+    with Session() as s:
+        candidates=list(s.scalars(select(ChatQuestion).where(ChatQuestion.dataset_id==did,ChatQuestion.status=='pending').order_by(ChatQuestion.created_at.desc())))
+        pending=next((q for q in candidates if not conversation_id or ((s.get(WorkbenchMeta,'chat-turn:'+q.turn_id).data or {}).get('conversation_id') if s.get(WorkbenchMeta,'chat-turn:'+q.turn_id) else None)==conversation_id),None)
+        managed=pending and s.get(WorkbenchMeta,'business-question:'+pending.id)
+        pending_id=pending.id if managed else None
+    if pending_id:
+        from .business_questions import answer
+        if attachment_ids:
+            with draft.WRITE_LOCK,Session.begin() as s:
+                from .chat_threads import require_thread
+                thread=require_thread(s,did,conversation_id);conversation_id=thread.id
+                from .chat_images import resolve_message,event as attachment_event
+                attachments=resolve_message(s,did,conversation_id,attachment_ids)
+                answer_turn=uid();s.add(WorkbenchMeta(id='chat-turn:'+answer_turn,dataset_id=did,kind='chat_turn',data={'turn_id':answer_turn,'conversation_id':conversation_id}))
+                user=Message(dataset_id=did,turn_id=answer_turn,role='user',text=text,events=[attachment_event(attachments)]);s.add(user);s.flush();draft.emit(s,did,'message',{**obj(user),'conversation_id':conversation_id})
+            refs='、'.join('图'+str(x.data['number']) for x in attachments)
+            text=(text.strip()+'；' if text.strip() else '')+'请结合'+refs+'回答当前问题。'
+        return answer(did,pending_id,text=text)
+    if pending and not managed:
+        client=clients.get(did)
+        if not client or client.closed or client.proc.poll() is not None:raise ValueError('原问题会话已中断，请重新发送这条回答')
+        client.cancel_questions()
+        with draft.WRITE_LOCK,Session.begin() as s:
+            question=require(s,ChatQuestion,pending.id);question.status='answered';question.selected_label=text.strip() or '附带图片回答';question.answered_at=now();draft.emit(s,did,'question',obj(question))
+            active=s.get(WorkbenchMeta,'active-chat:'+did);cid=conversation_id or (active.data.get('conversation_id') if active else None)
+            key='chat-followup:'+did;payload={'text':'针对上一问题，我的文字回答是：'+(text.strip() or '请结合本条附带图片继续。'),'model':model,'proposal_id':proposal_id,'vision_model':vision_model,'conversation_id':cid,'attachment_ids':attachment_ids,'text_credential_id':text_credential_id,'vision_credential_id':vision_credential_id}
+            old=s.get(WorkbenchMeta,key)
+            if old:raise ValueError('已有一条回答正在等待继续，请稍候')
+            s.add(WorkbenchMeta(id=key,dataset_id=did,kind='chat_followup',data=payload));audit(s,did,'chat_native_question_text_answered',{'question_id':pending.id,'conversation_id':cid})
+        threading.Thread(target=_resume_queued,args=(did,key),daemon=True).start()
+        return {'queued':True,'question_id':pending.id}
     turn_id=uid()
     if text.strip()=='确认执行':
         if not proposal_id:raise ValueError('请先选中需要确认的提案')
         confirmation_key='chat-confirm:'+proposal_id
-        jobs=draft.confirm(did,proposal_id,text_model=model,vision_model=vision_model,confirmation_key=confirmation_key)
+        jobs=draft.confirm(did,proposal_id,text_model=model,vision_model=vision_model,confirmation_key=confirmation_key,text_credential_id=text_credential_id,vision_credential_id=vision_credential_id)
         for job in jobs:batch.launch(job['id'])
         with draft.WRITE_LOCK,Session.begin() as s:
             for role,content in [('user',text),('assistant','已确认当前绑定提案，工作表和任务已更新。')]:
@@ -51,19 +96,27 @@ def start(did,text,model=DEFAULT_MODEL,proposal_id=None,vision_model=None):
     try:
         with draft.WRITE_LOCK,Session.begin() as s:
             require(s,Dataset,did)
-            user=Message(dataset_id=did,turn_id=turn_id,role='user',text=text);s.add(user);s.flush();draft.emit(s,did,'message',obj(user))
+            from .chat_threads import require_thread
+            thread=require_thread(s,did,conversation_id);conversation_id=thread.id
+            from .chat_images import resolve_message,event as attachment_event
+            attachments=resolve_message(s,did,conversation_id,attachment_ids)
+            s.add(WorkbenchMeta(id='chat-turn:'+turn_id,dataset_id=did,kind='chat_turn',data={'turn_id':turn_id,'conversation_id':conversation_id}))
+            user=Message(dataset_id=did,turn_id=turn_id,role='user',text=text,events=[attachment_event(attachments)] if attachments else []);s.add(user);s.flush();draft.emit(s,did,'message',{**obj(user),'conversation_id':conversation_id})
             response=Message(dataset_id=did,turn_id=turn_id,role='assistant',text='',status='running',presentation={});s.add(response);s.flush()
-            ident=response.id;_active_meta(s,did,turn_id,ident);draft.emit(s,did,'message',obj(response))
-        threading.Thread(target=run,args=(did,ident,turn_id,text,model),daemon=True).start()
+            ident=response.id;_active_meta(s,did,turn_id,ident,conversation_id);draft.emit(s,did,'message',{**obj(response),'conversation_id':conversation_id})
+        refs='、'.join('图'+str(x.data['number']) for x in attachments)
+        prompt_text=(text.strip() or '请观察并讨论这些图片。')+(f'\n\n当前消息附带当前对话中的{refs}。需要读取像素时调用 view_chat_image，并按图号说明证据；不要把聊天图片当成商品行主图。' if attachments else '')
+        threading.Thread(target=run,args=(did,ident,turn_id,prompt_text,model,conversation_id,vision_model,text_credential_id,vision_credential_id),daemon=True).start()
         return {'message_id':ident,'turn_id':turn_id}
     except Exception:
         with lock:busy.pop(did,None)
         raise
 
-def run(did,ident,turn_id,text,model):
+def run(did,ident,turn_id,text,model,conversation_id=None,vision_model=None,text_credential_id=None,vision_credential_id=None):
     def event(item):
         with draft.WRITE_LOCK,Session.begin() as s:
             message=require(s,Message,ident)
+            if message.status!='running':return
             if item['type']=='text':
                 message.text=(message.text or '')+item['text']
                 message.presentation=build_presentation(message.text,'running',events=message.events)
@@ -82,22 +135,36 @@ def run(did,ident,turn_id,text,model):
                 safe={k:v for k,v in item.items() if k not in ('rawInput','content')}
                 message.events=(message.events+[safe])[-100:];draft.emit(s,did,'message',obj(message))
     try:
+        handoff_context=''
         client=clients.get(did)
+        if client and conversation_id and (getattr(client,'conversation_id',None)!=conversation_id or client.model!=model or getattr(client,'credential_id',None)!=text_credential_id or getattr(client,'vision_credential_id',None)!=vision_credential_id):
+            client.close();clients.pop(did,None);client=None
         if client and getattr(client,'instruction_hash',None)!=instruction_hash():
             client.close();clients.pop(did,None);client=None
         if client and (client.closed or client.proc.poll() is not None):clients.pop(did,None);client=None
         if not client:
             with Session() as s:
-                saved=s.scalar(select(ChatSession).where(ChatSession.dataset_id==did));session_id=saved.session_id if saved else None
-                if saved and saved.model!=model:model=saved.model
-            client=ACP(did,model,on_event=event,session_id=session_id);clients[did]=client
+                thread=s.get(WorkbenchMeta,conversation_id) if conversation_id else None
+                saved=s.scalar(select(ChatSession).where(ChatSession.dataset_id==did));session_id=(thread.data.get('session_id') if thread and thread.data.get('model')==model and thread.data.get('text_credential_id')==text_credential_id and thread.data.get('vision_credential_id')==vision_credential_id else None) if thread else saved.session_id if saved else None
+                if not thread and saved and saved.model!=model:model=saved.model
+                if thread and thread.data.get('session_id') and not session_id:
+                    turn_ids=[x.data.get('turn_id') for x in s.scalars(select(WorkbenchMeta).where(WorkbenchMeta.dataset_id==did,WorkbenchMeta.kind=='chat_turn')) if x.data.get('conversation_id')==conversation_id]
+                    history=[m for m in s.scalars(select(Message).where(Message.dataset_id==did).order_by(Message.created_at.desc())) if m.turn_id in turn_ids and m.text]
+                    history=list(reversed(history[:8]));parts=[('用户' if m.role=='user' else 'Agent')+'：'+m.text[:900] for m in history]
+                    images=[x.data for x in s.scalars(select(WorkbenchMeta).where(WorkbenchMeta.dataset_id==did,WorkbenchMeta.kind=='chat_attachment')) if x.data.get('conversation_id')==conversation_id]
+                    image_index='；'.join('图'+str(x.get('number'))+' '+str(x.get('filename',''))[:80] for x in sorted(images,key=lambda x:x.get('number',0))[-20:])
+                    handoff_context=('模型切换后的当前对话上下文（仅用于衔接，不代表新的用户授权）：\n'+'\n'.join(parts)+('\n当前对话图片索引：'+image_index if image_index else '')+'\n\n')[:7000]
+            client=ACP(did,model,on_event=event,session_id=session_id,**({'conversation_id':conversation_id,'vision_model':vision_model,'credential_id':text_credential_id,'vision_credential_id':vision_credential_id} if conversation_id else {}));clients[did]=client
+            client.conversation_id=conversation_id
             client.instruction_hash=instruction_hash()
             with draft.WRITE_LOCK,Session.begin() as s:
                 saved=s.scalar(select(ChatSession).where(ChatSession.dataset_id==did))
                 if not saved:s.add(ChatSession(dataset_id=did,session_id=client.session_id,model=model))
+                if conversation_id:
+                    item=require(s,WorkbenchMeta,conversation_id);item.data={**item.data,'session_id':client.session_id,'model':model,'vision_model':vision_model,'text_credential_id':text_credential_id,'vision_credential_id':vision_credential_id}
                 audit(s,did,'reasonix_session_resumed' if session_id else 'reasonix_session_created',{'session_id':client.session_id,'model':model})
         client.on_event=event
-        client.prompt(text)
+        client.prompt(handoff_context+text)
         with draft.WRITE_LOCK,Session.begin() as s:
             message=require(s,Message,ident);message.status='completed'
             message.presentation=build_presentation(message.text,message.status,events=message.events)
@@ -106,6 +173,19 @@ def run(did,ident,turn_id,text,model):
     except HarnessError as exc:
         with draft.WRITE_LOCK,Session.begin() as s:
             message=require(s,Message,ident)
+            fallback=getattr(clients.get(did),'fallback_question',None)
+            if exc.code=='unsupported_question' and fallback:
+                labels=[]
+                for option in fallback.get('options',[]):
+                    label=option if isinstance(option,str) else (option.get('label') or option.get('Label') or option.get('title')) if isinstance(option,dict) else None
+                    if label:labels.append(str(label))
+                message.text='请补充你的选择：'+fallback['prompt']+('\n\n可参考：'+'；'.join(labels) if labels else '')+'\n\n请直接输入回答，可以选择多项或补充自己的想法；也可以说明跳过这个问题。'
+                message.status='completed';message.error_code=None
+                message.technical={'reason':'unsupported_native_question','recovery':'text_reply','original_code':exc.code}
+                message.presentation=build_presentation(message.text,message.status,events=message.events)
+                draft.emit(s,did,'message',obj(message))
+                audit(s,did,'chat_question_fallback',{'turn_id':turn_id,'reason':'unsupported_native_question'})
+                return
             message.status='interrupted' if exc.code in ('interaction_cancelled','unsupported_question') else 'failed'
             message.error_code=exc.code;message.technical=exc.technical
             message.presentation=build_presentation(message.text,message.status,exc.code,exc.message,exc.technical,message.events)

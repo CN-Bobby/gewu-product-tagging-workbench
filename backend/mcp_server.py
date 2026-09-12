@@ -13,6 +13,7 @@ mcp=FastMCP('product_workbench')
 DATASET=os.environ['TAG_DATASET_ID']
 RUN=os.environ.get('TAG_RUN_ID')
 PRODUCT=os.environ.get('TAG_PRODUCT_ID')
+CONVERSATION=os.environ.get('TAG_CONVERSATION_ID')
 
 @mcp.tool()
 def inspect_dataset() -> dict:
@@ -38,6 +39,13 @@ if visual_tagging_enabled():
             if not a.path:raise ValueError('该图片只有外部 URL，无法作为视觉证据')
         from .vision import analyze
         return analyze(asset_id,os.environ.get('TAG_VISION_MODEL','deepseek/deepseek-v4-flash-vision-exp'))
+
+    @mcp.tool()
+    def view_chat_image(image_number:int, question:str='') -> dict:
+        """Read one current-conversation image by its stable 图N number. The image remains discussion evidence unless the user explicitly binds it to a product."""
+        if not CONVERSATION:raise ValueError('当前运行没有对话图片空间')
+        from .chat_images import analyze_by_number
+        return analyze_by_number(DATASET,CONVERSATION,image_number,question,os.environ.get('TAG_VISION_MODEL','deepseek/deepseek-v4-flash-vision-exp'))
 
 @mcp.tool()
 def propose_tag_schema(goal:str, definitions:list[dict]) -> dict:
@@ -75,6 +83,12 @@ if not RUN:
     # Coordinator exposes proposals and reads only; no confirmation or cell-write tool.
     mcp=FastMCP('product_workbench')
     from . import draft
+
+    @mcp.tool()
+    def ask_business_question(question:str,options:list[str]|None=None,multiple:bool=False) -> dict:
+        """Ask one necessary business question; waits for persisted single/multiple/text answer or skip. Never approves changes or runs jobs. At most three questions per turn."""
+        from .business_questions import ask
+        return ask(DATASET,question,options,multiple)
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True,destructiveHint=False,openWorldHint=False))
     def read_tagging_rules(topic:str='core') -> dict:

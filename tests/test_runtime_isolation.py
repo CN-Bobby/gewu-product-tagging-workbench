@@ -53,6 +53,21 @@ def test_model_config_api_never_returns_secret(tmp_path,monkeypatch):
     with pytest.raises(ValueError):model_settings.save({'name':'test','base_url':'http://unsafe','models':['text']})
 
 
+def test_multiple_named_keys_are_preserved_and_selectable(tmp_path,monkeypatch):
+    home=source(tmp_path,monkeypatch)
+    monkeypatch.setattr(model_settings,'validate_models',lambda *args,**kwargs:{'status':'validated','validated_at':'test','text_model':args[2],'vision_model':args[3]})
+    first=model_settings.save({'name':'test','base_url':'https://test.invalid/v1','text_model':'org/text','vision_model':'org/vision','api_key':'first-secret','credential_id':'first','credential_name':'工作 Key'})
+    second=model_settings.save({'name':'test','base_url':'https://test.invalid/v1','text_model':'org/text','vision_model':'org/vision','api_key':'second-secret','credential_id':'second','credential_name':'备用 Key','set_default':False})
+    provider=second['providers'][0]
+    assert {x['name'] for x in provider['credentials']}=={'Default Key','工作 Key','备用 Key'}
+    assert 'first-secret' not in json.dumps(second) and 'second-secret' not in json.dumps(second)
+    model_settings.credential_action('test','first','primary')
+    env=runtime_isolation.environment('selected_key',credential_ids={'test':'first'})
+    isolated=Path(env['REASONIX_HOME'])
+    assert 'first-secret' in (isolated/'.env').read_text(encoding='utf-8')
+    assert 'second-secret' not in (isolated/'.env').read_text(encoding='utf-8')
+
+
 def test_new_model_fields_are_saved_and_canonicalized(tmp_path,monkeypatch):
     home=source(tmp_path,monkeypatch)
     monkeypatch.setattr(model_settings,'validate_models',lambda *args,**kwargs:{'status':'validated','validated_at':'test','text_model':args[2],'vision_model':args[3]})

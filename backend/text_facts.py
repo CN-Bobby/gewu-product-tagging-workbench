@@ -223,7 +223,8 @@ def execute(jid):
             n=len(pending)//2;group(pending[:n]);group(pending[n:]);return
         validation_errors={}
         try:
-            result=batch.request_json(spec['text_model'],[{'role':'system','content':tagging_rules.prompt(spec['rules'],['core','text','normalization'])+contract['text_prefix']}, {'role':'user','content':json.dumps(inputs,ensure_ascii=False)}],metrics,mlock)
+            args=(spec['text_model'],[{'role':'system','content':tagging_rules.prompt(spec['rules'],['core','text','normalization'])+contract['text_prefix']}, {'role':'user','content':json.dumps(inputs,ensure_ascii=False)}],metrics,mlock)
+            result=batch.request_json(*args,spec['text_credential_id']) if spec.get('text_credential_id') else batch.request_json(*args)
             for value in batch.result_items(result):
                 pid=value.get('product_id')
                 if pid not in pending:continue

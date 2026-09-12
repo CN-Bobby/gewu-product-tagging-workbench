@@ -39,12 +39,21 @@
     },
     {
       "version": "0.5.0-beta.4",
+      "status": "superseded",
+      "artifact_kind": "internal_candidate",
+      "commit": null,
+      "tag": null,
+      "superseded_by": "0.5.0-beta.5",
+      "note": "商品通识打标 Skill 0.5.0 与工作台运行时路由、自适应视觉校准、显式图片策略和任务末定义缺口整理的集成候选；完成验收前不发布标签或客户分发包。"
+    },
+    {
+      "version": "0.5.0-beta.5",
       "status": "pending_acceptance",
       "artifact_kind": "internal_candidate",
       "commit": null,
       "tag": null,
       "superseded_by": null,
-      "note": "商品通识打标 Skill 0.5.0 与工作台运行时路由、自适应视觉校准、显式图片策略和任务末定义缺口整理的集成候选；完成验收前不发布标签或客户分发包。"
+      "note": "Ask恢复、多项目/多对话、图片对话、多个具名Key与模型选择、商品补充图绑定及已有人工标签原列续打的集成候选；真实商品识别效果与干净Windows安装仍需用户验收。"
     }
   ]
 }

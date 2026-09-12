@@ -77,6 +77,8 @@ SYSTEM='''你是商品打标工作台的持续对话协调员。默认用中文�
 服务标识是 product_workbench（下划线）；工具能力标识形如 mcp__product_workbench__read_tagging_rules，使用真实能力目录，不猜连字符别名。
 先 read_worksheet 读取当前草稿和真实数据。所有轮次累积在同一表中；用户可随时讨论、增列、改定义、修正、聚合、执行，没有固定阶段，也不强制抽样审核。
 通过 propose_changes 提案，不能自行确认。用户在工作台按钮确认后才生效。不要将用户一句自然语言伪造成人工批准。
+必要业务问题优先调用 ask_business_question；支持multiple多选、单选、文字回答和跳过，最多三个问题。不要使用原生ask重复询问已回答或已跳过的问题。用户回答不是执行批准。
+如果上一轮原生问题格式不受支持，用户下一条文字就是对该问题的回答或改向指令。不要再次调用同一个ask，不要把桥接取消解释为用户取消；需要多选或自由回答时直接用正文提问，等待下一条消息。
 新增列 kind=add，修改列 kind=revise 并提供 column_id；definition 包含 key/name/type/definition/options/source(text/image/both)，并按需写 target_scope、dimension、product_category、product_forms、visual_standard_id、input_policy、expansion_policy。默认 expansion_policy=end_of_task_suggestion；默认 input_policy=single_main_image_v1，只有用户明确需要密集裁切、榜单截图网格或补充图时才选择对应版本化策略。
 纯文字能确认的标签如套装件数使用 source=text，可用 fields 指定所需字段。只有必要时才重新看图。
 聚合使用 method=mapping、depends_on=[上游column_id]、mapping={原值:中文新值}；数值区间用 method=bins、bins=[{min:含下界,max:不含上界,value:中文}]。映射由程序计算，不调用模型。
@@ -94,7 +96,7 @@ def system_prompt():
         return SYSTEM+'\n自动视觉打标以每件商品的一张主图为正式输入；补充套图只供人工核对，不能暗中改变批量判断。先按当前目标观察代表样本，再把用户确认的边界写入标签定义。'
     return SYSTEM+'\n当前部署关闭自动视觉观察和image/both标签提案。可以读取图片是否存在，但不能声称已观察图片像素。'
 
-def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_MODEL):
+def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_MODEL,conversation_id=None,vision_credential_id=None):
     from .model_settings import normalize_reference
     vision_model=normalize_reference(vision_model)
     path=STORAGE/'harness'/dataset_id/suffix
@@ -105,6 +107,8 @@ def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_M
     # Project-scoped config only. Provider credentials and user configuration remain owned by Reasonix.
     from .runtime_isolation import provider_home
     environment={'PYTHONPATH':str(ROOT),'TAG_STORAGE':str(STORAGE),'TAG_PROVIDER_HOME':str(provider_home()),'TAG_DATASET_ID':dataset_id,'PYTHONIOENCODING':'utf-8','TAG_VISION_MODEL':vision_model,'TAG_MCP_PROTOCOL':'draft-v3-skill-'+bundle['sha256'][:12]}
+    if conversation_id:environment['TAG_CONVERSATION_ID']=conversation_id
+    if vision_credential_id:environment['TAG_VISION_CREDENTIAL_ID']=vision_credential_id
     environment['TAG_DISABLE_VISUAL_TAGGING']=os.environ.get('TAG_DISABLE_VISUAL_TAGGING','0')
     if os.environ.get('TAG_CACHE'):environment['TAG_CACHE']=os.environ['TAG_CACHE']
     if suffix!='chat':environment.update(TAG_RUN_ID=suffix,TAG_PRODUCT_ID=product_id)
@@ -113,9 +117,9 @@ def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_M
     other_plugins=[]
     global_config=Path(os.environ.get('APPDATA',str(Path.home()/'.config')))/'reasonix'/'config.toml'
     if global_config.exists():other_plugins=[p['name'] for p in tomllib.loads(global_config.read_text(encoding='utf-8-sig')).get('plugins',[]) if p.get('name')!='product_workbench']
-    names=['read_worksheet','read_product_source','read_tasks','propose_changes','read_tagging_rules','route_tagging_skill','read_fields','query_scope','read_profile','research_knowledge','read_knowledge']
+    names=['read_worksheet','read_product_source','read_tasks','propose_changes','read_tagging_rules','route_tagging_skill','read_fields','query_scope','read_profile','research_knowledge','read_knowledge','ask_business_question']
     from .capabilities import visual_tagging_enabled
-    if visual_tagging_enabled():names.append('inspect_representative_images')
+    if visual_tagging_enabled():names.extend(['inspect_representative_images','view_chat_image'])
     allowed=['mcp_connect__product_workbench']+['mcp__product_workbench__'+n for n in names]
     denied=['bash','write','edit','task','parallel_tasks','fleet']+['mcp_connect__'+n for n in other_plugins]
     plugin=plugin.replace('auto_start = true','auto_start = true\ntier = "eager"')
@@ -136,10 +140,11 @@ def instruction_hash():
     return hashlib.sha256((system_prompt()+tagging_rules.freeze()['sha256']).encode()).hexdigest()
 
 class ACP:
-    def __init__(self,dataset_id,model=DEFAULT_MODEL,run_id=None,product_id=None,on_event=None,session_id=None):
+    def __init__(self,dataset_id,model=DEFAULT_MODEL,run_id=None,product_id=None,on_event=None,session_id=None,conversation_id=None,vision_model=None,credential_id=None,vision_credential_id=None):
         from .model_settings import normalize_reference
         model=normalize_reference(model)
         self.model=model
+        self.credential_id=credential_id;self.vision_credential_id=vision_credential_id
         from . import tagging_rules
         self.skill_sha256=tagging_rules.freeze()['sha256']
         self.pending={};self.counter=0;self.lock=threading.Lock();self.closed=False;self.session_id=None
@@ -147,9 +152,12 @@ class ACP:
         self.text=[];self.diagnostics=[]
         self.tool_calls={};self.pending_questions={};self.question_lock=threading.Lock()
         self.current_issue=None;self.last_tool_failure=None;self.user_cancelled=False;self.ask_seen=False;self.question_count=0
-        cwd=runtime_dir(dataset_id,run_id or 'chat',product_id,model if run_id else VISION_MODEL)
+        suffix=run_id or ('chat-'+conversation_id if conversation_id else 'chat')
+        cwd=runtime_dir(dataset_id,suffix,product_id,model if run_id else (vision_model or VISION_MODEL),conversation_id,vision_credential_id)
         from .runtime_isolation import environment,mark_resumed
-        isolated_env=environment(dataset_id,session_id)
+        providers={model.partition('/')[0]:credential_id} if credential_id else {}
+        if vision_model and vision_credential_id:providers[vision_model.partition('/')[0]]=vision_credential_id
+        isolated_env=environment(dataset_id,session_id,providers)
         self.proc=subprocess.Popen([executable(),'acp','--model',model],cwd=cwd,env=isolated_env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8',errors='replace',bufsize=1,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         threading.Thread(target=self._read,daemon=True).start()
         threading.Thread(target=self._stderr,daemon=True).start()
@@ -217,6 +225,14 @@ class ACP:
                                 with self.question_lock:self.pending_questions[question['id']]={**question,'request_id':msg['id']}
                                 self.ask_seen=True;self.question_count+=1;self.on_event(question)
                             elif question:
+                                raw=msg.get('params',{}).get('toolCall',{}).get('rawInput',{})
+                                if isinstance(raw,str):
+                                    try:raw=json.loads(raw)
+                                    except ValueError:raw={}
+                                if isinstance(raw,dict) and str(raw.get('question','')).strip():
+                                    # Permission responses accept one wire option only. Preserve
+                                    # unsupported questions for a normal, subsequent chat answer.
+                                    self.fallback_question={'prompt':str(raw['question'])[:1000], 'options':raw.get('options',[]) if isinstance(raw.get('options'),list) else []}
                                 self.current_issue={'code':'unsupported_question','message':question['error']}
                                 self._send({'jsonrpc':'2.0','id':msg['id'],'result':{'outcome':{'outcome':'cancelled'}}})
                                 self.on_event({'type':'interaction_error','code':'unsupported_question','title':question['error']})
@@ -290,6 +306,7 @@ class ACP:
             self.diagnostics.append(line[-500:]);self.diagnostics=self.diagnostics[-10:]
 
     def prompt(self,text):
+        self.fallback_question=None
         self.text=[];self.current_issue=None;self.last_tool_failure=None;self.user_cancelled=False;self.ask_seen=False;self.question_count=0
         result=self.rpc('session/prompt',{'sessionId':self.session_id,'prompt':[{'type':'text','text':text}]},timeout=None)
         stop=result.get('stopReason')

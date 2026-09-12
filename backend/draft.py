@@ -132,6 +132,11 @@ def state(did):
         data.update(proposals=[obj(x) for x in s.scalars(select(Proposal).where(Proposal.dataset_id==did).order_by(Proposal.created_at.desc()))],jobs=[obj(x) for x in s.scalars(select(BatchJob).where(BatchJob.dataset_id==did).order_by(BatchJob.created_at.desc()))],versions=[{'id':x.id,'version':x.version,'created_at':x.created_at} for x in s.scalars(select(Snapshot).where(Snapshot.dataset_id==did).order_by(Snapshot.version))],messages=[obj(x) for x in s.scalars(select(Message).where(Message.dataset_id==did).order_by(Message.created_at))],questions=[obj(x) for x in s.scalars(select(ChatQuestion).where(ChatQuestion.dataset_id==did).order_by(ChatQuestion.created_at))],cursor=s.scalar(select(func.max(DraftEvent.id)).where(DraftEvent.dataset_id==did)) or 0)
         from .task_control import brief
         data['jobs']=[brief(j)|{'archived':bool((s.get(WorkbenchMeta,'job:'+j['id']).data if s.get(WorkbenchMeta,'job:'+j['id']) else {}).get('archived'))} for j in data['jobs']]
+        for question in data['questions']:
+            meta=s.get(WorkbenchMeta,'business-question:'+question['id'])
+            if meta:question.update(business=True,multiple=meta.data.get('multiple',False))
+        from .chat_threads import decorate
+        decorate(s,did,data)
     return data
 
 def validate_definition(d,existing):
@@ -139,7 +144,7 @@ def validate_definition(d,existing):
     if standard['source'] in ('image','both'):
         from .capabilities import require_visual_tagging
         require_visual_tagging()
-    standard.update({k:copy.deepcopy(d[k]) for k in ('method','depends_on','mapping','bins','fields','cardinality','when','parser','result_shape','target_scope','dimension','product_category','product_forms','input_policy','visual_standard_id','expansion_policy') if k in d})
+    standard.update({k:copy.deepcopy(d[k]) for k in ('method','depends_on','mapping','bins','fields','cardinality','when','parser','result_shape','target_scope','dimension','product_category','product_forms','input_policy','visual_standard_id','expansion_policy','source_header','adopted_source','adoption_active','fill_empty_only','separator') if k in d})
     if standard.get('cardinality','auto') not in ('auto','single','multiple'):raise ValueError('cardinality需为auto/single/multiple')
     expansion_policy=standard.setdefault('expansion_policy','end_of_task_suggestion')
     if expansion_policy not in ('never','end_of_task_suggestion','manual_only'):raise ValueError('expansion_policy需为never/end_of_task_suggestion/manual_only')
@@ -503,7 +508,7 @@ def attach_visual_standard(s,did,definition,proposal_id):
     compact['overview_id']=ident;compact['sha256']=hashlib.sha256(json.dumps(compact,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
     return {**definition,'visual_standard':compact}
 
-def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None,confirmation_key=None):
+def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None,confirmation_key=None,text_credential_id=None,vision_credential_id=None):
     from .model_settings import defaults
     DEFAULT_MODEL,VISION_MODEL=defaults()
     jobs=[]
@@ -614,7 +619,7 @@ def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None,
                         from .task_control import claim
                         claim(s,did,token,jid)
                         c.status='pending';cell_change(s,did,c,'queued')
-                job=BatchJob(id=jid,dataset_id=did,proposal_id=p.id,spec={'product_ids':ids,'columns':columns,'expected':expected,'text_model':text_model or DEFAULT_MODEL,'vision_model':vision_model or VISION_MODEL,'refresh_images':bool(ch.get('refresh_images')),'reuse_results':bool(ch.get('reuse_results')),'force_recompute':bool(ch.get('force_recompute')),'sample':sample},metrics={})
+                job=BatchJob(id=jid,dataset_id=did,proposal_id=p.id,spec={'product_ids':ids,'columns':columns,'expected':expected,'text_model':text_model or DEFAULT_MODEL,'vision_model':vision_model or VISION_MODEL,'text_credential_id':text_credential_id,'vision_credential_id':vision_credential_id,'refresh_images':bool(ch.get('refresh_images')),'reuse_results':bool(ch.get('reuse_results')),'force_recompute':bool(ch.get('force_recompute')),'sample':sample},metrics={})
                 s.add(job);s.flush();jobs.append(obj(job));emit(s,did,'job',obj(job))
         p.status='confirmed';p.confirmed_at=now();p.confirmation_key=confirmation_key;emit(s,did,'proposal',obj(p));emit(s,did,'proposal_group',obj(p));audit(s,did,'human_confirmed_proposal',{'id':p.id,'scope':scope,'sample':sample,'confirmation_key':confirmation_key})
     return jobs

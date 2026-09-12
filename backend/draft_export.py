@@ -25,7 +25,11 @@ def export(did,selected,version=None):
             legacy=c.get('origin',{}).get('schema_version')
             name+=f'（原规则{legacy}）' if legacy else f'（草稿列{index+1}）'
         names[c['id']]=name
-    ws.append(headers+[names[c] for c in selected])
+    # An inactive adopted column means "show/export the untouched source field". It is not appended as an AI duplicate.
+    selected=[cid for cid in selected if not cols[cid]['definition'].get('adopted_source') or cols[cid]['definition'].get('adoption_active',True)]
+    adopted={c['definition']['source_header']:c['id'] for c in data['columns'] if c['id'] in selected and c['definition'].get('adopted_source')}
+    appended=[cid for cid in selected if not cols[cid]['definition'].get('adopted_source')]
+    ws.append(headers+[names[c] for c in appended])
     detail=wb.create_sheet('AI_Detail');detail.append(['商品标识','标识来源','原始行','标签','状态','原始观察','标准值','人工修正','证据与来源','定义修订','冲突候选'])
     dictionary=wb.create_sheet('Tag_Dictionary');dictionary.append(['标签','稳定ID','修订','定义','候选值','处理方式','依赖列','映射／区间','版本','类别ID','具体属性','判断规则','Skill版本','Skill摘要'])
     import json
@@ -39,12 +43,17 @@ def export(did,selected,version=None):
             cell=row['cells'].get(cid,{})
             status=cell.get('status','pending');value=cell.get('value')
             if cols[cid]['definition'].get('attribute'):
-                values.append('✓' if value is True and status=='ready' else '❌' if value is False and status=='ready' else None)
-            else:values.append(safe(value) if status=='ready' else f'【{STATUS.get(status,status)}】'+(str(value) if value is not None else ''))
+                output='✓' if value is True and status=='ready' else '❌' if value is False and status=='ready' else None
+            else:output=safe(value) if status in ('ready','review') else f'【{STATUS.get(status,status)}】'+(str(value) if value is not None else '')
+            source_header=cols[cid]['definition'].get('source_header') if cid in adopted.values() else None
+            if source_header:values[headers.index(source_header)]=output
+            else:values.append(output)
             detail.append([row['anchor'],row.get('identity_source'),row['row'],names[cid],STATUS.get(status,status),safe(cell.get('raw_value')),safe(value),safe(cell.get('manual')),safe(cell.get('evidence')),cell.get('revision'),safe(cell.get('conflict'))])
         ws.append(values);ws.row_dimensions[index].height=78
-        for offset,cid in enumerate(selected,len(headers)+1):
+        for cid in selected:
             status=row['cells'].get(cid,{}).get('status','pending')
+            source_header=cols[cid]['definition'].get('source_header') if cid in adopted.values() else None
+            offset=headers.index(source_header)+1 if source_header else len(headers)+1+appended.index(cid)
             if cols[cid]['definition'].get('attribute') and status!='ready':
                 from openpyxl.comments import Comment
                 ws.cell(index,offset).comment=Comment(STATUS.get(status,status)+'；完整状态和依据见 AI_Detail','商品打标工作台')

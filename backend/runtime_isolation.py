@@ -23,7 +23,7 @@ def _toml(value):
     return json.dumps(value, ensure_ascii=False)
 
 
-def environment(dataset_id, session_id=None):
+def environment(dataset_id, session_id=None, credential_ids=None):
     if not re.fullmatch(r'[a-zA-Z0-9_-]+', dataset_id):raise ValueError('数据集目录标识无效')
     source=provider_home()
     home=STORAGE/'datasets'/dataset_id/'reasonix'
@@ -38,6 +38,14 @@ def environment(dataset_id, session_id=None):
     config,_=_canonical_config(config)
     # Only provider definitions are shared; never import global plugins, memory or permissions.
     providers=config.get('providers',[])
+    credential_ids=credential_ids or {}
+    for provider in providers:
+        selected_id=credential_ids.get(provider.get('name'))
+        if selected_id:
+            selected=next((x for x in provider.get('credentials',[]) if x.get('id')==selected_id),None)
+            if not selected:raise ValueError(f'服务 {provider.get("name")} 中不存在所选 Key')
+            if not selected.get('enabled',True):raise ValueError(f'服务 {provider.get("name")} 的所选 Key 已停用')
+            provider['api_key_env']=selected['api_key_env'];provider['primary_credential_id']=selected_id
     allowed={k:v for k,v in config.items() if k in ('providers','default_model','model')}
     (home/'config.toml').write_text('\n'.join(k+' = '+_toml(v) for k,v in allowed.items()),encoding='utf-8')
     if session_id and not (home/'sessions'/f'{session_id}.acp.json').is_file():

@@ -17,7 +17,7 @@ PROMPT='''你是商品图片事实提取工具。实际观察所提供的图片�
 输出合法JSON对象，字段：colors（字符串数组）、patterns（字符串数组）、structure（字符串数组）、decoration（字符串数组）、visible_text（字符串数组）、unknown（字符串数组）、summary（简短中文观察）。
 描述图中实际可见的商品主体、色彩组合、图案、结构和件数；不要输出思维链。总输出不超过500字。'''
 
-def provider_config(model_ref):
+def provider_config(model_ref,credential_id=None):
     from .runtime_isolation import provider_home
     from .model_settings import local_model_name
     home=provider_home()
@@ -37,7 +37,11 @@ def provider_config(model_ref):
     model=local_model_name(name,model)
     if not model:raise ValueError('模型引用缺少具体模型名称')
     if provider.get('kind','openai')!='openai':raise ValueError('视觉工具当前支持 Reasonix 的 OpenAI 兼容 provider；请配置对应视觉端点')
-    key_name=provider.get('api_key_env')
+    credential_id=credential_id or os.environ.get('TAG_VISION_CREDENTIAL_ID')
+    credentials=provider.get('credentials') or []
+    selected=next((x for x in credentials if x.get('id')==credential_id),None) if credential_id else next((x for x in credentials if x.get('id')==provider.get('primary_credential_id')),None)
+    if selected and not selected.get('enabled',True):raise ValueError('所选 Key 已停用')
+    key_name=(selected or {}).get('api_key_env') or provider.get('api_key_env')
     # Match Reasonix v1.25.1: provider secrets live in its global .env, never copy them.
     key=(os.environ.get(key_name) or dotenv_values(home/'.env').get(key_name)) if key_name else None
     if not key:raise ValueError('Reasonix 视觉 provider 尚未保存有效授权，请在 Reasonix 中配置')

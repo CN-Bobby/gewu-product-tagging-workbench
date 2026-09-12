@@ -7,7 +7,7 @@ when the default reference was assembled.  The helpers below accept both
 forms and persist the canonical provider-local model names.
 """
 import base64
-import json,os,re,subprocess,tomllib
+import json,os,re,subprocess,tomllib,uuid
 from urllib.parse import urlparse
 from dotenv import dotenv_values
 import httpx
@@ -54,6 +54,18 @@ def _canonical_config(config):
         if not isinstance(provider, dict) or not isinstance(provider.get('name'), str):
             continue
         name = provider['name'].strip()
+        credentials=provider.get('credentials')
+        if not isinstance(credentials,list):credentials=[]
+        if provider.get('api_key_env') and not any(x.get('api_key_env')==provider.get('api_key_env') for x in credentials if isinstance(x,dict)):
+            credentials.insert(0,{'id':'legacy','name':'Default Key','api_key_env':provider.get('api_key_env'),'enabled':True,'validation':provider.get('validation')})
+            changed=True
+        credentials=[x for x in credentials if isinstance(x,dict) and x.get('id') and x.get('api_key_env')]
+        if credentials:
+            primary=provider.get('primary_credential_id')
+            if not any(x['id']==primary for x in credentials):primary=credentials[0]['id']
+            provider['credentials']=credentials;provider['primary_credential_id']=primary
+            chosen=next(x for x in credentials if x['id']==primary)
+            if provider.get('api_key_env')!=chosen['api_key_env']:provider['api_key_env']=chosen['api_key_env'];changed=True
         raw_models = provider.get('models')
         if raw_models is None:
             raw_models = [provider.get('model')] if provider.get('model') else []
@@ -120,13 +132,14 @@ def read():
     keys=dotenv_values(home/'.env')
     providers=[]
     for p in config.get('providers',[]):
-        provider={k:p.get(k) for k in ('name','kind','base_url','models','model','default','text_model','vision_model','validation')}
+        provider={k:p.get(k) for k in ('name','kind','base_url','models','model','default','text_model','vision_model','validation','primary_credential_id')}
         local_models=p.get('models') or ([p.get('model')] if p.get('model') else [])
         provider['models']=list(dict.fromkeys(local_model_name(p.get('name',''),m) for m in local_models if local_model_name(p.get('name',''),m)))
         provider['text_model']=local_model_name(p.get('name',''),p.get('text_model') or p.get('default') or (provider['models'][0] if provider['models'] else ''))
         provider['vision_model']=local_model_name(p.get('name',''),p.get('vision_model') or next((m for m in provider['models'] if 'vision' in m.lower()),None) or (provider['models'][1] if len(provider['models'])>1 else provider['text_model']))
         provider['model_refs']=[model_reference(p.get('name',''),m) for m in provider['models']]
-        provider['authorized']=bool(keys.get(p.get('api_key_env')))
+        provider['credentials']=[{'id':x.get('id'),'name':x.get('name') or 'Unnamed Key','enabled':x.get('enabled',True),'authorized':bool(keys.get(x.get('api_key_env'))),'validation':x.get('validation')} for x in p.get('credentials',[]) if isinstance(x,dict)]
+        provider['authorized']=any(x['authorized'] and x['enabled'] for x in provider['credentials']) or bool(keys.get(p.get('api_key_env')))
         providers.append(provider)
     return {'configured':bool(providers),'providers':providers,
         'default_model':config.get('default_model'),'credential_path':str(home/'.env')}
@@ -201,8 +214,8 @@ def _local_input(name, value, label):
     if not isinstance(value,str):
         raise ValueError(f'请填写{label}')
     value=local_model_name(name,value)
-    if not value or '/' in value or any(ord(c)<32 for c in value):
-        raise ValueError(f'{label}请填写服务内模型名，例如 deepseek-v4-flash')
+    if not value or any(ord(c)<32 for c in value):
+        raise ValueError(f'{label}请填写合法的服务内模型名，例如 org/model-name')
     return value
 
 
@@ -222,17 +235,26 @@ def save(body):
     vision_model=_local_input(name,visual_raw,'视觉模型')
     home=provider_home();home.mkdir(parents=True,exist_ok=True);path=home/'config.toml'
     config=tomllib.loads(path.read_text(encoding='utf-8-sig')) if path.exists() else {}
-    key_name='WORKBENCH_'+name.upper().replace('-','_')+'_KEY';secret=body.get('api_key','')
+    config,_=_canonical_config(config)
+    existing=next((p for p in config.get('providers',[]) if p.get('name')==name),None) or {}
+    existing_credentials=list(existing.get('credentials') or [])
+    credential_id=str(body.get('credential_id') or existing.get('primary_credential_id') or uuid.uuid4().hex[:12])
+    if not re.fullmatch(r'[a-zA-Z0-9_-]{1,60}',credential_id):raise ValueError('Key 标识无效')
+    current=next((x for x in existing_credentials if x.get('id')==credential_id),None)
+    key_name=(current or {}).get('api_key_env') or ('WORKBENCH_'+name.upper().replace('-','_')+'_'+credential_id.upper().replace('-','_')+'_KEY')
+    secret=body.get('api_key','')
     if not isinstance(secret,str) or any(c in secret for c in '\r\n\0'):raise ValueError('授权格式无效')
     keys=dotenv_values(home/'.env')
     if secret:keys[key_name]=secret
     if not keys.get(key_name):raise ValueError('首次配置需要填写授权密钥')
     validation=validate_models(base,keys[key_name],text_model,vision_model)
-    models=list(dict.fromkeys([text_model,vision_model]+[local_model_name(name,m) for m in legacy if local_model_name(name,m)]))
-    provider={'name':name,'kind':'openai','base_url':base,'api_key_env':key_name,'models':models,'default':text_model,
+    credential={'id':credential_id,'name':str(body.get('credential_name') or (current or {}).get('name') or 'Default Key').strip()[:100] or 'Default Key','api_key_env':key_name,'enabled':body.get('credential_enabled',True),'validation':validation}
+    credentials=[x for x in existing_credentials if x.get('id')!=credential_id]+[credential]
+    models=list(dict.fromkeys([text_model,vision_model]+list(existing.get('models') or [])+[local_model_name(name,m) for m in legacy if local_model_name(name,m)]))
+    provider={**existing,'name':name,'kind':'openai','base_url':base,'api_key_env':key_name,'credentials':credentials,'primary_credential_id':credential_id,'models':models,'default':text_model,
               'text_model':text_model,'vision_model':vision_model,'validation':validation}
     config['providers']=[p for p in config.get('providers',[]) if p.get('name')!=name]+[provider]
-    config['default_model']=model_reference(name,models[0])
+    if body.get('set_default',True):config['default_model']=model_reference(name,text_model)
     # Preserve existing non-provider settings, including native client permissions and plugins.
     _write_config(path,config)
     secrets=home/'.env';secrets.write_text('\n'.join(k+'='+json.dumps(v) for k,v in keys.items() if isinstance(v,str)),encoding='utf-8')
@@ -242,3 +264,31 @@ def save(body):
         if result.returncode:raise ValueError('授权文件访问权限设置失败')
     conversation.close()
     return read()
+
+
+def credential_action(provider_name,credential_id,action):
+    from . import conversation,batch
+    if conversation.busy or batch.active:raise ValueError('请先暂停对话和批处理，再修改 Key')
+    home=provider_home();path=home/'config.toml'
+    if not path.exists():raise ValueError('模型配置不存在')
+    config=tomllib.loads(path.read_text(encoding='utf-8-sig'));config,_=_canonical_config(config)
+    provider=next((p for p in config.get('providers',[]) if p.get('name')==provider_name),None)
+    if not provider:raise ValueError('服务不存在')
+    credentials=list(provider.get('credentials') or []);target=next((x for x in credentials if x.get('id')==credential_id),None)
+    if not target:raise ValueError('Key 不存在')
+    keys=dotenv_values(home/'.env')
+    if action=='delete':
+        credentials=[x for x in credentials if x.get('id')!=credential_id];keys.pop(target.get('api_key_env'),None)
+        provider['credentials']=credentials
+        if credentials:
+            provider['primary_credential_id']=credentials[0]['id'];provider['api_key_env']=credentials[0]['api_key_env']
+        else:provider['primary_credential_id']=None;provider['api_key_env']=None
+    elif action in ('enable','disable'):
+        target['enabled']=action=='enable';provider['credentials']=credentials
+    elif action=='primary':
+        if not target.get('enabled',True):raise ValueError('停用的 Key 不能设为当前 Key')
+        provider['primary_credential_id']=credential_id;provider['api_key_env']=target['api_key_env']
+    else:raise ValueError('未知 Key 操作')
+    _write_config(path,config)
+    (home/'.env').write_text('\n'.join(k+'='+json.dumps(v) for k,v in keys.items() if isinstance(v,str)),encoding='utf-8')
+    conversation.close();return read()

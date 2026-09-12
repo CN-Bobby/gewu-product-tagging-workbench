@@ -43,11 +43,15 @@ def build(text,status='completed',error_code=None,error_message=None,technical=N
     if not summary and discussion:
         clean=re.sub(r'^#{1,6}\s*[^\n]+\n*','',discussion).strip()
         summary=(re.split(r'(?<=[。！？])\s*|\n',clean,maxsplit=1)[0] or clean)[:300]
-    activity=[]
+    activity=[]; positions={}
     for event in events or []:
         if event.get('type')=='tool' and event.get('title'):
             item={'title':event['title'],'status':event.get('status')}
-            if item not in activity:activity.append(item)
+            key=event.get('toolCallId')
+            if key and key in positions:activity[positions[key]]=item
+            elif key:
+                positions[key]=len(activity);activity.append(item)
+            elif item not in activity:activity.append(item)
     return {
         'heading':heading,
         'summary':summary,
