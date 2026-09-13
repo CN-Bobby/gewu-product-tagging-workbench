@@ -313,6 +313,37 @@ class ModelAttempt(Record, Base):
     model = Column(String)
     data = Column(JSON, default=dict)
 
+class AgentEvent(Base):
+    """Append-only agent event log. Sequence is allocated per session, never inferred from
+    timestamps or rowid, so a reader can resume from after_sequence. Agent-owned: it is not
+    bound to conversation, message, draft or any other business model."""
+    __tablename__ = 'agent_event'
+    id = Column(String(32), primary_key=True, default=uid)
+    session_id = Column(String(32), nullable=False, index=True)
+    sequence = Column(Integer, nullable=False)
+    event_type = Column(String, nullable=False, index=True)
+    source = Column(String, nullable=False, default='runtime')
+    payload = Column(JSON, nullable=False, default=dict)
+    dataset_id = Column(String, index=True)
+    created_at = Column(String, default=now)
+    __table_args__ = (UniqueConstraint('session_id','sequence',name='uq_agent_event_sequence'),)
+
+class AgentSession(Base):
+    """Agent-runtime-neutral session registry for a future bridge. Deliberately has no cwd,
+    instruction hash, conversation binding, session file path, migration state, presentation
+    or business-question status; a reasonix session id is only a remote reference."""
+    __tablename__ = 'agent_session'
+    id = Column(String(32), primary_key=True, default=uid)
+    dataset_id = Column(String, index=True)
+    provider = Column(String)
+    model = Column(String)
+    status = Column(String, default='active', index=True)
+    remote_session_id = Column(String)
+    created_at = Column(String, default=now)
+    updated_at = Column(String, default=now)
+    started_at = Column(String)
+    stopped_at = Column(String)
+
 cache_engine=None
 if os.environ.get('TAG_CACHE'):
     cache_path=Path(os.environ['TAG_CACHE']).resolve();cache_path.mkdir(parents=True,exist_ok=True)
