@@ -3,7 +3,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
-from fastapi import FastAPI, UploadFile, File, Form, Request
+from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
@@ -401,6 +401,17 @@ def batch_cancel(jid:str):return batch.stop(jid,cancel=True)
 
 @app.post('/api/drafts/{did}/export')
 def draft_download(did:str,body:dict):return FileResponse(draft_export.export(did,body.get('columns',[]),body.get('version')),filename='商品打标结果.xlsx')
+
+@app.get('/api/agent/sessions/{session_id}/events')
+async def agent_events(session_id:str,request:Request,after_sequence:str|None=None):
+    """Agent event stream, independent of the draft stream: sequence is the cursor, so a client
+    resumes with after_sequence or Last-Event-ID."""
+    from fastapi.responses import StreamingResponse
+    from .agent import events as agent_store,stream as agent_stream
+    if agent_store.get_session(session_id) is None:raise HTTPException(status_code=404,detail='Agent 会话不存在')
+    cursor=agent_stream.resolve_cursor(after_sequence,request.headers.get('last-event-id'))
+    return StreamingResponse(agent_stream.event_stream(session_id,cursor,disconnected=request.is_disconnected),
+        media_type='text/event-stream',headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})
 
 @app.get('/api/drafts/{did}/events')
 async def draft_events(did:str,request:Request,after:int=0):

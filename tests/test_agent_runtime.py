@@ -20,6 +20,12 @@ def build(mode='normal'):
     return runtime,events,diagnostics,lifecycle
 
 
+def wait_until(predicate,timeout=5):
+    """Events are emitted from the reader thread, so wait for the effect, not just the process."""
+    deadline=time.time()+timeout
+    while not predicate() and time.time()<deadline:time.sleep(.05)
+    return predicate()
+
 @pytest.fixture
 def spawn():
     started=[]
@@ -76,8 +82,7 @@ def test_12_exit_is_detected_and_pending_work_is_failed():
     assert not runtime.alive
     with pytest.raises(RuntimeError,match='Reasonix 进程已退出'):
         runtime.send({'jsonrpc':'2.0','method':'x','params':{}})
-    time.sleep(.2)
-    assert 'reader_stopped' in [event['type'] for event in lifecycle]
+    assert wait_until(lambda:'reader_stopped' in [event['type'] for event in lifecycle])
     runtime.stop()
 
 
@@ -109,7 +114,7 @@ def test_14_timeout_does_not_block_forever(spawn):
 def test_parse_failures_are_reported_not_swallowed(spawn):
     runtime,events,diagnostics,lifecycle=spawn('noise')
     runtime.request('session/prompt',{'sessionId':'s','prompt':[]},timeout=10)
-    time.sleep(.2)
+    assert wait_until(lambda:len(runtime.protocol_errors())==2)
     kinds=[item['kind'] for item in runtime.protocol_errors()]
     assert kinds==['invalid_json','not_an_object']
     assert [line.rstrip('\n') for kind,line in diagnostics if kind=='stdout']==['not json at all','null']
@@ -139,7 +144,7 @@ def test_returncode_is_readable_after_a_clean_exit(spawn):
     deadline=time.time()+5
     while runtime.alive and time.time()<deadline:time.sleep(.05)
     assert runtime.returncode==0
-    assert 'process_exited' in [event['type'] for event in runtime.lifecycle_tail()]
+    assert wait_until(lambda:'process_exited' in [event['type'] for event in runtime.lifecycle_tail()])
 
 
 def test_returncode_is_readable_after_a_crash():
