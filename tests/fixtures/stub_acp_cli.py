@@ -36,6 +36,10 @@ def updates():
 
 def main():
     if MODE=='exit':sys.exit(3)
+    if MODE=='noisy_stderr':
+        for index in range(300):
+            sys.stderr.write('noise-%d\n'%index)
+        sys.stderr.flush()
     for line in sys.stdin:
         line=line.strip()
         if not line:continue

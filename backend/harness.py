@@ -299,8 +299,8 @@ class ACP:
         # Bounded diagnostics kept in memory, never expose credentials or global config.
         self.diagnostics.append(line[-500:]);self.diagnostics=self.diagnostics[-10:]
 
-    def _on_lifecycle(self,kind):
-        if kind!='reader_stopped':return
+    def _on_lifecycle(self,event):
+        if event.get('type')!='reader_stopped':return
         with self.question_lock:
             interrupted=list(self.pending_questions.values());self.pending_questions.clear()
         for question in interrupted:self.on_event({'type':'question_interrupted','id':question['id'],'code':'reasonix_process_error'})

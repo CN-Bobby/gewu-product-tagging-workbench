@@ -4,6 +4,7 @@ Covers the 14-point checklist items 7-14 offline and deterministically; the real
 is exercised separately by scripts/agent_m1_smoke.py so the suite stays network-free.
 """
 import sys
+import threading
 import time
 from pathlib import Path
 import pytest
@@ -32,14 +33,14 @@ def spawn():
 def test_7_process_starts_and_reports_lifecycle(spawn):
     runtime,events,diagnostics,lifecycle=spawn()
     assert runtime.alive and runtime.proc.poll() is None
-    assert lifecycle==['started']
+    assert [event['type'] for event in lifecycle]==['process_starting','process_started']
 
 
 def test_8_initialize_round_trip(spawn):
     runtime,events,diagnostics,lifecycle=spawn()
     result=runtime.request('initialize',{'protocolVersion':1,'clientCapabilities':{},'clientInfo':{'name':'x','version':'1'}},timeout=10)
     assert result['protocolVersion']==1
-    assert lifecycle==['started']
+    assert 'process_started' in [event['type'] for event in lifecycle]
 
 
 def test_9_session_new_and_resume_return_a_session_id(spawn):
@@ -76,7 +77,7 @@ def test_12_exit_is_detected_and_pending_work_is_failed():
     with pytest.raises(RuntimeError,match='Reasonix 进程已退出'):
         runtime.send({'jsonrpc':'2.0','method':'x','params':{}})
     time.sleep(.2)
-    assert 'reader_stopped' in lifecycle
+    assert 'reader_stopped' in [event['type'] for event in lifecycle]
     runtime.stop()
 
 
@@ -93,7 +94,7 @@ def test_13_stop_terminates_and_is_idempotent(spawn):
     runtime.stop()
     assert not runtime.alive and runtime.closed
     runtime.stop()
-    assert 'stopped' in lifecycle
+    assert 'process_stopped' in [event['type'] for event in lifecycle]
 
 
 def test_14_timeout_does_not_block_forever(spawn):
@@ -119,3 +120,128 @@ def test_stderr_lines_are_forwarded_as_diagnostics(spawn):
     deadline=time.time()+5
     while not diagnostics and time.time()<deadline:time.sleep(.05)
     assert ('stderr','stub ready\n') in diagnostics
+
+
+# --- M1.5 observability ---------------------------------------------------
+
+def test_status_fields_are_readable_while_running(spawn):
+    runtime,events,diagnostics,lifecycle=spawn()
+    assert runtime.pid==runtime.proc.pid and runtime.pid>0
+    assert runtime.alive and runtime.returncode is None
+    assert runtime.started_at and runtime.last_activity_at and runtime.stopped_at is None
+    assert runtime.reader_alive
+
+
+def test_returncode_is_readable_after_a_clean_exit(spawn):
+    runtime,events,diagnostics,lifecycle=spawn()
+    runtime.request('session/new',{'cwd':'.','mcpServers':[]},timeout=10)
+    runtime.request('session/close',{'sessionId':'stub-session'},timeout=10)
+    deadline=time.time()+5
+    while runtime.alive and time.time()<deadline:time.sleep(.05)
+    assert runtime.returncode==0
+    assert 'process_exited' in [event['type'] for event in runtime.lifecycle_tail()]
+
+
+def test_returncode_is_readable_after_a_crash():
+    exited,events,diagnostics,lifecycle=build('exit');exited.start()
+    deadline=time.time()+5
+    while exited.alive and time.time()<deadline:time.sleep(.05)
+    assert exited.returncode==3 and not exited.alive
+    exited.stop()
+
+    crashed,events,diagnostics,lifecycle=build('crash_after_prompt');crashed.start()
+    with pytest.raises(RuntimeError,match='连接已断开'):
+        crashed.request('session/prompt',{'sessionId':'s','prompt':[]},timeout=10)
+    deadline=time.time()+5
+    while crashed.alive and time.time()<deadline:time.sleep(.05)
+    assert crashed.returncode==4
+    crashed.stop()
+
+
+def test_stop_leaves_no_reader_traceback(spawn,monkeypatch):
+    caught=[]
+    monkeypatch.setattr(threading,'excepthook',lambda args:caught.append(args))
+    runtime,events,diagnostics,lifecycle=spawn()
+    runtime.request('session/new',{'cwd':'.','mcpServers':[]},timeout=10)
+    runtime.stop()
+    assert runtime.join_reader(5)
+    time.sleep(.2)
+    assert caught==[]
+
+
+def test_kill_emits_an_explicit_lifecycle_event(spawn):
+    runtime,events,diagnostics,lifecycle=spawn('hang')
+    runtime.kill()
+    deadline=time.time()+5
+    while runtime.alive and time.time()<deadline:time.sleep(.05)
+    assert 'process_killed' in [event['type'] for event in runtime.lifecycle_tail()]
+    assert runtime.returncode is not None
+    runtime.stop()
+
+
+def test_timeout_emits_a_structured_event(spawn):
+    runtime,events,diagnostics,lifecycle=spawn('hang')
+    with pytest.raises(RuntimeError,match='超时'):
+        runtime.request('session/prompt',{'sessionId':'s','prompt':[]},timeout=0.3)
+    timeouts=[event for event in runtime.lifecycle_tail() if event['type']=='request_timeout']
+    assert len(timeouts)==1
+    event=timeouts[0]
+    assert event['method']=='session/prompt' and event['timeout']==0.3 and event['ident']==1
+    assert event['seconds']>=0.3 and event['timestamp']
+
+
+def test_stderr_enters_the_ring_buffer(spawn):
+    runtime,events,diagnostics,lifecycle=spawn()
+    deadline=time.time()+5
+    while not runtime.diagnostics()['stderr'] and time.time()<deadline:time.sleep(.05)
+    entries=runtime.diagnostics()['stderr']
+    assert entries[-1]['line']=='stub ready\n' and entries[-1]['timestamp']
+
+
+def test_malformed_stdout_enters_the_protocol_diagnostic(spawn):
+    runtime,events,diagnostics,lifecycle=spawn('noise')
+    runtime.request('session/prompt',{'sessionId':'s','prompt':[]},timeout=10)
+    time.sleep(.2)
+    entries=runtime.diagnostics()['protocol']
+    assert [entry['kind'] for entry in entries]==['invalid_json','not_an_object']
+    assert all(entry['timestamp'] and entry['raw'] for entry in entries)
+    assert 'protocol_error' in [event['type'] for event in runtime.lifecycle_tail()]
+    assert runtime.alive
+
+
+def test_ring_buffers_are_bounded(spawn):
+    from backend.agent.runtime import LIFECYCLE_RING_CAPACITY,PROTOCOL_RING_CAPACITY,STDERR_RING_CAPACITY
+    runtime,events,diagnostics,lifecycle=spawn('noisy_stderr')
+    deadline=time.time()+10
+    while len(runtime.diagnostics()['stderr'])<STDERR_RING_CAPACITY and time.time()<deadline:time.sleep(.05)
+    stderr=runtime.diagnostics()['stderr']
+    assert len(stderr)==STDERR_RING_CAPACITY and stderr[-1]['line']=='noise-299\n'
+    assert len(runtime.diagnostics()['lifecycle'])<=LIFECYCLE_RING_CAPACITY
+    assert len(runtime.diagnostics()['protocol'])<=PROTOCOL_RING_CAPACITY
+
+
+def test_chinese_text_survives_the_utf8_transport(spawn):
+    runtime,events,diagnostics,lifecycle=spawn()
+    runtime.request('session/prompt',{'sessionId':'s','prompt':[]},timeout=10)
+    chunks=[event['params']['update']['content']['text'] for event in events
+            if event['params']['update']['sessionUpdate']=='agent_message_chunk']
+    assert chunks==['你好']
+
+
+def test_stop_leaves_no_reader_thread_behind(spawn):
+    runtime,events,diagnostics,lifecycle=spawn()
+    runtime.request('session/new',{'cwd':'.','mcpServers':[]},timeout=10)
+    runtime.stop()
+    assert runtime.join_reader(5) and not runtime.reader_alive
+
+
+def test_lifecycle_events_are_structured(spawn):
+    runtime,events,diagnostics,lifecycle=spawn()
+    runtime.stop()
+    runtime.join_reader(5)
+    types=[event['type'] for event in lifecycle]
+    assert types[0]=='process_starting' and 'process_started' in types
+    assert 'process_stopping' in types and 'process_stopped' in types
+    for event in lifecycle:assert {'type','timestamp'}<=set(event)
+    assert next(event for event in lifecycle if event['type']=='process_started')['pid']==runtime.pid
+    assert next(event for event in lifecycle if event['type']=='process_stopped')['returncode'] is not None

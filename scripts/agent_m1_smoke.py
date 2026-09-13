@@ -49,6 +49,11 @@ try:
     text=client.prompt(args.prompt)
     check('10 发送最简单 prompt',True,{'seconds':round(time.perf_counter()-prompted,2),'model':client.model})
     check('11 收到文本响应',bool(text.strip()),{'chars':len(text),'preview':text.strip()[:160]})
+    client.close()
+    check('12 stop 结束进程',client.proc.poll() is not None,
+        {'returncode':client.proc.poll(),'pid':client.runtime.pid,
+         'lifecycle':[event['type'] for event in client.runtime.lifecycle_tail()],
+         'protocol_errors':len(client.runtime.protocol_errors())})
 except Exception as error:
     report['error']={'type':type(error).__name__,'message':str(error)[:500]}
     if getattr(error,'technical',None):report['technical']=error.technical
