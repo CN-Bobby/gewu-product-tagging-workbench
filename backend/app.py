@@ -119,6 +119,16 @@ def source_label_draft_expand(did:str,ident:str,body:dict):
     from .source_label_inference import analyze
     job=analyze(did,ident,body,expansion=True);batch.launch(job['id']);return job
 
+@app.post('/api/drafts/{did}/source-label-drafts/{ident}/recovery')
+def source_label_draft_recovery(did:str,ident:str,body:dict):
+    from .source_label_inference import recover_from_attempt
+    return recover_from_attempt(did,ident,body.get('attempt_id'))
+
+@app.post('/api/drafts/{did}/source-label-drafts/{ident}/baseline')
+def source_label_draft_baseline(did:str,ident:str,body:dict):
+    from .source_label_inference import program_baseline
+    return program_baseline(did,ident)
+
 @app.post('/api/drafts/{did}/source-label-drafts/{ident}/answers')
 def source_label_draft_answers(did:str,ident:str,body:dict):
     from .source_label_inference import answer_questions

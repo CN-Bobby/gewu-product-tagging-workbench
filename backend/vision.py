@@ -71,7 +71,6 @@ def analyze(asset_id,model_ref):
     choices=response_data.get('choices') or []
     if not choices:raise ValueError('视觉模型未返回结果')
     choice=choices[0]
-    if choice.get('finish_reason')=='length':raise ValueError('视觉输出被截断；未保存不完整结果，请缩小提取范围后重试')
     raw=choice.get('message',{}).get('content')
     if not isinstance(raw,str) or not raw:raise ValueError('视觉模型返回空内容')
     try:content=json.loads(raw)
@@ -79,6 +78,9 @@ def analyze(asset_id,model_ref):
     for key in ('colors','patterns','structure','decoration','visible_text','unknown'):
         if not isinstance(content.get(key),list) or not all(isinstance(x,str) for x in content[key]):raise ValueError(f'视觉结果字段 {key} 不合规')
     if not isinstance(content.get('summary'),str):raise ValueError('视觉观察摘要缺失')
+    # Structural validity is checked first, but a truncation signal still refuses the
+    # result: re-reading pixels is cheap, persisting a wrong visual fact is not.
+    if choice.get('finish_reason')=='length':raise ValueError('视觉输出被截断；未保存不完整结果，请缩小提取范围后重试')
     with Session.begin() as s:
         observation=Observation(asset_id=asset_id,model=model_ref,prompt_hash=prompt_hash,content=content,usage=response_data.get('usage'))
         s.add(observation);s.flush()

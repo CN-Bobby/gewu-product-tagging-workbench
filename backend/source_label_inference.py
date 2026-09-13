@@ -34,13 +34,31 @@ def _edit_distance(a,b):
         previous=current
     return previous[-1]
 
+def _display_name(field):
+    # A raw table image column and the internal image-asset field are different things;
+    # the label must say which one actually feeds the model pixels.
+    if field['role']=='image':return field['name']+'（表格内嵌图片）'
+    if field['role']=='image_url':return field['name']+'（图片链接）'
+    return field['name']
+
+def _image_headers(did):
+    return {f['name'] for f in field_catalog.read(did)['fields'] if f['role']=='image' and f['status'] in ('recognized','confirmed')}
+
+def _canonical_fields(fields,did):
+    """Selecting a raw table image column means the same thing as the image-asset field."""
+    embedded=_image_headers(did);out=[]
+    for field in fields:
+        value=IMAGE_FIELD if field in embedded else field
+        if value not in out:out.append(value)
+    return out
+
 def evidence_options(did):
     catalog=field_catalog.read(did);preferred=[]
     for role in ('title','sku','parameters','bullets'):
         preferred.extend(f['name'] for f in catalog['fields'] if f['role']==role and f['status'] in ('recognized','confirmed') and f['nonempty'])
     preferred=list(dict.fromkeys(preferred))[:5]+[IMAGE_FIELD]
-    return {'fields':[{'id':f['name'],'name':f['name'],'role':f['role'],'nonempty':f['nonempty']} for f in catalog['fields']],
-        'special':[{'id':TEXT_RECORD_FIELD,'name':'文字底稿'},{'id':IMAGE_FIELD,'name':'商品主图'}],
+    return {'fields':[{'id':f['name'],'name':_display_name(f),'role':f['role'],'nonempty':f['nonempty'],'embedded_image':f['role']=='image'} for f in catalog['fields']],
+        'special':[{'id':TEXT_RECORD_FIELD,'name':'文字底稿'},{'id':IMAGE_FIELD,'name':'商品主图（已导入图片资产）','note':'只使用本表已导入的图片文件像素'}],
         'recommended':preferred}
 
 def profile(did,header):
@@ -78,13 +96,16 @@ def profile(did,header):
             if 2<=min(len(a),len(b)) and _edit_distance(a,b)<=1:typo_pairs.append([left['id'],right['id']])
     anomalies=[x['id'] for x in human if x['count']==1 or any(sep in x['display'] for sep in SEPARATORS)]
     available_images=sum(1 for row in data['rows'] if any(a.get('path') for a in row['assets']))
+    options=evidence_options(did);embedded=next((f['id'] for f in options['fields'] if f['embedded_image']),None)
+    notice='' if not available_images else '表内 '+str(available_images)+' 件商品带已导入图片；只有选择“商品主图（已导入图片资产）”才会真的让模型看图'+(('，选“'+embedded+'（表格内嵌图片）”含义相同' if embedded else '')+'。')
     return {'dataset_id':did,'source_header':header,'total':len(data['rows']),'labeled_count':sum(len(x) for x in groups.values()),
         'blank_count':len(blank_rows),'blank_ratio':len(blank_rows)/len(data['rows']) if data['rows'] else 0,
         'human_values':human,'distinct_count':len(human),'separator_counts':separator_counts,
         'surface_equivalent_groups':surface_groups,'possible_typo_pairs':typo_pairs,'anomaly_value_ids':anomalies,
         'available_image_count':available_images,'unlabeled_with_image_count':sum(any(a.get('path') for a in r['assets']) for r in blank_rows),
         'basis':'全量原始值程序统计；同义、错别字和异常项仅为待审核线索，不修改数据','adopted':adopted,
-        'evidence_options':evidence_options(did)}
+        'image_evidence':{'embedded_column':embedded,'available_image_count':available_images,'notice':notice},
+        'evidence_options':options}
 
 def _row_fingerprint(row,fields):
     values={f:row['raw'].get(f) for f in fields if f not in (IMAGE_FIELD,TEXT_RECORD_FIELD)}
@@ -146,10 +167,12 @@ def create(did,body):
     with Session() as s:
         existing=next((x for x in s.scalars(select(SourceLabelDraft).where(SourceLabelDraft.dataset_id==did,SourceLabelDraft.source_header==header).order_by(SourceLabelDraft.created_at.desc())) if x.status!='confirmed'),None)
         if existing:raise ValueError('此标签列已有未完成反推草案，请从“继续未完成草案”打开')
-    p=profile(did,header);valid={x['name'] for x in p['evidence_options']['fields']}|{IMAGE_FIELD,TEXT_RECORD_FIELD}
-    fields=body.get('evidence_fields') or p['evidence_options']['recommended']
+    p=profile(did,header);options=p['evidence_options']
+    valid={x['id'] for x in options['fields']}|{x['name'] for x in options['fields']}|{IMAGE_FIELD,TEXT_RECORD_FIELD}
+    fields=body.get('evidence_fields') or options['recommended']
     if not isinstance(fields,list) or not fields or any(x not in valid for x in fields):raise ValueError('请选择有效的反推数据列')
-    fields=list(dict.fromkeys(fields));data=draft.sheet(did);plan=_sample_plan(data,header,fields)
+    by_name={x['name']:x['id'] for x in options['fields']}
+    fields=_canonical_fields(list(dict.fromkeys(by_name.get(x,x) for x in fields)),did);data=draft.sheet(did);plan=_sample_plan(data,header,fields)
     value={'mode':mode,'name':str(body.get('name') or header).strip(),'manual_definition':definition,'evidence_fields':fields,
         'profile':p,'sample_plan':plan,'sampled_product_ids':[],'visual_evidence':[],'standard':_manual_standard(p,definition,fields) if mode=='manual' else None,
         'accepted_limited_coverage':False,'created_at':now()}
@@ -165,7 +188,14 @@ def read(did,ident):
     with Session() as s:
         item=require(s,SourceLabelDraft,ident)
         if item.dataset_id!=did:raise ValueError('反推草案不属于当前数据集')
-        return _view(item)
+        view=_view(item)
+        job=s.get(BatchJob,item.job_id) if item.job_id else None
+        attempts=list(s.scalars(select(ModelAttempt).where(ModelAttempt.job_id==item.job_id).order_by(ModelAttempt.created_at.desc()))) if item.job_id else []
+        reusable=next((a for a in attempts if _parsed_standard(a.data.get('content'))),None)
+        metrics=(job.metrics or {}) if job else {}
+        view['attempts']={'text_requests':metrics.get('requests',0),'vision_requests':metrics.get('vision_requests',0)}
+        view['recovery']={'available':bool(reusable),'attempt_id':reusable.id if reusable else None,'chars':len(reusable.data.get('content') or '') if reusable else 0,'finish_reason':reusable.data.get('finish_reason') if reusable else None}
+        return view
 
 def listing(did):
     with Session() as s:return [_view(x) for x in s.scalars(select(SourceLabelDraft).where(SourceLabelDraft.dataset_id==did).order_by(SourceLabelDraft.created_at.desc()))]
@@ -226,7 +256,8 @@ def analyze(did,ident,body,expansion=False):
             pool=[x for x in data['sample_plan']['expansion_product_ids'] if x not in already];product_ids=pool[:max(0,target-len(already))]
         else:product_ids=[x for x in data['sample_plan']['initial_product_ids'] if x not in already]
         if not product_ids:raise ValueError('没有新的可分析样本')
-        pending_visual=IMAGE_FIELD in data['evidence_fields']
+        fields=_canonical_fields(data['evidence_fields'],did)
+        pending_visual=IMAGE_FIELD in fields
     if pending_visual:
         probe_rows={r['id']:r for r in draft.sheet(did)['rows']}
         pending_visual=any(any(a.get('path') for a in probe_rows[x]['assets']) for x in product_ids if x in probe_rows)
@@ -241,7 +272,9 @@ def analyze(did,ident,body,expansion=False):
         else:product_ids=[x for x in data['sample_plan']['initial_product_ids'] if x not in already]
         if not product_ids:raise ValueError('没有新的可分析样本')
         rows={r['id']:r for r in draft.sheet(did)['rows']}
-        image_count=sum(any(a.get('path') for a in rows[x]['assets']) for x in product_ids if x in rows and IMAGE_FIELD in data['evidence_fields'])
+        fields=_canonical_fields(data['evidence_fields'],did)
+        if fields!=list(data['evidence_fields']):data['evidence_normalization']={'raw':list(data['evidence_fields']),'canonical':list(fields),'applied_at':now()};data['evidence_fields']=fields
+        image_count=sum(any(a.get('path') for a in rows[x]['assets']) for x in product_ids if x in rows and IMAGE_FIELD in fields)
         job=_job(did,item,product_ids,text_model,vision_model,text_credential_id,vision_credential_id,image_count>0,expansion);s.add(job);s.flush()
         item.job_id=job.id;item.status='analyzing';data['last_estimate']={'product_count':len(product_ids),'image_count':image_count,'estimated_vision_requests':math.ceil(image_count/6) if image_count else 0,'estimated_text_requests':1};item.data=data
         audit(s,did,'source_label_inference_started',{'draft_id':ident,'job_id':job.id,'product_count':len(product_ids),'expansion':expansion})
@@ -250,7 +283,7 @@ def analyze(did,ident,body,expansion=False):
 def expansion_estimate(did,ident,target_limit=60):
     item=read(did,ident);already=set(item.get('sampled_product_ids',[]));target=min(60,max(len(already),int(target_limit or 60)))
     ids=[x for x in item['sample_plan']['expansion_product_ids'] if x not in already][:max(0,target-len(already))]
-    rows={r['id']:r for r in draft.sheet(did)['rows']};images=sum(any(a.get('path') for a in rows[x]['assets']) for x in ids if x in rows and IMAGE_FIELD in item['evidence_fields'])
+    rows={r['id']:r for r in draft.sheet(did)['rows']};fields=_canonical_fields(item['evidence_fields'],did);images=sum(any(a.get('path') for a in rows[x]['assets']) for x in ids if x in rows and IMAGE_FIELD in fields)
     return {'product_count':len(ids),'image_count':images,'estimated_vision_requests':math.ceil(images/6) if images else 0,'estimated_text_requests':1,'target_total':len(already)+len(ids)}
 
 def _row_input(row,header,fields):
@@ -284,7 +317,11 @@ def _synthesize(profile_value,inputs,visual,prior_standard,model,credential_id,m
     prompt='''根据程序统计、指定字段、局部人工标签、未标样本和视觉观察，生成可审核的中文标签标准。人工标签只是局部参考，不是封闭值域；不得清洗或改写原值。新候选必须来自未标样本并给出product_id证据。最多提出三个关键问题。返回JSON：{"target":"至少5字定义","cardinality":"single|multiple|unclear","source":"image|both|text|manual","visual_suitability":{"status":"suitable|hybrid|unsuitable|insufficient","reason":"原因"},"observed_value_rules":[{"id":"hv_id","positive_features":[],"exclude":[],"representative_product_ids":[]}],"model_discovered_candidates":[{"value":"候选","status":"supported|tentative|unresolved","positive_features":[],"exclude":[],"supporting_product_ids":[]}],"unknown_policy":"","not_applicable_policy":"","image_unjudgeable_policy":"","conflicts":[{"product_id":"","type":"within_label|cross_label|suspected_mislabel|insufficient","reason":""}],"unresolved":[],"questions":[{"question":"","options":[]}],"normalization_suggestions":[{"from":"原值","to":"建议值","kind":"merge|rename|typo","reason":""}]}。'''
     payload={'profile':{k:v for k,v in profile_value.items() if k not in ('evidence_options',)},'sample_inputs':inputs,'visual_evidence':visual,'prior_standard':prior_standard}
     result=batch.request_json(model,[{'role':'system','content':prompt},{'role':'user','content':json.dumps(payload,ensure_ascii=False,default=str)}],metrics,lock,credential_id)
+    return _finalize_synthesis(profile_value,inputs,visual,result,metrics)
+
+def _finalize_synthesis(profile_value,inputs,visual,result,metrics):
     if not isinstance(result,dict) or len(str(result.get('target','')).strip())<5:raise ValueError('标准草案结构不完整')
+    missing=[k for k in ('questions','normalization_suggestions','unresolved') if k not in result]
     if result.get('cardinality') not in ('single','multiple','unclear'):result['cardinality']='unclear'
     if result.get('source') not in ('image','both','text','manual'):result['source']='both' if visual else 'text'
     input_by={x.get('product_id'):x for x in inputs if isinstance(x,dict) and x.get('product_id')}
@@ -309,7 +346,70 @@ def _synthesize(profile_value,inputs,visual,prior_standard,model,credential_id,m
     result['questions']=[{**q,'question':str(q.get('question') or '').strip(),'options':_strings(q.get('options'))} for q in result.get('questions',[]) if isinstance(q,dict) and str(q.get('question') or '').strip()][:3]
     if not isinstance(result.get('unresolved'),list):result['unresolved']=[]
     if not isinstance(result.get('normalization_suggestions'),list):result['normalization_suggestions']=[]
+    result['generation']={'source':'model','truncated':bool(metrics.get('truncated_responses')),'missing_keys':missing,
+        'recovered_from_attempt':None,'model_verified':True,'visual_executed':bool(visual)}
     return result
+
+def _parsed_standard(content):
+    if not isinstance(content,str) or not content.strip():return None
+    try:parsed=json.loads(content)
+    except json.JSONDecodeError:return None
+    return parsed if isinstance(parsed,dict) and len(str(parsed.get('target','')).strip())>=5 else None
+
+def _persist_standard(record_id,standard,visual,new_inputs,metrics,start,jid=None,source='model'):
+    with draft.WRITE_LOCK,Session.begin() as s:
+        job=require(s,BatchJob,jid) if jid else None
+        spec=job.spec if job else {}
+        record=require(s,SourceLabelDraft,record_id);data=dict(record.data)
+        product_ids=list(spec.get('product_ids') or data.get('sampled_product_ids') or [])
+        all_inputs=list(data.get('sample_inputs',[]))+list(new_inputs)
+        sampled=list(dict.fromkeys(list(data.get('sampled_product_ids',[]))+product_ids))
+        conflicts=standard.get('conflicts',[]);unresolved=standard.get('unresolved',[]);new=standard.get('model_discovered_candidates',[])
+        remaining=[x for x in data['sample_plan']['expansion_product_ids'] if x not in sampled]
+        covered={x['human_value_id'] for x in all_inputs if x.get('human_value_id')}
+        all_human={x['id'] for x in data['profile']['human_values']}
+        uncovered=sorted(all_human-covered)
+        recommend=bool(remaining and (conflicts or unresolved or new or uncovered))
+        plan=dict(data['sample_plan']);plan['covered_human_value_ids']=sorted(covered);plan['uncovered_human_value_ids']=uncovered
+        last_models={'text':spec['text_model'],'vision':spec['vision_model']} if spec else data.get('last_models')
+        data.update(sampled_product_ids=sampled,sample_inputs=all_inputs,visual_evidence=visual,standard=standard,sample_plan=plan,
+            coverage={'sample_count':len(sampled),'labeled_count':sum(x['human_value_id'] is not None for x in all_inputs),'unlabeled_count':sum(x['human_value_id'] is None for x in all_inputs),'remaining_count':len(remaining)},
+            last_models=last_models,generated_at=now())
+        if source!='program':
+            data['model_history']=[*data.get('model_history',[]),{'text':spec.get('text_model'),'vision':spec.get('vision_model') if spec.get('requires_visual') else None,'generated_at':now(),'product_ids':product_ids,'source':source}]
+        record.data=data;record.status='expansion_recommended' if recommend else 'needs_answers' if standard.get('questions') else 'review_required';record.revision+=1
+        metrics['wall_seconds']=__import__('time').perf_counter()-start
+        if job:
+            job.status='completed';job.metrics=metrics;job.completed=product_ids;draft.emit(s,job.dataset_id,'job',obj(job))
+        draft.emit(s,record.dataset_id,'source_label_draft',_view(record))
+        audit(s,record.dataset_id,'source_label_inference_completed',{'draft_id':record.id,'job_id':jid,'sample_count':len(sampled),'expansion_recommended':recommend,'source':source})
+        return _view(record)
+
+def recover_from_attempt(did,ident,attempt_id=None):
+    """Rebuild the standard from an already-paid response; never calls the model."""
+    item=read(did,ident)
+    if item['status']=='confirmed':raise ValueError('已确认的草案不可复用历史响应')
+    job_id=item.get('job_id')
+    with Session() as s:
+        attempts=list(s.scalars(select(ModelAttempt).where(ModelAttempt.job_id==job_id).order_by(ModelAttempt.created_at.desc()))) if job_id else []
+    chosen=next((a for a in attempts if a.id==attempt_id),None) if attempt_id else next((a for a in attempts if _parsed_standard(a.data.get('content'))),None)
+    if chosen is None:raise ValueError('该任务没有可复用的模型输出，请重新分析')
+    parsed=_parsed_standard(chosen.data.get('content'))
+    if parsed is None:raise ValueError('已保存的模型输出不完整，无法重建草案，请重新分析')
+    standard=_finalize_synthesis(item['profile'],item.get('sample_inputs',[]),item.get('visual_evidence',[]),parsed,{})
+    standard['generation']={**standard['generation'],'source':'model_replay','truncated':chosen.data.get('finish_reason')=='length','recovered_from_attempt':chosen.id}
+    return _persist_standard(item['id'],standard,item.get('visual_evidence',[]),[],{'requests':0,'vision_requests':0,'job_id':job_id},__import__('time').perf_counter(),jid=job_id,source='model_replay')
+
+def program_baseline(did,ident):
+    """A reviewable standard from program statistics only, clearly marked unverified."""
+    item=read(did,ident)
+    if item['status']=='confirmed':raise ValueError('已确认的草案不可生成程序基线')
+    definition=str((item.get('standard') or {}).get('target') or item.get('manual_definition') or '').strip()
+    if len(definition)<5:definition='按人工已有值与原始字段形成的程序基线定义，尚未经过模型核验'
+    baseline=_manual_standard(item['profile'],definition,item.get('evidence_fields') or [])
+    baseline['generation']={'source':'program','model_verified':False,'visual_executed':False}
+    baseline['visual_suitability']={'status':'unreviewed','reason':'未执行模型反推'}
+    return _persist_standard(item['id'],baseline,item.get('visual_evidence',[]),[],{'requests':0,'vision_requests':0},__import__('time').perf_counter(),jid=item.get('job_id'),source='program')
 
 def execute(jid,stop_event):
     from . import batch
@@ -318,14 +418,15 @@ def execute(jid,stop_event):
         with draft.WRITE_LOCK,Session.begin() as s:
             job=require(s,BatchJob,jid);job.status='running';spec=job.spec;item=require(s,SourceLabelDraft,spec['source_label_draft_id']);did=job.dataset_id
         sheet=draft.sheet(did);rows_by={r['id']:r for r in sheet['rows']};rows=[rows_by[x] for x in spec['product_ids'] if x in rows_by]
-        inputs=[_row_input(r,item.source_header,item.data['evidence_fields']) for r in rows]
+        fields=_canonical_fields(item.data['evidence_fields'],did)
+        inputs=[_row_input(r,item.source_header,fields) for r in rows]
         visual=list(item.data.get('visual_evidence',[]))
-        if IMAGE_FIELD in item.data['evidence_fields']:
+        if IMAGE_FIELD in fields:
             visually_completed={x.get('product_id') for group in visual if isinstance(group,dict) for x in group.get('products',[]) if isinstance(x,dict)}
             image_rows=[r for r in rows if r['id'] not in visually_completed and any(a.get('path') for a in r['assets'])]
             for i in range(0,len(image_rows),6):
                 if stop_event.is_set():break
-                visual.append(_visual_group(image_rows[i:i+6],item.source_header,item.data['evidence_fields'],spec['vision_model'],spec.get('vision_credential_id'),metrics,lock))
+                visual.append(_visual_group(image_rows[i:i+6],item.source_header,fields,spec['vision_model'],spec.get('vision_credential_id'),metrics,lock))
                 metrics['vision_requests']=metrics.get('vision_requests',0)+1
                 # Checkpoint every paid visual request. A paused, interrupted or
                 # synthesis-failed task resumes from the remaining image groups.
@@ -337,25 +438,8 @@ def execute(jid,stop_event):
                 job=require(s,BatchJob,jid);job.status='paused';job.metrics=metrics;require(s,SourceLabelDraft,item.id).status='review_required'
             return
         prior_inputs=list(item.data.get('sample_inputs',[]))
-        all_inputs=prior_inputs+inputs
-        standard=_synthesize(item.data['profile'],all_inputs,visual,item.data.get('standard'),spec['text_model'],spec.get('text_credential_id'),metrics,lock)
-        sampled=list(dict.fromkeys(item.data.get('sampled_product_ids',[])+[r['id'] for r in rows]))
-        conflicts=standard.get('conflicts',[]);unresolved=standard.get('unresolved',[]);new=standard.get('model_discovered_candidates',[])
-        remaining=[x for x in item.data['sample_plan']['expansion_product_ids'] if x not in sampled]
-        covered={x['human_value_id'] for x in all_inputs if x.get('human_value_id')}
-        all_human={x['id'] for x in item.data['profile']['human_values']}
-        uncovered=sorted(all_human-covered)
-        recommend=bool(remaining and (conflicts or unresolved or new or uncovered))
-        with draft.WRITE_LOCK,Session.begin() as s:
-            job=require(s,BatchJob,jid);record=require(s,SourceLabelDraft,item.id);data=dict(record.data)
-            plan=dict(data['sample_plan']);plan['covered_human_value_ids']=sorted(covered);plan['uncovered_human_value_ids']=uncovered
-            history=list(data.get('model_history',[]));history.append({'text':spec['text_model'],'vision':spec['vision_model'] if spec.get('requires_visual') else None,'generated_at':now(),'product_ids':list(spec['product_ids'])})
-            data.update(sampled_product_ids=sampled,sample_inputs=all_inputs,visual_evidence=visual,standard=standard,sample_plan=plan,model_history=history,
-                coverage={'sample_count':len(sampled),'labeled_count':sum(x['human_value_id'] is not None for x in all_inputs),'unlabeled_count':sum(x['human_value_id'] is None for x in all_inputs),'remaining_count':len(remaining)},
-                last_models={'text':spec['text_model'],'vision':spec['vision_model']},generated_at=now())
-            record.data=data;record.status='expansion_recommended' if recommend else 'needs_answers' if standard.get('questions') else 'review_required';record.revision+=1
-            job.status='completed';metrics['wall_seconds']=__import__('time').perf_counter()-start;job.metrics=metrics;job.completed=list(spec['product_ids'])
-            draft.emit(s,did,'source_label_draft',_view(record));draft.emit(s,did,'job',obj(job));audit(s,did,'source_label_inference_completed',{'draft_id':record.id,'job_id':jid,'sample_count':len(sampled),'expansion_recommended':recommend})
+        standard=_synthesize(item.data['profile'],prior_inputs+inputs,visual,item.data.get('standard'),spec['text_model'],spec.get('text_credential_id'),metrics,lock)
+        _persist_standard(item.id,standard,visual,inputs,metrics,start,jid=jid)
     except Exception as exc:
         with draft.WRITE_LOCK,Session.begin() as s:
             job=require(s,BatchJob,jid);job.status='partial';job.errors={**(job.errors or {}),'job':str(exc)[:500]};job.metrics={**metrics,'wall_seconds':__import__('time').perf_counter()-start}
@@ -371,7 +455,7 @@ def confirm(did,ident,body):
     observed=standard.get('observed_human_values') if isinstance(standard.get('observed_human_values'),list) else []
     discovered=standard.get('model_discovered_candidates') if isinstance(standard.get('model_discovered_candidates'),list) else []
     conflicts=standard.get('conflicts') if isinstance(standard.get('conflicts'),list) else []
-    evidence_fields=list(item.get('evidence_fields') or [])
+    evidence_fields=_canonical_fields(list(item.get('evidence_fields') or []),did)
     formal_fields=[x for x in evidence_fields if x not in (IMAGE_FIELD,TEXT_RECORD_FIELD)]
     if TEXT_RECORD_FIELD in evidence_fields:formal_fields.extend(['title','parameters','sku'])
     formal_fields=list(dict.fromkeys(formal_fields))
