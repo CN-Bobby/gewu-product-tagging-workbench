@@ -30,30 +30,30 @@ def test_unsupported_question_becomes_plain_question(dataset,monkeypatch):
         assert '直接输入回答' in message.text
 
 
-def test_managed_question_accepts_multiple_and_text_once(dataset):
-    from backend import business_questions as questions
+def test_managed_question_accepts_multiple_and_text_once(dataset,monkeypatch):
+    from backend import business_questions as questions,conversation
     from backend.db import Session,Message,WorkbenchMeta,ChatQuestion,uid
-    from sqlalchemy import select
-    from concurrent.futures import ThreadPoolExecutor
-    import time
     did=dataset['id'];mid=uid();turn=uid()
     with Session.begin() as s:
         s.add(Message(id=mid,dataset_id=did,role='assistant',text='',status='running'))
         s.add(WorkbenchMeta(id='active-chat:'+did,dataset_id=did,kind='active_chat_turn',data={'turn_id':turn,'message_id':mid}))
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future=pool.submit(questions.ask,did,'选哪些特征？',['颜色','结构'],True)
-        qid=None
-        for _ in range(100):
-            with Session() as s:
-                q=s.scalar(select(ChatQuestion).where(ChatQuestion.turn_id==turn))
-                if q:qid=q.id;break
-            time.sleep(.02)
-        assert qid
-        first=questions.answer(did,qid,['2','1'],'只看主体')
-        second=questions.answer(did,qid,['1','2'],'只看主体')
-        assert first['id']==second['id'] and first['status']=='answered'
-        result=future.result(timeout=3)
-        assert result['answer']['labels']==['颜色','结构'] and result['approval'] is False
+    asked=questions.ask(did,'选哪些特征？',['颜色','结构'],True)
+    assert asked['status']=='pending' and asked['multiple'] is True and asked['approval'] is False
+    assert asked['options']==['颜色','结构']
+    resumed=[]
+    monkeypatch.setattr(conversation,'_resume_queued',lambda did,key:resumed.append(key))
+    class Immediate:
+        def __init__(self,target=None,args=(),daemon=None,**kw):self.target=target;self.args=args
+        def start(self):self.target(*self.args)
+    monkeypatch.setattr(conversation.threading,'Thread',Immediate)
+    first=questions.answer(did,asked['question_id'],['2','1'],'只看主体')
+    assert first['status']=='answered' and first['selected_label']=='颜色；结构；只看主体'
+    second=questions.answer(did,asked['question_id'],['1','2'],'只看主体')
+    assert second['id']==first['id']
+    with Session() as s:
+        queued=s.get(WorkbenchMeta,'chat-followup:'+did)
+        assert queued and '颜色' in queued.data['text'] and '只看主体' in queued.data['text']
+    assert resumed==['chat-followup:'+did]
 
 
 def test_conversation_images_have_stable_numbers_and_bind_explicitly(dataset):

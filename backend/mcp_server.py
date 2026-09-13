@@ -86,7 +86,7 @@ if not RUN:
 
     @mcp.tool()
     def ask_business_question(question:str,options:list[str]|None=None,multiple:bool=False) -> dict:
-        """Ask one necessary business question; waits for persisted single/multiple/text answer or skip. Never approves changes or runs jobs. At most three questions per turn."""
+        """Ask one necessary business question and return immediately. The persisted web card collects the user's single/multiple/text answer or skip, and the conversation resumes from the next step. Never approves changes or runs jobs. At most three questions per turn."""
         from .business_questions import ask
         return ask(DATASET,question,options,multiple)
 

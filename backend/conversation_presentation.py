@@ -15,7 +15,7 @@ def _is_operation(part):
     first=part.splitlines()[0].strip()
     return any(pattern.search(first) for pattern in OPERATION_PATTERNS)
 
-def build(text,status='completed',error_code=None,error_message=None,technical=None,events=None):
+def build(text,status='completed',error_code=None,error_message=None,technical=None,events=None,started_at=None):
     """Preserve raw text on Message; return a separate compact display contract."""
     business=[];operations=[]
     for part in _paragraphs(text):
@@ -52,6 +52,13 @@ def build(text,status='completed',error_code=None,error_message=None,technical=N
             elif key:
                 positions[key]=len(activity);activity.append(item)
             elif item not in activity:activity.append(item)
+    progress=None
+    if status=='running' or activity:
+        tool_events=[event for event in (events or []) if event.get('type')=='tool']
+        marks=[event['at'] for event in tool_events if event.get('at')]
+        current=next((event.get('title') for event in reversed(tool_events) if event.get('status') in ('pending','in_progress')),None)
+        progress={'started_at':started_at,'last_activity':marks[-1] if marks else started_at,'tool_calls':len(tool_events),
+            'failed_calls':sum(1 for event in tool_events if event.get('status')=='failed'),'current_tool':current}
     return {
         'heading':heading,
         'summary':summary,
@@ -59,4 +66,5 @@ def build(text,status='completed',error_code=None,error_message=None,technical=N
         'activity':activity[-12:],
         'technical_notes':operations[-20:],
         'technical':technical or {},
+        'progress':progress,
     }

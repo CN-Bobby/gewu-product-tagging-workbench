@@ -62,16 +62,22 @@ def _question_record(s,did,turn_id,message_id,event):
     s.add(question);s.flush();return question
 
 def _resume_queued(did,key):
-    for _ in range(600):
+    for _ in range(1200):
         if did not in busy:break
         time.sleep(.05)
     with draft.WRITE_LOCK,Session.begin() as s:
         item=s.get(WorkbenchMeta,key)
         if not item:return
-        payload=dict(item.data);s.delete(item)
+        payload=dict(item.data)
     try:start(did,**payload)
     except Exception as exc:
+        # Keep the queued answer so it is never silently dropped; a repeated answer appends
+        # to it instead of starting a second follow-up.
         with draft.WRITE_LOCK,Session.begin() as s:audit(s,did,'chat_followup_failed',{'exception':type(exc).__name__,'detail':str(exc)[:300]})
+        return
+    with draft.WRITE_LOCK,Session.begin() as s:
+        item=s.get(WorkbenchMeta,key)
+        if item:s.delete(item)
 
 def start(did,text,model=DEFAULT_MODEL,proposal_id=None,vision_model=None,conversation_id=None,attachment_ids=None,text_credential_id=None,vision_credential_id=None):
     attachment_ids=attachment_ids or []
@@ -148,7 +154,7 @@ def run(did,ident,turn_id,text,model,conversation_id=None,vision_model=None,text
             if message.status!='running':return
             if item['type']=='text':
                 message.text=(message.text or '')+item['text']
-                message.presentation=build_presentation(message.text,'running',events=message.events)
+                message.presentation=build_presentation(message.text,'running',events=message.events,started_at=message.created_at)
                 draft.emit(s,did,'chat_chunk',{'id':ident,'text':item['text']})
                 draft.emit(s,did,'message_presentation',{'id':ident,'presentation':message.presentation})
             elif item['type']=='question':
@@ -162,7 +168,11 @@ def run(did,ident,turn_id,text,model,conversation_id=None,vision_model=None,text
                     draft.emit(s,did,'question',obj(question))
             else:
                 safe={k:v for k,v in item.items() if k not in ('rawInput','content')}
-                message.events=(message.events+[safe])[-100:];draft.emit(s,did,'message',obj(message))
+                message.events=(message.events+[safe])[-100:]
+                # Tool activity must reach the card without waiting for the next text chunk.
+                message.presentation=build_presentation(message.text,'running',events=message.events,started_at=message.created_at)
+                draft.emit(s,did,'message_presentation',{'id':ident,'presentation':message.presentation})
+                draft.emit(s,did,'message',obj(message))
     try:
         handoff_context=''
         fingerprint=_runtime_fingerprint(model,vision_model,text_credential_id,vision_credential_id)
@@ -230,7 +240,7 @@ def run(did,ident,turn_id,text,model,conversation_id=None,vision_model=None,text
             client.prompt(handoff_context+text)
         with draft.WRITE_LOCK,Session.begin() as s:
             message=require(s,Message,ident);message.status='completed'
-            message.presentation=build_presentation(message.text,message.status,events=message.events)
+            message.presentation=build_presentation(message.text,message.status,events=message.events,started_at=message.created_at)
             draft.emit(s,did,'message_presentation',{'id':ident,'presentation':message.presentation})
             draft.emit(s,did,'message',obj(message))
     except HarnessError as exc:
@@ -245,13 +255,13 @@ def run(did,ident,turn_id,text,model,conversation_id=None,vision_model=None,text
                 message.text='请补充你的选择：'+fallback['prompt']+('\n\n可参考：'+'；'.join(labels) if labels else '')+'\n\n请直接输入回答，可以选择多项或补充自己的想法；也可以说明跳过这个问题。'
                 message.status='completed';message.error_code=None
                 message.technical={'reason':'unsupported_native_question','recovery':'text_reply','original_code':exc.code}
-                message.presentation=build_presentation(message.text,message.status,events=message.events)
+                message.presentation=build_presentation(message.text,message.status,events=message.events,started_at=message.created_at)
                 draft.emit(s,did,'message',obj(message))
                 audit(s,did,'chat_question_fallback',{'turn_id':turn_id,'reason':'unsupported_native_question'})
                 return
             message.status='interrupted' if exc.code in ('interaction_cancelled','unsupported_question') else 'failed'
             message.error_code=exc.code;message.technical=exc.technical
-            message.presentation=build_presentation(message.text,message.status,exc.code,exc.message,exc.technical,message.events)
+            message.presentation=build_presentation(message.text,message.status,exc.code,exc.message,exc.technical,message.events,message.created_at)
             for question in s.scalars(select(ChatQuestion).where(ChatQuestion.message_id==ident,ChatQuestion.status=='pending')):
                 question.status='cancelled' if exc.code=='interaction_cancelled' else 'interrupted';question.error_code=exc.code
                 draft.emit(s,did,'question',obj(question))
@@ -262,7 +272,7 @@ def run(did,ident,turn_id,text,model,conversation_id=None,vision_model=None,text
         code='reasonix_process_error' if '进程' in str(exc) or '连接已断开' in str(exc) else 'unknown_acp_error'
         with draft.WRITE_LOCK,Session.begin() as s:
             message=require(s,Message,ident);message.status='failed';message.error_code=code;message.technical=technical
-            message.presentation=build_presentation(message.text,message.status,code,ERROR_MESSAGES[code],technical,message.events)
+            message.presentation=build_presentation(message.text,message.status,code,ERROR_MESSAGES[code],technical,message.events,message.created_at)
             draft.emit(s,did,'message_presentation',{'id':ident,'presentation':message.presentation,'error_code':code})
             draft.emit(s,did,'message',obj(message))
     finally:
