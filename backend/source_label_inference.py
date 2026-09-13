@@ -46,6 +46,12 @@ def evidence_options(did):
 def profile(did,header):
     data=draft.sheet(did)
     if header not in data['dataset']['headers']:raise ValueError('来源列不存在')
+    adopted=None
+    with Session() as s:
+        column=next((c for c in s.scalars(select(DraftColumn).where(DraftColumn.dataset_id==did)) if c.definition.get('source_header')==header),None)
+        if column:
+            adopted={'column_id':column.id,'name':column.definition.get('name') or header,'revision':column.revision,
+                'definition':column.definition.get('definition') or ''}
     groups=defaultdict(list);blank_rows=[]
     for row in data['rows']:
         value=row['raw'].get(header)
@@ -77,7 +83,7 @@ def profile(did,header):
         'human_values':human,'distinct_count':len(human),'separator_counts':separator_counts,
         'surface_equivalent_groups':surface_groups,'possible_typo_pairs':typo_pairs,'anomaly_value_ids':anomalies,
         'available_image_count':available_images,'unlabeled_with_image_count':sum(any(a.get('path') for a in r['assets']) for r in blank_rows),
-        'basis':'全量原始值程序统计；同义、错别字和异常项仅为待审核线索，不修改数据',
+        'basis':'全量原始值程序统计；同义、错别字和异常项仅为待审核线索，不修改数据','adopted':adopted,
         'evidence_options':evidence_options(did)}
 
 def _row_fingerprint(row,fields):
@@ -370,11 +376,37 @@ def confirm(did,ident,body):
     if TEXT_RECORD_FIELD in evidence_fields:formal_fields.extend(['title','parameters','sku'])
     formal_fields=list(dict.fromkeys(formal_fields))
     option_items=observed+[x for x in discovered if isinstance(x,dict) and x.get('status')=='supported']
-    result=source_labels.adopt(did,{'header':item['source_header'],'name':item.get('name') or item['source_header'],'definition':standard.get('target'),
+    adoption={'header':item['source_header'],'name':item.get('name') or item['source_header'],'definition':standard.get('target'),
         'options':[x.get('value') for x in option_items if isinstance(x,dict) and isinstance(x.get('value'),str) and x.get('value').strip()],
         'separator':next(iter(item['profile'].get('separator_counts',{})),None) if standard.get('cardinality')=='multiple' else None,
         'source':standard.get('source'),'fields':formal_fields or [item['source_header']],'standard':standard,'standard_draft_id':ident,
-        'conflict_product_ids':[x.get('product_id') for x in conflicts if isinstance(x,dict) and x.get('product_id')]})
+        'conflict_product_ids':[x.get('product_id') for x in conflicts if isinstance(x,dict) and x.get('product_id')]}
+    with Session() as s:
+        existing=next((c for c in s.scalars(select(DraftColumn).where(DraftColumn.dataset_id==did)) if c.definition.get('source_header')==item['source_header']),None)
+        existing_id=existing.id if existing else None
+        existing_definition=dict(existing.definition) if existing else None
+    if existing_id:
+        separator=adoption['separator'];options=adoption['options'];source=adoption['source'];fields=adoption['fields']
+        revised={**existing_definition,'name':adoption['name'],'definition':adoption['definition'],'options':options,
+            'source':source,'method':'manual' if source=='manual' else 'model','cardinality':'multiple' if separator else 'single',
+            'result_shape':'multi_enum' if separator and options else 'scalar_enum' if options else 'scalar_open','separator':separator,
+            'fields':fields,'judgment':{'include':adoption['definition'],'exclude':'不符合标准草案边界时不得命中',
+                'unknown':'来源值不符合定义或证据不足时不覆盖','fields':fields},
+            'inferred_standard':standard}
+        proposal=draft.propose(did,'修订已有标签标准：'+adoption['name'],[{'kind':'revise','column_id':existing_id,'definition':revised}])
+        draft.confirm(did,proposal['id'],confirmation_key='source-label-draft:'+ident)
+        conflicts=set(adoption['conflict_product_ids'])
+        with draft.WRITE_LOCK,Session.begin() as s:
+            column=require(s,DraftColumn,existing_id);cells=list(s.scalars(select(Cell).where(Cell.column_id==existing_id)))
+            for cell in cells:
+                if cell.product_id in conflicts and cell.manual is not None:
+                    cell.status='review';cell.evidence={**(cell.evidence or {}),'consistency_review':True,'standard_draft_id':ident}
+            counts={'protected':sum(cell.manual is not None for cell in cells),'blank':sum(cell.manual is None for cell in cells),
+                'review':sum(cell.manual is not None and cell.status=='review' for cell in cells)}
+            result={**obj(column),'counts':counts,'mode':'revised'}
+    else:
+        result=source_labels.adopt(did,adoption)
+        result['mode']='adopted'
     with draft.WRITE_LOCK,Session.begin() as s:
         record=require(s,SourceLabelDraft,ident);record.status='confirmed';record.confirmed_column_id=result['id'];record.data={**record.data,'standard':standard,'confirmed_at':now()};audit(s,did,'source_label_draft_confirmed',{'draft_id':ident,'column_id':result['id']})
     return result

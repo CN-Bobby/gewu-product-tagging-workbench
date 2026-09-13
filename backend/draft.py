@@ -144,7 +144,7 @@ def validate_definition(d,existing):
     if standard['source'] in ('image','both'):
         from .capabilities import require_visual_tagging
         require_visual_tagging()
-    standard.update({k:copy.deepcopy(d[k]) for k in ('method','depends_on','mapping','bins','fields','cardinality','when','parser','result_shape','target_scope','dimension','product_category','product_forms','input_policy','visual_standard_id','expansion_policy','source_header','adopted_source','adoption_active','fill_empty_only','separator') if k in d})
+    standard.update({k:copy.deepcopy(d[k]) for k in ('method','depends_on','mapping','bins','fields','cardinality','when','parser','result_shape','target_scope','dimension','product_category','product_forms','input_policy','visual_standard_id','expansion_policy','source_header','adopted_source','adoption_active','fill_empty_only','separator','inferred_standard') if k in d})
     if standard.get('cardinality','auto') not in ('auto','single','multiple'):raise ValueError('cardinality需为auto/single/multiple')
     expansion_policy=standard.setdefault('expansion_policy','end_of_task_suggestion')
     if expansion_policy not in ('never','end_of_task_suggestion','manual_only'):raise ValueError('expansion_policy需为never/end_of_task_suggestion/manual_only')

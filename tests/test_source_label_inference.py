@@ -54,3 +54,22 @@ def test_questions_are_optional_and_answers_are_stored_without_confirming(datase
     assert answered['question_answers']==[{'question_index':0,'question':'同款多结构时如何记录？','answer':'允许多选'}]
     assert answered['standard']['review_decisions']==answered['question_answers'] and answered['standard']['questions']==[]
     assert answered['status']=='review_required' and answered['confirmed_column_id'] is None
+
+
+def test_already_adopted_source_can_reverse_infer_and_revise_without_duplicate(dataset):
+    did=dataset['id'];seed_partial_labels(did,total=10)
+    first=source_label_inference.create(did,{'header':'上衣样式','mode':'manual','definition':'按商品资料判断上衣的主要结构样式','evidence_fields':['ASIN']})
+    adopted=source_label_inference.confirm(did,first['id'],{})
+    profile=source_label_inference.profile(did,'上衣样式')
+    assert profile['adopted']['column_id']==adopted['id'] and profile['adopted']['revision']==1
+    second=source_label_inference.create(did,{'header':'上衣样式','mode':'manual','definition':'结合标题和图片判断上衣最主要的结构款式','evidence_fields':['商品标题','__image__']})
+    revised=source_label_inference.confirm(did,second['id'],{})
+    with Session() as session:
+        columns=list(session.scalars(select(DraftColumn).where(DraftColumn.dataset_id==did)))
+        cells=list(session.scalars(select(Cell).where(Cell.column_id==adopted['id'])))
+    assert revised['id']==adopted['id'] and revised['mode']=='revised'
+    assert len(columns)==1 and columns[0].revision==2
+    assert columns[0].definition['definition']=='结合标题和图片判断上衣最主要的结构款式'
+    assert columns[0].definition['inferred_standard']['target']==columns[0].definition['definition']
+    assert sum(cell.manual is not None for cell in cells)==6
+    assert [cell.value for cell in cells[:6]]==['U领运动','U领运动','V领吊带','三角杯','三角杯','斜肩上衣']
