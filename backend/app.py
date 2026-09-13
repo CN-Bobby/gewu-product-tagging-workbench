@@ -79,6 +79,56 @@ def adopt_source_label(did:str,body:dict):
     from .source_labels import adopt
     return adopt(did,body)
 
+@app.get('/api/drafts/{did}/source-label-profile')
+def source_label_profile(did:str,header:str):
+    from .source_label_inference import profile
+    return profile(did,header)
+
+@app.get('/api/drafts/{did}/source-label-drafts')
+def source_label_drafts(did:str):
+    from .source_label_inference import listing
+    return listing(did)
+
+@app.post('/api/drafts/{did}/source-label-drafts')
+def source_label_draft_create(did:str,body:dict):
+    from .source_label_inference import create
+    return create(did,body)
+
+@app.get('/api/drafts/{did}/source-label-drafts/{ident}')
+def source_label_draft_read(did:str,ident:str):
+    from .source_label_inference import read
+    return read(did,ident)
+
+@app.patch('/api/drafts/{did}/source-label-drafts/{ident}')
+def source_label_draft_update(did:str,ident:str,body:dict):
+    from .source_label_inference import update
+    return update(did,ident,body)
+
+@app.post('/api/drafts/{did}/source-label-drafts/{ident}/analyze')
+def source_label_draft_analyze(did:str,ident:str,body:dict):
+    from .source_label_inference import analyze
+    job=analyze(did,ident,body);batch.launch(job['id']);return job
+
+@app.get('/api/drafts/{did}/source-label-drafts/{ident}/expansion-estimate')
+def source_label_draft_expansion_estimate(did:str,ident:str,target_limit:int=60):
+    from .source_label_inference import expansion_estimate
+    return expansion_estimate(did,ident,target_limit)
+
+@app.post('/api/drafts/{did}/source-label-drafts/{ident}/expand')
+def source_label_draft_expand(did:str,ident:str,body:dict):
+    from .source_label_inference import analyze
+    job=analyze(did,ident,body,expansion=True);batch.launch(job['id']);return job
+
+@app.post('/api/drafts/{did}/source-label-drafts/{ident}/answers')
+def source_label_draft_answers(did:str,ident:str,body:dict):
+    from .source_label_inference import answer_questions
+    return answer_questions(did,ident,body.get('answers') or [])
+
+@app.post('/api/drafts/{did}/source-label-drafts/{ident}/confirm')
+def source_label_draft_confirm(did:str,ident:str,body:dict):
+    from .source_label_inference import confirm
+    return confirm(did,ident,body)
+
 @app.post('/api/drafts/{did}/source-labels/{column_id}')
 def source_label_status(did:str,column_id:str,body:dict):
     from .source_labels import set_active

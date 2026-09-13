@@ -91,6 +91,19 @@ def test_validation_failure_keeps_previous_configuration(tmp_path,monkeypatch):
     assert ((home/'config.toml').read_text(),(home/'.env').read_text())==before
 
 
+def test_independent_validation_failure_is_saved_without_losing_configuration(tmp_path,monkeypatch):
+    home=source(tmp_path,monkeypatch)
+    validation={'status':'partial','overall':'partial','validated_at':'test','text_model':'text','vision_model':'vision',
+        'text':{'status':'validated','code':None,'message':'验证通过'},
+        'vision':{'status':'failed','code':'vision_unsupported','message':'模型不支持视觉输入'}}
+    monkeypatch.setattr(model_settings,'validate_models',lambda *args,**kwargs:validation)
+    result=model_settings.save({'name':'test','base_url':'https://test.invalid/v1','text_model':'text','vision_model':'vision','api_key':'saved-secret'})
+    provider=result['providers'][0]
+    assert provider['validation']['status']=='partial'
+    assert provider['credentials'][-1]['validation']['vision']['code']=='vision_unsupported'
+    assert 'saved-secret' not in json.dumps(result) and (home/'config.toml').exists() and (home/'.env').exists()
+
+
 def test_legacy_qualified_model_names_are_migrated(tmp_path,monkeypatch):
     home=source(tmp_path,monkeypatch)
     (home/'config.toml').write_text(

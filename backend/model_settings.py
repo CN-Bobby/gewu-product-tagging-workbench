@@ -7,6 +7,7 @@ when the default reference was assembled.  The helpers below accept both
 forms and persist the canonical provider-local model names.
 """
 import base64
+import io
 import json,os,re,subprocess,tomllib,uuid
 from urllib.parse import urlparse
 from dotenv import dotenv_values
@@ -156,7 +157,22 @@ def defaults():
     return text,'deepseek/deepseek-v4-flash-vision-exp'
 
 
-_TEST_IMAGE='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+def _vision_fixture():
+    """Build a common-provider-safe semantic probe containing no business data."""
+    from PIL import Image,ImageDraw
+    image=Image.new('RGB',(512,512),'white');draw=ImageDraw.Draw(image)
+    draw.ellipse((35,176,155,296),fill=(220,35,45),outline='black',width=5)
+    draw.polygon([(256,166),(190,296),(322,296)],fill=(30,165,75),outline='black')
+    draw.rectangle((357,176,477,296),fill=(35,90,220),outline='black',width=5)
+    buffer=io.BytesIO();image.save(buffer,'JPEG',quality=92);payload=buffer.getvalue()
+    with Image.open(io.BytesIO(payload)) as check:
+        if check.format!='JPEG' or check.size!=(512,512) or check.mode!='RGB':raise RuntimeError('test_fixture_invalid')
+        check.verify()
+    return base64.b64encode(payload).decode()
+
+class ProbeFailure(RuntimeError):
+    def __init__(self,code,message,http_status=None):
+        super().__init__(message);self.code=code;self.http_status=http_status
 
 
 def _safe_response_error(response, capability, secret=''):
@@ -177,37 +193,81 @@ def _safe_response_error(response, capability, secret=''):
     return f'{capability}模型验证失败（HTTP {response.status_code}）{suffix}'
 
 
-def _validate_request(endpoint, api_key, model, capability, content):
+def _response_detail(response,secret=''):
+    text=_safe_response_error(response,'',secret)
+    return text.replace('模型验证失败','').strip('： ')
+
+def _validate_request(endpoint, api_key, model, capability, content, expected_order=None):
     try:
         with httpx.Client(timeout=20) as client:
             response=client.post(endpoint,headers={'Authorization':'Bearer '+api_key,'Content-Type':'application/json'},json={
-                'model':model,'messages':[{'role':'user','content':content}], 'max_tokens':1})
+                'model':model,'messages':[{'role':'user','content':content}], 'max_tokens':32})
     except httpx.TimeoutException as exc:
-        raise ValueError(f'{capability}模型验证超时，请检查服务地址或网络') from exc
+        raise ProbeFailure('network_error',f'{capability}模型验证超时，请检查服务地址或网络') from exc
     except httpx.HTTPError as exc:
-        raise ValueError(f'{capability}模型验证网络失败，请检查服务地址：{exc.__class__.__name__}') from exc
+        raise ProbeFailure('network_error',f'{capability}模型验证网络失败，请检查服务地址：{exc.__class__.__name__}') from exc
+    detail=_response_detail(response,api_key);lower=detail.casefold()
     if response.status_code in (401,403):
-        raise ValueError(f'{capability}模型验证失败（授权无效，HTTP {response.status_code}）')
+        raise ProbeFailure('authentication_failed',f'{capability}模型鉴权失败（HTTP {response.status_code}）',response.status_code)
     if response.status_code==404:
-        raise ValueError(f'{capability}模型验证失败（模型或接口不存在，HTTP 404）')
+        code='model_not_found' if 'model' in lower or '模型' in lower else 'endpoint_not_found'
+        raise ProbeFailure(code,f'{capability}'+('模型名称不存在' if code=='model_not_found' else '接口地址不存在')+'（HTTP 404）',404)
+    if response.status_code==429:raise ProbeFailure('rate_limited',f'{capability}模型验证受到限流（HTTP 429）',429)
+    if capability=='视觉' and response.status_code in (400,415,422) and any(x in lower for x in ('image','vision','multimodal','图片','视觉')):
+        code='test_image_invalid' if any(x in lower for x in ('invalid image','image size','format','decode','尺寸','格式')) else 'vision_unsupported'
+        raise ProbeFailure(code,'视觉模型验证失败：'+('服务拒绝测试图片' if code=='test_image_invalid' else '模型不支持视觉输入'),response.status_code)
     if response.status_code!=200:
-        raise ValueError(_safe_response_error(response,capability,api_key))
+        raise ProbeFailure('provider_error',_safe_response_error(response,capability,api_key),response.status_code)
     try:
         data=response.json()
     except Exception as exc:
-        raise ValueError(f'{capability}模型验证失败：服务返回不是合法 JSON') from exc
+        raise ProbeFailure('response_contract_failed',f'{capability}模型验证失败：服务返回不是合法 JSON',response.status_code) from exc
     if not isinstance(data,dict) or not data.get('choices'):
-        raise ValueError(f'{capability}模型验证失败：服务未返回可用结果')
+        raise ProbeFailure('response_contract_failed',f'{capability}模型验证失败：服务未返回可用结果',response.status_code)
+    if expected_order:
+        raw=data['choices'][0].get('message',{}).get('content')
+        try:value=json.loads(raw) if isinstance(raw,str) else raw
+        except Exception:value=None
+        if not isinstance(value,dict) or value.get('order')!=expected_order:
+            raise ProbeFailure('response_contract_failed','视觉请求成功，但模型没有返回可验证的图形顺序',response.status_code)
+    return data
+
+def _probe(endpoint,api_key,model,capability,content,expected_order=None):
+    checked=__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
+    try:
+        _validate_request(endpoint,api_key,model,capability,content,expected_order)
+        return {'status':'validated','code':None,'message':'验证通过','model':model,'checked_at':checked,'http_status':200}
+    except ProbeFailure as exc:
+        return {'status':'failed','code':exc.code,'message':str(exc),'model':model,'checked_at':checked,'http_status':exc.http_status}
+    except Exception as exc:
+        return {'status':'failed','code':'validator_internal_error','message':'验证程序内部错误：'+type(exc).__name__,'model':model,'checked_at':checked,'http_status':None}
 
 
 def validate_models(base_url, api_key, text_model, vision_model):
-    """Probe both capabilities with non-business, one-token requests."""
+    """Probe text and vision independently, retaining both outcomes."""
     endpoint=base_url.rstrip('/')+'/chat/completions'
-    _validate_request(endpoint,api_key,text_model,'文本','连接测试，仅回复 OK')
-    vision_content=[{'type':'text','text':'连接测试，仅回复 OK'},{'type':'image_url','image_url':{'url':'data:image/png;base64,'+_TEST_IMAGE}}]
-    _validate_request(endpoint,api_key,vision_model,'视觉',vision_content)
-    return {'status':'validated','validated_at':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(),
-            'text_model':text_model,'vision_model':vision_model}
+    text=_probe(endpoint,api_key,text_model,'文本','连接测试，仅回复 OK')
+    try:image=_vision_fixture()
+    except Exception as exc:
+        checked=__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
+        vision={'status':'failed','code':'validator_internal_error','message':'标准测试图片生成或校验失败：'+str(exc),'model':vision_model,'checked_at':checked,'http_status':None}
+    else:
+        order=['circle','triangle','square']
+        vision_content=[{'type':'text','text':'观察图片，从左到右识别三个图形。只返回JSON：{"order":["shape1","shape2","shape3"]}，图形名仅用 circle、triangle、square。'},{'type':'image_url','image_url':{'url':'data:image/jpeg;base64,'+image}}]
+        vision=_probe(endpoint,api_key,vision_model,'视觉',vision_content,order)
+    statuses=[text['status'],vision['status']];overall='validated' if statuses==['validated','validated'] else 'partial' if 'validated' in statuses else 'failed'
+    return {'status':overall,'overall':overall,'validated_at':max(text['checked_at'],vision['checked_at']),
+            'text_model':text_model,'vision_model':vision_model,'text':text,'vision':vision}
+
+def require_validated(model_ref,credential_id,capability):
+    """Reject explicitly failed modern probes without breaking legacy configs."""
+    settings=read();provider_name=normalize_reference(model_ref).partition('/')[0]
+    provider=next((p for p in settings['providers'] if p['name']==provider_name),None)
+    if not provider:raise ValueError('模型服务不存在：'+provider_name)
+    credential=next((x for x in provider.get('credentials',[]) if x.get('id')==credential_id),None) if credential_id else next((x for x in provider.get('credentials',[]) if x.get('id')==provider.get('primary_credential_id')),None)
+    validation=(credential or {}).get('validation') or provider.get('validation') or {};result=validation.get(capability) if isinstance(validation,dict) else None
+    if isinstance(result,dict) and result.get('status')=='failed':raise ValueError(result.get('message') or ('模型'+capability+'能力未通过验证'))
+    return True
 
 
 def _local_input(name, value, label):

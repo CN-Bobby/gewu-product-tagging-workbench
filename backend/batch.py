@@ -170,7 +170,7 @@ def launch(jid):
     with Session() as s:
         job=require(s,BatchJob,jid)
         if job.status!='queued':return False
-        if any(c['definition'].get('source') in ('image','both') for c in job.spec.get('columns',[])):
+        if job.spec.get('requires_visual') or any(c['definition'].get('source') in ('image','both') for c in job.spec.get('columns',[])):
             from .capabilities import require_visual_tagging
             require_visual_tagging()
     with guard:
@@ -190,7 +190,7 @@ def stop(jid,cancel=False):
 def resume(jid):
     with draft.WRITE_LOCK,Session.begin() as s:
         j=require(s,BatchJob,jid)
-        if any(c['definition'].get('source') in ('image','both') for c in j.spec.get('columns',[])):
+        if j.spec.get('requires_visual') or any(c['definition'].get('source') in ('image','both') for c in j.spec.get('columns',[])):
             from .capabilities import require_visual_tagging
             require_visual_tagging()
         if j.status not in ('paused','partial','interrupted'):raise ValueError('任务不可恢复')
@@ -199,7 +199,16 @@ def resume(jid):
     launch(jid)
 
 def execute(jid):
-    with Session() as s:is_text=require(s,BatchJob,jid).spec.get('kind')=='text_facts'
+    with Session() as s:kind=require(s,BatchJob,jid).spec.get('kind')
+    if kind=='source_label_inference':
+        try:
+            from . import source_label_inference
+            with guard:stop_event=active[jid]
+            source_label_inference.execute(jid,stop_event)
+        finally:
+            with guard:active.pop(jid,None)
+        return
+    is_text=kind=='text_facts'
     if is_text:
         try:text_facts.execute(jid)
         except Exception as e:

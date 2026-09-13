@@ -23,6 +23,7 @@ ERROR_MESSAGES={
     'interaction_bridge_error':'Reasonix 需要你选择，但网页未能完成问题交互。请重新发送最后一条消息。',
     'unsupported_question':'当前问题格式不受支持，已转为普通讨论；未执行任何任务。',
     'tool_permission_denied':'Reasonix 尝试调用工作台未开放的工具，已阻止。',
+    'workspace_connection_error':'工作台能力未成功连接，系统将重建本轮原生会话后重试一次。',
     'provider_auth_error':'模型服务授权失败，请检查 API 密钥。',
     'provider_model_error':'模型不存在或不支持当前请求，请检查模型名称。',
     'provider_network_error':'模型服务无法连接或请求超时。',
@@ -96,14 +97,16 @@ def system_prompt():
         return SYSTEM+'\n自动视觉打标以每件商品的一张主图为正式输入；补充套图只供人工核对，不能暗中改变批量判断。先按当前目标观察代表样本，再把用户确认的边界写入标签定义。'
     return SYSTEM+'\n当前部署关闭自动视觉观察和image/both标签提案。可以读取图片是否存在，但不能声称已观察图片像素。'
 
-def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_MODEL,conversation_id=None,vision_credential_id=None):
+def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_MODEL,conversation_id=None,vision_credential_id=None,role='coordinator'):
+    if role not in ('coordinator','worker'):raise ValueError('未知 Reasonix runtime role')
     from .model_settings import normalize_reference
     vision_model=normalize_reference(vision_model)
     path=STORAGE/'harness'/dataset_id/suffix
     path.mkdir(parents=True,exist_ok=True)
     from . import tagging_rules
     bundle=tagging_rules.freeze()
-    (path/'PRODUCT_ANALYST_AGENT.md').write_text(LEGACY_SYSTEM if suffix!='chat' else system_prompt()+'\n\n'+tagging_rules.read('core')+'\n先调用 route_tagging_skill，再用 read_tagging_rules 读取返回的少量模块ID；兼容主题为core/text/attributes/normalization/tools/output。read_worksheet 含文字底稿。判断规则通过 definition.judgment 传递。拆列使用 kind=expand,column_id,attributes，必须由用户从任务末待整理特征中选择。当前Skill版本 '+bundle['version']+' SHA256 '+bundle['sha256'],encoding='utf-8')
+    prompt=LEGACY_SYSTEM if role=='worker' else system_prompt()+'\n\n'+tagging_rules.read('core')+'\n先调用 route_tagging_skill，再用 read_tagging_rules 读取返回的少量模块ID；兼容主题为core/text/attributes/normalization/tools/output。read_worksheet 含文字底稿。判断规则通过 definition.judgment 传递。拆列使用 kind=expand,column_id,attributes，必须由用户从任务末待整理特征中选择。当前Skill版本 '+bundle['version']+' SHA256 '+bundle['sha256']
+    (path/'PRODUCT_ANALYST_AGENT.md').write_text(prompt,encoding='utf-8')
     # Project-scoped config only. Provider credentials and user configuration remain owned by Reasonix.
     from .runtime_isolation import provider_home
     environment={'PYTHONPATH':str(ROOT),'TAG_STORAGE':str(STORAGE),'TAG_PROVIDER_HOME':str(provider_home()),'TAG_DATASET_ID':dataset_id,'PYTHONIOENCODING':'utf-8','TAG_VISION_MODEL':vision_model,'TAG_MCP_PROTOCOL':'draft-v3-skill-'+bundle['sha256'][:12]}
@@ -111,7 +114,9 @@ def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_M
     if vision_credential_id:environment['TAG_VISION_CREDENTIAL_ID']=vision_credential_id
     environment['TAG_DISABLE_VISUAL_TAGGING']=os.environ.get('TAG_DISABLE_VISUAL_TAGGING','0')
     if os.environ.get('TAG_CACHE'):environment['TAG_CACHE']=os.environ['TAG_CACHE']
-    if suffix!='chat':environment.update(TAG_RUN_ID=suffix,TAG_PRODUCT_ID=product_id)
+    if role=='worker':
+        if not suffix or not product_id:raise ValueError('worker runtime 缺少任务或商品身份')
+        environment.update(TAG_RUN_ID=suffix,TAG_PRODUCT_ID=product_id)
     if 'DATABASE_URL' in os.environ:environment['DATABASE_URL']=os.environ['DATABASE_URL']
     plugin='\n[[plugins]]\nname = "product_workbench"\ncommand = '+json.dumps(sys.executable)+'\nargs = ["-m", "backend.mcp_server"]\nauto_start = true\nenv = {'+', '.join(json.dumps(k)+' = '+json.dumps(v) for k,v in environment.items())+'}\n'
     other_plugins=[]
@@ -121,7 +126,10 @@ def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_M
     from .capabilities import visual_tagging_enabled
     if visual_tagging_enabled():names.extend(['inspect_representative_images','view_chat_image'])
     allowed=['mcp_connect__product_workbench']+['mcp__product_workbench__'+n for n in names]
-    denied=['bash','write','edit','task','parallel_tasks','fleet']+['mcp_connect__'+n for n in other_plugins]
+    # Reasonix permits several read-only built-ins even when permissions.mode is
+    # deny, so every non-workbench surface must be denied explicitly.  This is a
+    # hard data-boundary control, not merely a prompt preference.
+    denied=['bash','write','edit','read_file','ls','glob','grep','history','read_session','memory','docs','web','task','parallel_tasks','fleet','install','skills']+['mcp_connect__'+n for n in other_plugins]
     plugin=plugin.replace('auto_start = true','auto_start = true\ntier = "eager"')
     (path/'reasonix.toml').write_text('''[agent]
 system_prompt_file = "PRODUCT_ANALYST_AGENT.md"
@@ -140,10 +148,10 @@ def instruction_hash():
     return hashlib.sha256((system_prompt()+tagging_rules.freeze()['sha256']).encode()).hexdigest()
 
 class ACP:
-    def __init__(self,dataset_id,model=DEFAULT_MODEL,run_id=None,product_id=None,on_event=None,session_id=None,conversation_id=None,vision_model=None,credential_id=None,vision_credential_id=None):
+    def __init__(self,dataset_id,model=DEFAULT_MODEL,run_id=None,product_id=None,on_event=None,session_id=None,conversation_id=None,vision_model=None,credential_id=None,vision_credential_id=None,role='coordinator'):
         from .model_settings import normalize_reference
         model=normalize_reference(model)
-        self.model=model
+        self.model=model;self.vision_model=normalize_reference(vision_model) if vision_model else None
         self.credential_id=credential_id;self.vision_credential_id=vision_credential_id
         from . import tagging_rules
         self.skill_sha256=tagging_rules.freeze()['sha256']
@@ -152,8 +160,12 @@ class ACP:
         self.text=[];self.diagnostics=[]
         self.tool_calls={};self.pending_questions={};self.question_lock=threading.Lock()
         self.current_issue=None;self.last_tool_failure=None;self.user_cancelled=False;self.ask_seen=False;self.question_count=0
+        self.workbench_completed=0;self.workbench_failed=0
+        if role not in ('coordinator','worker'):raise ValueError('未知 Reasonix runtime role')
+        if role=='worker' and (not run_id or not product_id):raise ValueError('worker runtime 缺少任务或商品身份')
+        if role=='coordinator' and (run_id or product_id):raise ValueError('coordinator runtime 不能携带任务或商品身份')
         suffix=run_id or ('chat-'+conversation_id if conversation_id else 'chat')
-        cwd=runtime_dir(dataset_id,suffix,product_id,model if run_id else (vision_model or VISION_MODEL),conversation_id,vision_credential_id)
+        cwd=runtime_dir(dataset_id,suffix,product_id,model if run_id else (vision_model or VISION_MODEL),conversation_id,vision_credential_id,role=role)
         from .runtime_isolation import environment,mark_resumed
         providers={model.partition('/')[0]:credential_id} if credential_id else {}
         if vision_model and vision_credential_id:providers[vision_model.partition('/')[0]]=vision_credential_id
@@ -212,6 +224,10 @@ class ACP:
                             tid=u.get('toolCallId');previous=self.tool_calls.get(tid,{})
                             current={**previous,**{k:u.get(k) for k in ('title','kind','status','rawInput') if u.get(k) is not None}}
                             self.tool_calls[tid]=current
+                            workbench_call=current.get('title')=='use_capability' or 'product_workbench' in str(current.get('title',''))
+                            if workbench_call:
+                                if u.get('status')=='failed':self.workbench_failed+=1
+                                elif u.get('status')=='completed':self.workbench_completed+=1
                             if u.get('status')=='failed':self.last_tool_failure={'tool':current.get('title','工具执行'),'detail':'工具返回失败'}
                             title=current.get('title','工具执行')
                             if title=='use_capability':title='正在读取工作台信息'
@@ -307,11 +323,16 @@ class ACP:
 
     def prompt(self,text):
         self.fallback_question=None
-        self.text=[];self.current_issue=None;self.last_tool_failure=None;self.user_cancelled=False;self.ask_seen=False;self.question_count=0
+        self.text=[];self.current_issue=None;self.last_tool_failure=None;self.user_cancelled=False;self.ask_seen=False;self.question_count=0;self.workbench_completed=0;self.workbench_failed=0
         result=self.rpc('session/prompt',{'sessionId':self.session_id,'prompt':[{'type':'text','text':text}]},timeout=None)
         stop=result.get('stopReason')
         if self.user_cancelled:
             raise HarnessError('interaction_cancelled',technical=self._technical(stop,None))
+        if self.workbench_failed and not self.workbench_completed:
+            visible=''.join(self.text).casefold()
+            markers=('工作台连接','工作台能力','mcp 服务器','mcp服务器','product_workbench','本会话不可用','被禁用','未开放')
+            if any(marker.casefold() in visible for marker in markers):
+                raise HarnessError('workspace_connection_error',technical=self._technical(stop,None))
         if self.current_issue:
             raise HarnessError(self.current_issue['code'],self.current_issue['message'],self._technical(stop,None))
         if stop not in ('end_turn',None):

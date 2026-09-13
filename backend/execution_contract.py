@@ -28,7 +28,7 @@ def model_identity(ref):
 def model_identities(spec):
     result={}
     keys=['text_model']
-    if any(c['definition'].get('source') in ('image','both') for c in spec.get('columns',[])):keys.append('vision_model')
+    if spec.get('requires_visual') or any(c['definition'].get('source') in ('image','both') for c in spec.get('columns',[])):keys.append('vision_model')
     for key in keys:
         result[key]=model_identity(spec.get(key))
     return result

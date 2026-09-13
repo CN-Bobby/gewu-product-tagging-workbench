@@ -48,14 +48,23 @@
     },
     {
       "version": "0.5.0-beta.5",
-      "status": "pending_acceptance",
+      "status": "superseded",
       "artifact_kind": "internal_candidate",
       "commit": "575333ac1b37099b81cd66ae55414f6f623a2385",
       "tag": null,
-      "superseded_by": null,
+      "superseded_by": "0.5.0-beta.6",
       "candidate_installer": "格物工作台-0.5.0-beta.5-candidate.575333ac1b37-安装程序.exe",
       "candidate_sha256": "0edd4007f1f8fbc3fc75d79c72b43b2e8f869af30218b3e3bc95d59efe05e74a",
       "note": "Ask恢复、多项目/多对话、图片对话、多个具名Key与模型选择、商品补充图绑定及已有人工标签原列续打的集成候选；真实商品识别效果与干净Windows安装仍需用户验收。"
+    },
+    {
+      "version": "0.5.0-beta.6",
+      "status": "pending_acceptance",
+      "artifact_kind": "internal_candidate",
+      "commit": null,
+      "tag": null,
+      "superseded_by": null,
+      "note": "标签标准反推、已标与未标混合抽样、审核后接入、模型验证独立状态，以及网页对话/原生会话/后台任务三层隔离的开发候选；尚未构建或发布。"
     }
   ]
 }

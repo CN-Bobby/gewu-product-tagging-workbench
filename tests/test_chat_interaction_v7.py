@@ -60,6 +60,19 @@ def test_permission_denial_reports_tool_name():
     assert code=='tool_permission_denied' and 'bash' in message
 
 
+def test_failed_workbench_connection_takes_precedence_over_forbidden_fallback():
+    client=fake_acp();client.workbench_failed=0;client.workbench_completed=0
+    client.rpc=lambda *_args,**_kwargs:{'stopReason':'end_turn'}
+    def failed_rpc(*_args,**_kwargs):
+        client.text=['product_workbench MCP 服务器在本会话被禁用。']
+        client.workbench_failed=1;client.workbench_completed=0
+        client.current_issue={'code':'tool_permission_denied','message':'Reasonix 尝试调用工作台未开放的工具“bash”，已阻止。'}
+        return {'stopReason':'end_turn'}
+    client.rpc=failed_rpc
+    with pytest.raises(HarnessError) as error:client.prompt('读取工作台')
+    assert error.value.code=='workspace_connection_error'
+
+
 def test_user_cancel_wins_even_if_reasonix_returns_end_turn():
     client=fake_acp()
     def cancelled_rpc(*_args,**_kwargs):

@@ -120,7 +120,8 @@ def test_retry_keeps_successes(dataset,monkeypatch):
     service.record_tags(r['id'],first,[{'key':'color','raw_value':None,'normalized_value':None,'confidence':None,'source':'unknown','evidence':'测试：缺少输入','asset_ids':[]}])
     called=[]
     class Fake:
-        def __init__(self,ds,model,rid,pid):self.pid=pid;called.append(pid)
+        def __init__(self,ds,model,rid,pid,role=None):
+            assert role=='worker';self.pid=pid;called.append(pid)
         def prompt(self,text):raise RuntimeError('controlled network failure')
         def close(self):pass
     monkeypatch.setattr(jobs,'ACP',Fake)

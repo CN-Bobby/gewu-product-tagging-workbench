@@ -12,7 +12,7 @@ def ensure(s,did):
     if not s.get(WorkbenchMeta,marker):
         saved=s.scalar(select(ChatSession).where(ChatSession.dataset_id==did))
         ident=uid()
-        s.add(WorkbenchMeta(id=ident,dataset_id=did,kind='chat_thread',data={'name':'历史对话','deleted':False,'legacy':True,'session_id':saved.session_id if saved else None,'model':saved.model if saved else None,'draft':''}))
+        s.add(WorkbenchMeta(id=ident,dataset_id=did,kind='chat_thread',data={'name':'历史对话','deleted':False,'legacy':True,'model':saved.model if saved else None,'draft':'','active_runtime_id':None}))
         s.add(WorkbenchMeta(id=marker,dataset_id=did,kind='chat_migration',data={'default_id':ident}))
         s.flush()
     return s.get(WorkbenchMeta,marker).data['default_id']
@@ -34,7 +34,7 @@ def listing(did):
 def create(did,name='新对话'):
     if not isinstance(name,str) or not 1<=len(name.strip())<=100:raise ValueError('对话名称需为1–100字')
     with draft.WRITE_LOCK,Session.begin() as s:
-        ensure(s,did);item=WorkbenchMeta(id=uid(),dataset_id=did,kind='chat_thread',data={'name':name.strip(),'deleted':False,'legacy':False,'session_id':None,'model':None,'draft':''})
+        ensure(s,did);item=WorkbenchMeta(id=uid(),dataset_id=did,kind='chat_thread',data={'name':name.strip(),'deleted':False,'legacy':False,'model':None,'draft':'','active_runtime_id':None})
         s.add(item);s.flush();return {**obj(item),**item.data}
 
 
@@ -69,14 +69,16 @@ def update(did,cid,body):
 
 def destroy(did,cid):
     """Permanently delete one recycled conversation without touching shared results."""
-    session_id=None;attachment_paths=[];preserved_attachments=0
+    session_ids=[];attachment_paths=[];preserved_attachments=0
     with draft.WRITE_LOCK,Session.begin() as s:
         item=require(s,WorkbenchMeta,cid)
         if item.dataset_id!=did or item.kind!='chat_thread':raise ValueError('对话不属于此表格')
         if not item.data.get('deleted'):raise ValueError('请先把对话移入回收站，再彻底删除')
         active=s.get(WorkbenchMeta,'active-chat:'+did)
         if active and active.data.get('conversation_id')==cid:raise ValueError('此对话仍在回复，不能删除')
-        session_id=item.data.get('session_id')
+        runtimes=list(s.scalars(select(AgentRuntimeSession).where(AgentRuntimeSession.dataset_id==did,AgentRuntimeSession.conversation_id==cid)))
+        session_ids=[x.native_session_id for x in runtimes if x.native_session_id]
+        for runtime in runtimes:s.delete(runtime)
         turns=[x for x in s.scalars(select(WorkbenchMeta).where(WorkbenchMeta.dataset_id==did,WorkbenchMeta.kind=='chat_turn')) if x.data.get('conversation_id')==cid]
         turn_ids=[x.data.get('turn_id') for x in turns]
         messages=list(s.scalars(select(Message).where(Message.dataset_id==did,Message.turn_id.in_(turn_ids)))) if turn_ids else []
@@ -107,14 +109,15 @@ def destroy(did,cid):
     runtime=(STORAGE/'harness'/did/('chat-'+cid)).resolve()
     harness_root=(STORAGE/'harness'/did).resolve()
     if runtime.parent==harness_root and runtime.is_dir():shutil.rmtree(runtime)
-    if session_id and __import__('re').fullmatch(r'[a-zA-Z0-9_-]+',str(session_id)):
-        session_root=(STORAGE/'datasets'/did/'reasonix'/'sessions').resolve()
-        if session_root.is_dir():
-            for path in session_root.glob(str(session_id)+'.*'):
-                resolved=path.resolve()
-                if resolved.parent==session_root:
-                    if resolved.is_dir():shutil.rmtree(resolved)
-                    elif resolved.is_file():resolved.unlink()
+    for session_id in session_ids:
+        if session_id and __import__('re').fullmatch(r'[a-zA-Z0-9_-]+',str(session_id)):
+            session_root=(STORAGE/'datasets'/did/'reasonix'/'sessions').resolve()
+            if session_root.is_dir():
+                for path in session_root.glob(str(session_id)+'.*'):
+                    resolved=path.resolve()
+                    if resolved.parent==session_root:
+                        if resolved.is_dir():shutil.rmtree(resolved)
+                        elif resolved.is_file():resolved.unlink()
     return {'deleted':True,'conversation_id':cid}
 
 

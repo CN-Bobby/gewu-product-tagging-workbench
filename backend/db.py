@@ -239,6 +239,33 @@ class ChatSession(Record, Base):
     session_id = Column(String)
     model = Column(String)
 
+class AgentRuntimeSession(Record, Base):
+    """Immutable binding between one browser conversation and one native CLI session."""
+    __tablename__ = 'agent_runtime_session'
+    dataset_id = Column(String, ForeignKey('dataset.id'), nullable=False, index=True)
+    conversation_id = Column(String, nullable=False, index=True)
+    native_session_id = Column(String)
+    role = Column(String, default='coordinator')
+    model = Column(String)
+    vision_model = Column(String)
+    text_credential_id = Column(String)
+    vision_credential_id = Column(String)
+    fingerprint = Column(String, nullable=False, index=True)
+    status = Column(String, default='active', index=True)
+    invalid_reason = Column(String)
+    last_used_at = Column(String, default=now)
+
+class SourceLabelDraft(Record, Base):
+    """Reviewable reverse-engineered standard which exists before a formal label column."""
+    __tablename__ = 'source_label_standard_draft'
+    dataset_id = Column(String, ForeignKey('dataset.id'), nullable=False, index=True)
+    source_header = Column(String, nullable=False)
+    revision = Column(Integer, default=1)
+    status = Column(String, default='profiled', index=True)
+    data = Column(JSON, nullable=False, default=dict)
+    job_id = Column(String, ForeignKey('batch_job.id'))
+    confirmed_column_id = Column(String, ForeignKey('draft_column.id'))
+
 class DraftEvent(Base):
     __tablename__ = 'draft_event'
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -310,9 +337,10 @@ def init_db():
             proposal_columns={r[1] for r in src.execute("pragma table_info(change_proposal)").fetchall()} if src.execute("select 1 from sqlite_master where type='table' and name='change_proposal'").fetchone() else set()
             question_table=bool(src.execute("select 1 from sqlite_master where type='table' and name='chat_question'").fetchone())
             v7=question_table and {'turn_id','presentation','error_code','technical'}<=message_columns and {'group_id','group_revision','fingerprint','origin_turn_id','superseded_by','confirmation_key'}<=proposal_columns
-            if (legacy and not migrated) or (migrated and not skill_migrated) or (skill_migrated and not v4) or (v4 and not v5) or (v5 and not v6) or (v6 and not v7):
+            v8=bool(src.execute("select 1 from sqlite_master where type='table' and name='agent_runtime_session'").fetchone()) and bool(src.execute("select 1 from sqlite_master where type='table' and name='source_label_standard_draft'").fetchone())
+            if (legacy and not migrated) or (migrated and not skill_migrated) or (skill_migrated and not v4) or (v4 and not v5) or (v5 and not v6) or (v6 and not v7) or (v7 and not v8):
                 folder=path.parent/'backups';folder.mkdir(exist_ok=True)
-                with sqlite3.connect(folder/('before-'+('v7-' if v6 else 'v6-' if v5 else 'v5-' if v4 else 'v4-' if skill_migrated else 'skill-v3-' if migrated else 'draft-')+uid()+'.db')) as dst:src.backup(dst)
+                with sqlite3.connect(folder/('before-'+('v8-' if v7 else 'v7-' if v6 else 'v6-' if v5 else 'v5-' if v4 else 'v4-' if skill_migrated else 'skill-v3-' if migrated else 'draft-')+uid()+'.db')) as dst:src.backup(dst)
     Base.metadata.create_all(engine)
     if engine.url.get_backend_name()=='sqlite':
         with engine.begin() as conn:
@@ -353,6 +381,19 @@ def init_db():
             for question in s.scalars(select(ChatQuestion).where(ChatQuestion.status=='pending')):
                 question.status='interrupted';question.error_code='reasonix_process_error'
             s.add(Migration(version=7))
+        if not s.get(Migration,8):
+            # Legacy native sessions were created with mutable thread metadata and
+            # possibly the wrong coordinator/worker profile.  Preserve the audit
+            # reference, but never resume them after this migration.
+            for item in s.scalars(select(WorkbenchMeta).where(WorkbenchMeta.kind=='chat_thread')):
+                native=(item.data or {}).get('session_id')
+                if native:
+                    s.add(AgentRuntimeSession(dataset_id=item.dataset_id,conversation_id=item.id,
+                        native_session_id=native,role='coordinator',model=(item.data or {}).get('model'),
+                        vision_model=(item.data or {}).get('vision_model'),fingerprint='legacy:'+item.id,
+                        status='invalid',invalid_reason='legacy_profile_or_cwd'))
+                data=dict(item.data or {});data.pop('session_id',None);data['active_runtime_id']=None;item.data=data
+            s.add(Migration(version=8))
 def obj(record): return {c.name: getattr(record, c.name) for c in record.__table__.columns}
 def require(s, cls, ident):
     result = s.get(cls, ident)

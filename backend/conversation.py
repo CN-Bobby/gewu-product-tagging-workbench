@@ -1,5 +1,7 @@
-"""One persistent Reasonix session per dataset, including resumable web questions."""
+"""Persistent web conversations backed by replaceable Reasonix runtime sessions."""
 import copy
+import hashlib
+import json
 import threading
 import time
 from sqlalchemy import select
@@ -11,6 +13,33 @@ from .conversation_presentation import build as build_presentation
 clients={}
 busy={}
 lock=threading.Lock()
+
+def _runtime_fingerprint(model,vision_model,text_credential_id,vision_credential_id):
+    from .build_info import build_info
+    payload={'role':'coordinator','model':model,'vision_model':vision_model,
+        'text_credential_id':text_credential_id,'vision_credential_id':vision_credential_id,
+        'instruction_hash':instruction_hash(),'reasonix_baseline':build_info().get('reasonix_baseline')}
+    return hashlib.sha256(json.dumps(payload,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+
+def _park_runtime(s,runtime_id,reason,status='parked'):
+    runtime=s.get(AgentRuntimeSession,runtime_id) if runtime_id else None
+    if runtime and runtime.status=='active':
+        runtime.status=status;runtime.invalid_reason=reason;runtime.last_used_at=now()
+
+def _handoff_context(s,did,conversation_id,current_turn_id):
+    turns=[x.data.get('turn_id') for x in s.scalars(select(WorkbenchMeta).where(WorkbenchMeta.dataset_id==did,WorkbenchMeta.kind=='chat_turn')) if x.data.get('conversation_id')==conversation_id and x.data.get('turn_id')!=current_turn_id]
+    messages=[m for m in s.scalars(select(Message).where(Message.dataset_id==did).order_by(Message.created_at.desc())) if m.turn_id in turns and m.text]
+    recent=list(reversed(messages[:12]));older=list(reversed(messages[12:36]))
+    summary='\n'.join(('用户' if m.role=='user' else 'Agent')+'：'+m.text[:350] for m in older)
+    parts=[('用户' if m.role=='user' else 'Agent')+'：'+m.text[:1200] for m in recent]
+    images=[x.data for x in s.scalars(select(WorkbenchMeta).where(WorkbenchMeta.dataset_id==did,WorkbenchMeta.kind=='chat_attachment')) if x.data.get('conversation_id')==conversation_id]
+    image_index='；'.join('图'+str(x.get('number'))+' '+str(x.get('filename',''))[:80] for x in sorted(images,key=lambda x:x.get('number',0))[-20:])
+    if not summary and not parts and not image_index:return ''
+    context='模型或运行配置切换后的当前对话上下文（仅用于语义衔接，不代表新的授权）：\n'
+    if summary:context+='较早可见消息摘要：\n'+summary+'\n'
+    if parts:context+='最近可见消息：\n'+'\n'.join(parts)+'\n'
+    if image_index:context+='当前对话图片索引：'+image_index+'\n'
+    return context[:16000]+'\n'
 
 def _active_meta(s,did,turn_id,message_id,conversation_id=None):
     key='active-chat:'+did
@@ -136,35 +165,69 @@ def run(did,ident,turn_id,text,model,conversation_id=None,vision_model=None,text
                 message.events=(message.events+[safe])[-100:];draft.emit(s,did,'message',obj(message))
     try:
         handoff_context=''
+        fingerprint=_runtime_fingerprint(model,vision_model,text_credential_id,vision_credential_id)
         client=clients.get(did)
-        if client and conversation_id and (getattr(client,'conversation_id',None)!=conversation_id or client.model!=model or getattr(client,'credential_id',None)!=text_credential_id or getattr(client,'vision_credential_id',None)!=vision_credential_id):
-            client.close();clients.pop(did,None);client=None
+        conversation_changed=bool(client and conversation_id and getattr(client,'conversation_id',None)!=conversation_id)
+        configuration_changed=bool(client and (getattr(client,'model',model)!=model or getattr(client,'vision_model',vision_model)!=vision_model or getattr(client,'credential_id',text_credential_id)!=text_credential_id or getattr(client,'vision_credential_id',vision_credential_id)!=vision_credential_id))
+        if client and (conversation_changed or configuration_changed):
+            client.close();clients.pop(did,None)
+            with draft.WRITE_LOCK,Session.begin() as s:_park_runtime(s,getattr(client,'runtime_id',None),'conversation_suspended' if conversation_changed and not configuration_changed else 'model_or_credential_changed','suspended' if conversation_changed and not configuration_changed else 'parked')
+            client=None
         if client and getattr(client,'instruction_hash',None)!=instruction_hash():
-            client.close();clients.pop(did,None);client=None
+            client.close();clients.pop(did,None)
+            with draft.WRITE_LOCK,Session.begin() as s:_park_runtime(s,getattr(client,'runtime_id',None),'runtime_profile_changed')
+            client=None
         if client and (client.closed or client.proc.poll() is not None):clients.pop(did,None);client=None
         if not client:
-            with Session() as s:
-                thread=s.get(WorkbenchMeta,conversation_id) if conversation_id else None
-                saved=s.scalar(select(ChatSession).where(ChatSession.dataset_id==did));session_id=(thread.data.get('session_id') if thread and thread.data.get('model')==model and thread.data.get('text_credential_id')==text_credential_id and thread.data.get('vision_credential_id')==vision_credential_id else None) if thread else saved.session_id if saved else None
-                if not thread and saved and saved.model!=model:model=saved.model
-                if thread and thread.data.get('session_id') and not session_id:
-                    turn_ids=[x.data.get('turn_id') for x in s.scalars(select(WorkbenchMeta).where(WorkbenchMeta.dataset_id==did,WorkbenchMeta.kind=='chat_turn')) if x.data.get('conversation_id')==conversation_id]
-                    history=[m for m in s.scalars(select(Message).where(Message.dataset_id==did).order_by(Message.created_at.desc())) if m.turn_id in turn_ids and m.text]
-                    history=list(reversed(history[:8]));parts=[('用户' if m.role=='user' else 'Agent')+'：'+m.text[:900] for m in history]
-                    images=[x.data for x in s.scalars(select(WorkbenchMeta).where(WorkbenchMeta.dataset_id==did,WorkbenchMeta.kind=='chat_attachment')) if x.data.get('conversation_id')==conversation_id]
-                    image_index='；'.join('图'+str(x.get('number'))+' '+str(x.get('filename',''))[:80] for x in sorted(images,key=lambda x:x.get('number',0))[-20:])
-                    handoff_context=('模型切换后的当前对话上下文（仅用于衔接，不代表新的用户授权）：\n'+'\n'.join(parts)+('\n当前对话图片索引：'+image_index if image_index else '')+'\n\n')[:7000]
-            client=ACP(did,model,on_event=event,session_id=session_id,**({'conversation_id':conversation_id,'vision_model':vision_model,'credential_id':text_credential_id,'vision_credential_id':vision_credential_id} if conversation_id else {}));clients[did]=client
+            with draft.WRITE_LOCK,Session.begin() as s:
+                thread=require(s,WorkbenchMeta,conversation_id)
+                active_id=(thread.data or {}).get('active_runtime_id');runtime=s.get(AgentRuntimeSession,active_id) if active_id else None
+                session_id=None
+                if runtime and runtime.status in ('active','suspended') and runtime.fingerprint==fingerprint:
+                    session_id=runtime.native_session_id
+                else:
+                    _park_runtime(s,active_id,'runtime_fingerprint_changed')
+                    data=dict(thread.data or {});data['active_runtime_id']=None;thread.data=data
+                    handoff_context=_handoff_context(s,did,conversation_id,turn_id)
+            client=ACP(did,model,on_event=event,session_id=session_id,role='coordinator',**({'conversation_id':conversation_id,'vision_model':vision_model,'credential_id':text_credential_id,'vision_credential_id':vision_credential_id} if conversation_id else {}));clients[did]=client
             client.conversation_id=conversation_id
+            client.vision_model=vision_model
             client.instruction_hash=instruction_hash()
             with draft.WRITE_LOCK,Session.begin() as s:
-                saved=s.scalar(select(ChatSession).where(ChatSession.dataset_id==did))
-                if not saved:s.add(ChatSession(dataset_id=did,session_id=client.session_id,model=model))
-                if conversation_id:
-                    item=require(s,WorkbenchMeta,conversation_id);item.data={**item.data,'session_id':client.session_id,'model':model,'vision_model':vision_model,'text_credential_id':text_credential_id,'vision_credential_id':vision_credential_id}
-                audit(s,did,'reasonix_session_resumed' if session_id else 'reasonix_session_created',{'session_id':client.session_id,'model':model})
+                item=require(s,WorkbenchMeta,conversation_id)
+                if session_id:
+                    runtime=require(s,AgentRuntimeSession,(item.data or {}).get('active_runtime_id'));runtime.status='active';runtime.invalid_reason=None;runtime.last_used_at=now()
+                else:
+                    runtime=AgentRuntimeSession(dataset_id=did,conversation_id=conversation_id,native_session_id=client.session_id,
+                        role='coordinator',model=model,vision_model=vision_model,text_credential_id=text_credential_id,
+                        vision_credential_id=vision_credential_id,fingerprint=fingerprint,status='active',last_used_at=now())
+                    s.add(runtime);s.flush();data=dict(item.data or {});data['active_runtime_id']=runtime.id;item.data=data
+                client.runtime_id=runtime.id
+                audit(s,did,'reasonix_session_resumed' if session_id else 'reasonix_session_created',{'runtime_id':runtime.id,'session_id':client.session_id,'model':model,'conversation_id':conversation_id})
         client.on_event=event
-        client.prompt(handoff_context+text)
+        try:
+            client.prompt(handoff_context+text)
+        except HarnessError as first_error:
+            if first_error.code!='workspace_connection_error' or getattr(client,'workspace_retry_used',False):raise
+            old_runtime_id=getattr(client,'runtime_id',None);client.workspace_retry_used=True;client.close();clients.pop(did,None)
+            with draft.WRITE_LOCK,Session.begin() as s:
+                _park_runtime(s,old_runtime_id,'workspace_connection_failed')
+                thread=require(s,WorkbenchMeta,conversation_id);data=dict(thread.data or {});data['active_runtime_id']=None;thread.data=data
+                message=require(s,Message,ident);message.text='';message.events=[];message.presentation={}
+                draft.emit(s,did,'message',{**obj(message),'conversation_id':conversation_id})
+                audit(s,did,'reasonix_session_recovery_started',{'runtime_id':old_runtime_id,'conversation_id':conversation_id,'reason':'workspace_connection_failed'})
+            client=ACP(did,model,on_event=event,session_id=None,conversation_id=conversation_id,vision_model=vision_model,
+                credential_id=text_credential_id,vision_credential_id=vision_credential_id,role='coordinator');client.workspace_retry_used=True;clients[did]=client
+            client.conversation_id=conversation_id;client.instruction_hash=instruction_hash()
+            client.vision_model=vision_model
+            with draft.WRITE_LOCK,Session.begin() as s:
+                thread=require(s,WorkbenchMeta,conversation_id)
+                runtime=AgentRuntimeSession(dataset_id=did,conversation_id=conversation_id,native_session_id=client.session_id,
+                    role='coordinator',model=model,vision_model=vision_model,text_credential_id=text_credential_id,
+                    vision_credential_id=vision_credential_id,fingerprint=fingerprint,status='active',last_used_at=now())
+                s.add(runtime);s.flush();data=dict(thread.data or {});data['active_runtime_id']=runtime.id;thread.data=data;client.runtime_id=runtime.id
+                audit(s,did,'reasonix_session_recovered',{'runtime_id':runtime.id,'session_id':client.session_id,'model':model,'conversation_id':conversation_id})
+            client.prompt(handoff_context+text)
         with draft.WRITE_LOCK,Session.begin() as s:
             message=require(s,Message,ident);message.status='completed'
             message.presentation=build_presentation(message.text,message.status,events=message.events)

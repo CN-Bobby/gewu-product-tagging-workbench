@@ -532,6 +532,7 @@ def confirm(did,ident,scope=None,sample=False,text_model=None,vision_model=None,
                 for cid in ch['column_ids']:
                     source=next((x['definition'].get('source') for x in p.changes if x.get('planned_id')==cid),None)
                     if source is None:source=require(s,DraftColumn,cid).definition.get('source')
+                    if source=='manual':raise ValueError('仅人工标签不能安排自动打标')
                     if source in ('image','both'):require_visual_tagging()
         proposed_ids=list(dict.fromkeys(pid for ch in p.changes if ch['kind']=='execute' for pid in ch['product_ids']))
         execution_scope=None

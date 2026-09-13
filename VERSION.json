@@ -1,7 +1,7 @@
 {
-  "version": "0.5.0-beta.5",
+  "version": "0.5.0-beta.6",
   "channel": "beta",
-  "schema_version": 7,
+  "schema_version": 8,
   "reasonix_baseline": "1.25.1",
   "release_status": "pending_acceptance"
 }

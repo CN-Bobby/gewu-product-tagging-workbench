@@ -12,7 +12,7 @@ class Definition(BaseModel):
     type: Literal['FACT','INTERPRETATION']
     definition: str = Field(min_length=5, max_length=3000)
     options: list[str] = Field(default_factory=list, max_length=100)
-    source: Literal['text','image','both'] = 'both'
+    source: Literal['text','image','both','manual'] = 'both'
 
 class Value(BaseModel):
     model_config=ConfigDict(extra='forbid')
