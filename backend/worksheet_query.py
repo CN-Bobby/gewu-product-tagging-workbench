@@ -95,7 +95,9 @@ def query(did,filters=None,search='',facet=None,save=False,job_id=None):
         with Session() as s:
             j=require(s,BatchJob,job_id)
             if j.dataset_id!=did:raise ValueError('任务不属于数据集')
-            pending=set(j.spec['expected'])-set(j.completed);ids={t.split(':')[0] for t in pending}
+            expected=j.spec.get('expected')
+            if not expected:raise ValueError('该任务没有逐单元格失败范围；反推或文字底稿类任务请用 read_tasks 查看状态')
+            pending=set(expected)-set(j.completed);ids={t.split(':')[0] for t in pending}
         rows=[r for r in rows if r['id'] in ids]
     ids=[r['id'] for r in rows];result={'count':len(ids),'total':len(data['rows']),'product_ids':ids,'sample':[{'id':r['id'],'row':r['row'],'anchor':r['anchor']} for r in rows[:5]],'filters':filters,'search':search}
     if facet:

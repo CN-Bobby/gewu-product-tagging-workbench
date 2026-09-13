@@ -109,6 +109,29 @@ def test_tool_label_uses_the_real_capability_name():
     assert harness._tool_label(None)=='正在读取工作台信息'
 
 
+def test_tool_label_reads_the_capability_proxy_payload():
+    import json as _json
+    call={'action':'call','capability_id':'mcp-tool:product_workbench/read_worksheet','arguments':{}}
+    assert harness._tool_label(call)=='读取工作表'
+    assert harness._tool_label({'action':'inspect','capability_id':'mcp-tool:product_workbench/query_scope'})=='查看能力说明：圈选商品范围'
+    assert harness._tool_label(_json.dumps(call))=='读取工作表'
+    assert harness._tool_label({'action':'call','capability_id':'mcp-tool:product_workbench/nope'})=='正在读取工作台信息'
+    assert harness._tool_label('mcp__product_workbench__ask_business_question')=='业务提问'
+
+
+def test_diagnostics_keep_the_problem_line_over_mcp_info_chatter():
+    client=fake_client()
+    client.diagnostics=['authentication failed for provider "CS" (HTTP 401)']+['Processing request of type ListResourcesRequest']*9
+    assert 'authentication failed' in ' '.join(client._safe_diagnostics())
+
+
+def test_provider_auth_failure_is_not_reported_as_an_unknown_error():
+    client=fake_client()
+    client.diagnostics=['authentication failed for provider "CS" (HTTP 401): WORKBENCH_CS_LEGACY_KEY is invalid or expired']
+    code,message=client._classify_error('error',None)
+    assert code=='provider_auth_error' and '授权' in message
+
+
 def test_generated_config_bounds_the_question_bridge_and_denies_run_skill(dataset):
     did=dataset['id']
     path=harness.runtime_dir(did,'chat-explicit',role='coordinator')

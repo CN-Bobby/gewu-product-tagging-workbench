@@ -24,6 +24,8 @@ TURN_FIRST_EVENT_SECONDS=float(os.environ.get('TAG_TURN_FIRST_EVENT_SECONDS') or
 TURN_SILENCE_SECONDS=float(os.environ.get('TAG_TURN_SILENCE_SECONDS') or (MCP_CALL_TIMEOUT_SECONDS+120))
 TURN_TOTAL_SECONDS=float(os.environ.get('TAG_TURN_TOTAL_SECONDS') or 1200)
 WATCHDOG_TICK_SECONDS=0.1
+# Diagnostics keep only the last few lines; these hints decide which lines deserve them.
+DIAGNOSTIC_HINTS=('error','warn','fail','timeout','timed out','denied','refused','unauthorized','invalid','expired','401','403','404','429','exception','traceback','not found')
 
 ERROR_MESSAGES={
     'interaction_waiting':'Reasonix 正在等待你的选择。',
@@ -53,9 +55,22 @@ _TOOL_LABELS={
 
 def _tool_label(raw):
     """Tool identity must survive to the UI; the capability proxy hides the real name."""
+    data=raw
+    if isinstance(data,str):
+        try:data=json.loads(data)
+        except json.JSONDecodeError:data=data
+    if isinstance(data,dict):
+        action=data.get('action')
+        name=str(data.get('capability_id') or data.get('capability') or '').strip()
+        for prefix in ('mcp-tool:','mcp__'):
+            if name.startswith(prefix):name=name[len(prefix):]
+        if '/' in name:name=name.rsplit('/',1)[1]
+        if name.startswith('product_workbench__'):name=name[len('product_workbench__'):]
+        label=_TOOL_LABELS.get(name)
+        if label:return '查看能力说明：'+label if action=='inspect' else label
+        return '正在读取工作台信息'
     name=str(raw or '')
-    prefix='mcp__product_workbench__'
-    if name.startswith(prefix):name=name[len(prefix):]
+    if name.startswith('mcp__product_workbench__'):name=name[len('mcp__product_workbench__'):]
     return _TOOL_LABELS.get(name,'正在读取工作台信息')
 
 def _redact_text(value,limit=800):
@@ -426,22 +441,25 @@ class ACP:
         return ''.join(self.text)
 
     def _safe_diagnostics(self):
-        result=[]
-        for line in self.diagnostics[-3:]:
+        """Problem lines must survive the window; MCP info chatter otherwise fills it."""
+        cleaned=[]
+        for line in self.diagnostics[-10:]:
             line=line.strip()
             if not line:continue
-            result.append(_redact_text(line,500))
-        return result
+            cleaned.append(_redact_text(line,500))
+        problems=[line for line in cleaned if any(hint in line.lower() for hint in DIAGNOSTIC_HINTS)]
+        return (problems or cleaned)[-3:]
 
     def _classify_error(self,stop,detail):
         if self.user_cancelled:return 'interaction_cancelled',ERROR_MESSAGES['interaction_cancelled']
         issue=self._primary_issue()
         if issue:return issue['code'],issue['message']
         combined=' '.join([str(detail or ''),str((self.last_tool_failure or {}).get('detail','')),*self._safe_diagnostics()])
-        statuses=[int(x) for x in re.findall(r'HTTP/\S+\s+(\d{3})',combined)]
-        if any(x in (401,403) for x in statuses):return 'provider_auth_error',ERROR_MESSAGES['provider_auth_error']
-        if 404 in statuses:return 'provider_model_error',ERROR_MESSAGES['provider_model_error']
         lower=combined.lower()
+        statuses=[int(x) for x in re.findall(r'HTTP(?:\S*\s+)?(\d{3})',combined)]
+        if any(x in (401,403) for x in statuses) or any(x in lower for x in ('authentication failed','unauthorized','invalid or expired','invalid api key','api key is invalid')):
+            return 'provider_auth_error',ERROR_MESSAGES['provider_auth_error']
+        if 404 in statuses:return 'provider_model_error',ERROR_MESSAGES['provider_model_error']
         if 'mcp call timed out' in lower:return 'tool_timeout',ERROR_MESSAGES['tool_timeout']
         if not any(x==200 for x in statuses) and any(x in lower for x in ('model_not_found','unknown model','model does not exist','unsupported model')):
             return 'provider_model_error',ERROR_MESSAGES['provider_model_error']

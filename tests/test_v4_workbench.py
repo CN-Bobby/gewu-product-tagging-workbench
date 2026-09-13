@@ -146,3 +146,13 @@ def test_single_cardinality_preserves_conflicting_candidate_without_expansion(da
     with Session.begin() as s:draft.write_result(s,require(s,BatchJob,j['id']),pid,c,{'normalized_value':['圆领','方领'],'attributes':[{'attribute':'圆领','value':True,'evidence':'候选1'},{'attribute':'方领','value':True,'evidence':'候选2'}]})
     data=draft.state(did);assert data['rows'][0]['cells'][c['id']]['status']=='review'
     assert not any(p['status']=='pending' and p['changes'][0]['kind']=='expand' for p in data['proposals'])
+
+
+def test_query_scope_rejects_a_job_without_cell_scope(dataset):
+    from backend import worksheet_query
+    did=dataset['id']
+    with Session.begin() as s:
+        task=BatchJob(dataset_id=did,status='partial',spec={'kind':'source_label_inference','product_ids':[],'columns':[]})
+        s.add(task);s.flush();task_id=task.id
+    with pytest.raises(ValueError,match='逐单元格'):
+        worksheet_query.query(did,[],job_id=task_id)
