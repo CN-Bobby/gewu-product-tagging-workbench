@@ -10,11 +10,21 @@ from ..db import AgentEvent,AgentSession,Session,now,obj,uid
 
 # --- persistence policy ---------------------------------------------------
 # Persisted: state transitions and outcomes that explain what happened.
-PERSISTED_EVENT_TYPES=frozenset({
+RUNTIME_EVENT_TYPES=frozenset({
     'process_starting','process_started','process_stopping','process_stopped','process_exited',
     'process_killed','request_started','request_completed','request_timeout','request_failed',
     'protocol_error','reader_failed','stderr_failed',
 })
+# Bridge-owned session and turn events, plus the agent output the UI needs.
+BRIDGE_EVENT_TYPES=frozenset({
+    'session_created','session_starting','session_started','session_stopping','session_stopped',
+    'session_failed','message_started','message_completed','message_failed','backend_event_ignored',
+})
+OUTPUT_EVENT_TYPES=frozenset({
+    'assistant_text_delta','assistant_message_completed',
+    'tool_call_started','tool_call_completed','tool_call_failed',
+})
+PERSISTED_EVENT_TYPES=RUNTIME_EVENT_TYPES|BRIDGE_EVENT_TYPES|OUTPUT_EVENT_TYPES
 # Ephemeral: high-frequency bookkeeping and raw stderr stay in the runtime ring buffer.
 EPHEMERAL_EVENT_TYPES=frozenset({'reader_closed','stderr_closed','reader_stopped','stderr_line','stdout_line'})
 SOURCES=frozenset({'runtime','bridge','tool','system','assistant'})
