@@ -109,3 +109,59 @@ def test_answering_after_the_turn_ended_still_resumes(dataset,monkeypatch):
     assert answered['status']=='answered' and answered['selected_label']=='按批次等分'
     with Session() as s:assert s.get(WorkbenchMeta,'chat-followup:'+did)
     assert resumed==['chat-followup:'+did]
+
+
+def test_followup_targets_the_questions_own_conversation(dataset,monkeypatch):
+    did=dataset['id'];recycled=uid();live=uid();turn=uid();qid=uid()
+    with Session.begin() as s:
+        s.add(WorkbenchMeta(id='chat-migrated:'+did,dataset_id=did,kind='chat_migration',data={'default_id':recycled}))
+        s.add(WorkbenchMeta(id=recycled,dataset_id=did,kind='chat_thread',data={'name':'泳衣测试','deleted':True,'legacy':True}))
+        s.add(WorkbenchMeta(id=live,dataset_id=did,kind='chat_thread',data={'name':'新对话','deleted':False,'legacy':False,'model':'deepseek/deepseek-v4-flash'}))
+        s.add(WorkbenchMeta(id='chat-turn:'+turn,dataset_id=did,kind='chat_turn',data={'turn_id':turn,'conversation_id':live}))
+        message=Message(dataset_id=did,turn_id=turn,role='assistant',text='',status='completed');s.add(message);s.flush()
+        s.add(ChatQuestion(id=qid,dataset_id=did,turn_id=turn,message_id=message.id,prompt='范围怎么定？',
+            options=[{'option_id':'1','label':'只补空值'},{'option_id':'2','label':'全部重标'}],status='pending'))
+        s.add(WorkbenchMeta(id='business-question:'+qid,dataset_id=did,kind='business_question',data={'multiple':False,'answer':None}))
+    monkeypatch.setattr(conversation,'_resume_queued',lambda did,key:None)
+    monkeypatch.setattr(conversation.threading,'Thread',ImmediateThread)
+    business_questions.answer(did,qid,['1'])
+    with Session() as s:queued=s.get(WorkbenchMeta,'chat-followup:'+did)
+    assert queued.data['conversation_id']==live
+    assert queued.data['model']=='deepseek/deepseek-v4-flash'
+
+
+def test_resume_keeps_the_answer_when_it_cannot_start(dataset,monkeypatch):
+    did=dataset['id'];key='chat-followup:'+did
+    with Session.begin() as s:s.add(WorkbenchMeta(id=key,dataset_id=did,kind='chat_followup',data={'text':'回答','conversation_id':'gone'}))
+    def explode(*args,**kwargs):raise ValueError('对话不存在或已移入回收站')
+    monkeypatch.setattr(conversation,'start',explode)
+    conversation._resume_queued(did,key)
+    with Session() as s:assert s.get(WorkbenchMeta,key) is not None
+
+
+def test_finished_turn_delivers_a_queued_followup(dataset,monkeypatch):
+    did=dataset['id'];ident=uid()
+    client=ToolClient();client.instruction_hash=instruction_hash()
+    monkeypatch.setitem(conversation.clients,did,client)
+    with Session.begin() as s:
+        s.add(Message(id=ident,dataset_id=did,role='assistant',text='',status='running'))
+        s.add(WorkbenchMeta(id='chat-followup:'+did,dataset_id=did,kind='chat_followup',data={'text':'回答','conversation_id':'any'}))
+    drained=[]
+    monkeypatch.setattr(conversation,'_resume_queued',lambda did,key:drained.append(key))
+    class Immediate:
+        def __init__(self,target=None,args=(),daemon=None,**kwargs):self.target=target;self.args=args
+        def start(self):self.target(*self.args)
+    monkeypatch.setattr(conversation.threading,'Thread',Immediate)
+    conversation.run(did,ident,'turn-drain','读一下工作表','test/model')
+    assert drained==['chat-followup:'+did]
+
+
+def test_resume_reroutes_a_recycled_conversation(dataset,monkeypatch):
+    did=dataset['id'];live=uid();key='chat-followup:'+did
+    with Session.begin() as s:
+        s.add(WorkbenchMeta(id=live,dataset_id=did,kind='chat_thread',data={'name':'新对话','deleted':False,'legacy':False}))
+        s.add(WorkbenchMeta(id=key,dataset_id=did,kind='chat_followup',data={'text':'回答','conversation_id':'recycled-gone'}))
+    started={}
+    monkeypatch.setattr(conversation,'start',lambda did,**payload:started.update(payload) or {'message_id':'m','turn_id':'t'})
+    conversation._resume_queued(did,key)
+    assert started['conversation_id']==live

@@ -25,6 +25,17 @@ def require_thread(s,did,cid=None):
     return item
 
 
+def live_thread(s,did,preferred=None):
+    """Prefer the given conversation, else the most recently used live one, else create one.
+    The migration default can be recycled, so it must never be assumed usable."""
+    item=s.get(WorkbenchMeta,preferred) if preferred else None
+    if item and item.dataset_id==did and item.kind=='chat_thread' and not item.data.get('deleted'):return item
+    item=next((x for x in s.scalars(select(WorkbenchMeta).where(WorkbenchMeta.dataset_id==did,WorkbenchMeta.kind=='chat_thread').order_by(WorkbenchMeta.updated_at.desc())) if not x.data.get('deleted')),None)
+    if item:return item
+    item=WorkbenchMeta(id=uid(),dataset_id=did,kind='chat_thread',data={'name':'问题回答','deleted':False,'legacy':False,'model':None,'draft':'','active_runtime_id':None})
+    s.add(item);s.flush();return item
+
+
 def listing(did):
     with draft.WRITE_LOCK,Session.begin() as s:
         ensure(s,did)

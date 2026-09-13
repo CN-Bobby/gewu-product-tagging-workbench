@@ -69,15 +69,28 @@ def _resume_queued(did,key):
         item=s.get(WorkbenchMeta,key)
         if not item:return
         payload=dict(item.data)
+        # Claim it before starting so the turn's own completion does not queue it twice.
+        s.delete(item)
+        # Its conversation may have been recycled while the answer waited in the queue.
+        from .chat_threads import live_thread
+        thread=live_thread(s,did,payload.get('conversation_id'))
+        if thread.id!=payload.get('conversation_id'):
+            payload['conversation_id']=thread.id
+            audit(s,did,'chat_followup_rerouted',{'from':item.data.get('conversation_id'),'to':thread.id})
     try:start(did,**payload)
     except Exception as exc:
-        # Keep the queued answer so it is never silently dropped; a repeated answer appends
-        # to it instead of starting a second follow-up.
-        with draft.WRITE_LOCK,Session.begin() as s:audit(s,did,'chat_followup_failed',{'exception':type(exc).__name__,'detail':str(exc)[:300]})
+        # Hand the answer back so a later drain can retry it instead of losing it.
+        with draft.WRITE_LOCK,Session.begin() as s:
+            if not s.get(WorkbenchMeta,key):s.add(WorkbenchMeta(id=key,dataset_id=did,kind='chat_followup',data=payload))
+            audit(s,did,'chat_followup_failed',{'exception':type(exc).__name__,'detail':str(exc)[:300]})
         return
-    with draft.WRITE_LOCK,Session.begin() as s:
-        item=s.get(WorkbenchMeta,key)
-        if item:s.delete(item)
+
+
+def _drain_followup(did):
+    key='chat-followup:'+did
+    with Session() as s:
+        if not s.get(WorkbenchMeta,key):return
+    threading.Thread(target=_resume_queued,args=(did,key),daemon=True).start()
 
 def start(did,text,model=DEFAULT_MODEL,proposal_id=None,vision_model=None,conversation_id=None,attachment_ids=None,text_credential_id=None,vision_credential_id=None):
     attachment_ids=attachment_ids or []
@@ -279,6 +292,8 @@ def run(did,ident,turn_id,text,model,conversation_id=None,vision_model=None,text
         with draft.WRITE_LOCK,Session.begin() as s:_clear_active(s,did,turn_id)
         with lock:
             if busy.get(did)==turn_id:busy.pop(did,None)
+        # A queued answer waits for the dataset to go idle; deliver it now that it has.
+        _drain_followup(did)
 
 def answer(did,qid,option_id):
     with draft.WRITE_LOCK,Session.begin() as s:

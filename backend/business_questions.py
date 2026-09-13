@@ -37,19 +37,24 @@ def _answer_sentence(question,payload):
     return '针对上一轮的问题“'+str(question.prompt or '')[:200]+'”，'+('；'.join(parts) or '不作回答')+'。'
 
 
+def _resolve_thread(s,did,question):
+    """A business question outlives its turn, so prefer the turn's own conversation.
+    The migration default can be recycled, and resuming into it would drop the answer."""
+    from .chat_threads import live_thread
+    turn=s.get(WorkbenchMeta,'chat-turn:'+str(question.turn_id or ''))
+    active=s.get(WorkbenchMeta,'active-chat:'+did)
+    preferred=((turn.data or {}).get('conversation_id') if turn else None) or ((active.data or {}).get('conversation_id') if active else None)
+    return live_thread(s,did,preferred)
+
+
 def _queue_followup(s,did,question,payload):
     """Return the follow-up key to resume, or None when one is already queued."""
     key='chat-followup:'+did;text=_answer_sentence(question,payload)
     existing=s.get(WorkbenchMeta,key)
     if existing:
         data=dict(existing.data);data['text']=(str(data.get('text') or '')+'\n'+text)[:20000];existing.data=data;return None
-    active=s.get(WorkbenchMeta,'active-chat:'+did)
-    cid=(active.data.get('conversation_id') if active else None)
-    if not cid:
-        from .chat_threads import ensure
-        cid=ensure(s,did)
-    thread=s.get(WorkbenchMeta,cid);data=dict(thread.data or {}) if thread else {}
-    payload_out={'text':text,'conversation_id':cid}
+    thread=_resolve_thread(s,did,question);data=dict(thread.data or {})
+    payload_out={'text':text,'conversation_id':thread.id}
     for field in ('model','vision_model','text_credential_id','vision_credential_id'):
         if data.get(field):payload_out[field]=data[field]
     s.add(WorkbenchMeta(id=key,dataset_id=did,kind='chat_followup',data=payload_out))
