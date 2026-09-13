@@ -61,10 +61,12 @@
       "version": "0.5.0-beta.6",
       "status": "pending_acceptance",
       "artifact_kind": "internal_candidate",
-      "commit": null,
+      "commit": "2f7bf2b59975ba2cc5693ec346868d470774fe61",
       "tag": null,
       "superseded_by": null,
-      "note": "标签标准反推、已标与未标混合抽样、审核后接入、模型验证独立状态，以及网页对话/原生会话/后台任务三层隔离的开发候选；尚未构建或发布。"
+      "candidate_installer": "格物工作台-0.5.0-beta.6-candidate.2f7bf2b59975-安装程序.exe",
+      "candidate_sha256": "4a5524d07bcd941085c1676d2630139912ebca6a2f73591e50f75cd37167a8a0",
+      "note": "标签标准反推、已标与未标混合抽样、已接入原列的标准修订、模型验证独立状态，以及网页对话/原生会话/后台任务三层隔离候选；包内冷启动与本机beta.5覆盖升级通过，真实模型语义和干净Windows仍待用户验收。"
     }
   ]
 }
