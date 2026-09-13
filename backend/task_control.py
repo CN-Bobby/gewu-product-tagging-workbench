@@ -114,6 +114,12 @@ def get_repair_scope(did,ident):
         if item.dataset_id!=did or item.kind!='repair_scope':raise ValueError('修复范围不属于当前数据集')
         return item.data
 
+def list_repair_scopes(did,limit=10):
+    """A saved repair scope must be discoverable without already knowing its ID."""
+    with Session() as s:
+        items=list(s.scalars(select(WorkbenchMeta).where(WorkbenchMeta.dataset_id==did,WorkbenchMeta.kind=='repair_scope').order_by(WorkbenchMeta.updated_at.desc()).limit(max(1,min(limit,50)))))
+    return [{'repair_scope_id':item.id,**{k:item.data.get(k) for k in ('cell_count','column_count','summary','created_at')}} for item in items]
+
 def validate_repair_scope(s,did,data):
     if data.get('dataset_id') not in (None,did):raise ValueError('修复范围不属于当前数据集')
     for token,expected in data.get('guard',{}).items():

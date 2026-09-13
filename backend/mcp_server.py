@@ -142,7 +142,7 @@ if not RUN:
 
     @mcp.tool()
     def query_scope(filters:list[dict],search:str='',job_id:str|None=None) -> dict:
-        """Preview and save a frozen product scope, never execute. Each filter: column_id (raw:原表头 or stable tag column ID), values optional exact array, states optional [failed/unknown/stale/ready/pending], keywords optional strings, op contains/equals/not_contains/empty/not_empty, match any/all. Same column values OR, columns AND. job_id optionally restricts to unfinished rows of that task. Returns scope_id,count,sample; use scope_id in propose_changes, no need to enumerate IDs."""
+        """Preview and save a frozen product scope, never execute. Each filter: column_id as "raw:<原表头>" for a raw table header (the raw: prefix is required) or a stable tag column ID, values optional exact array, states optional [failed/unknown/stale/ready/pending], keywords optional strings, op contains/equals/not_contains/empty/not_empty, match any/all. Same column values OR, columns AND. job_id optionally restricts to unfinished rows of a cell-scoped task, not reverse-inference or text-record tasks. Returns scope_id,count,sample; put that scope_id on a propose_changes execute change to cover exactly these products."""
         from .worksheet_query import query
         result=query(DATASET,filters,search,save=True,job_id=job_id)
         result.pop('product_ids',None)
@@ -194,10 +194,12 @@ if not RUN:
             return {'proposals':[obj(x) for x in s.scalars(select(Proposal).where(Proposal.dataset_id==DATASET).order_by(Proposal.created_at.desc()).limit(10))],'jobs':jobs,'note':'这里只返回任务摘要；人工修正不删除任务记录。详细单元格执行来源通过 read_product_source 读取。'}
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True,destructiveHint=False,openWorldHint=False))
-    def read_repair_scope(repair_scope_id:str) -> dict:
-        """Read an immutable server-resolved failed-cell scope, including exact per-column products and impact counts."""
-        from .task_control import get_repair_scope
-        return get_repair_scope(DATASET,repair_scope_id)
+    def read_repair_scope(repair_scope_id:str|None=None) -> dict:
+        """Read an immutable server-resolved failed-cell scope, including exact per-column products and impact counts. Omit repair_scope_id to list the scopes already saved for this dataset."""
+        from .task_control import get_repair_scope,list_repair_scopes
+        if repair_scope_id:return get_repair_scope(DATASET,repair_scope_id)
+        scopes=list_repair_scopes(DATASET)
+        return {'scopes':scopes,'instruction':'传入 repair_scope_id 查看明细；新的失败修复请用 propose_failed_repair，失败任务用 read_tasks 查看。' if scopes else '当前没有已保存的修复范围；先用 read_tasks 查看失败任务，再用 propose_failed_repair 创建。'}
 
     @mcp.tool()
     def propose_failed_repair(job_ids:list[str],tokens:list[str]|None=None,definitions:dict|None=None) -> dict:

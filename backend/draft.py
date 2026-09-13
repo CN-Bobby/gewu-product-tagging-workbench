@@ -338,6 +338,13 @@ def propose(did,title,changes,origin_turn_id=None,use_active_turn=False):
                 saved=s.get(WorkbenchMeta,change['repair_scope_id'])
                 if not saved or saved.dataset_id!=did or saved.kind!='repair_scope':raise ValueError('修复范围不存在或不属于当前数据集')
                 change['targets']=saved.data.get('targets',[])
+            if change.get('kind')=='execute' and change.get('scope_id') and change.get('targets') is not None:
+                # query_scope tells the agent to hand back a scope_id instead of enumerating IDs;
+                # targets must therefore be able to inherit that scope.
+                from .worksheet_query import resolve_scope
+                scoped=resolve_scope(s,did,change['scope_id'])
+                for target in change['targets']:
+                    if isinstance(target,dict) and not target.get('product_ids'):target['product_ids']=list(scoped)
             if change.get('kind')=='execute' and change.get('targets') is not None:
                 targets=change['targets']
                 if not isinstance(targets,list) or not targets:raise ValueError('targets需要至少一个列范围')
@@ -345,7 +352,7 @@ def propose(did,title,changes,origin_turn_id=None,use_active_turn=False):
                 for target in targets:
                     if not isinstance(target,dict) or not isinstance(target.get('column_id'),str):raise ValueError('target需要column_id')
                     cid=target['column_id'];ids=target.get('product_ids',[])
-                    if not isinstance(ids,list) or not ids:raise ValueError('每个target都需要非空product_ids')
+                    if not isinstance(ids,list) or not ids:raise ValueError('每个target都需要非空product_ids，或在change上提供scope_id/repair_scope_id')
                     if cid in target_ids:raise ValueError('targets中的column_id不可重复')
                     target_ids[cid]=list(dict.fromkeys(ids));all_ids.extend(ids)
                 change['column_ids']=list(target_ids);change['target_product_ids']=target_ids;change['product_ids']=list(dict.fromkeys(all_ids))
@@ -385,7 +392,7 @@ def propose(did,title,changes,origin_turn_id=None,use_active_turn=False):
                 change['expected_revision']=col.revision
                 change['definition']=copy.deepcopy(col.definition)
             elif kind=='execute':
-                if not change.get('column_ids') or any(x not in cols for x in change['column_ids']):raise ValueError('请选择当前草稿中的标签列')
+                if not change.get('column_ids') or any(x not in cols for x in change['column_ids']):raise ValueError('请选择当前草稿中的标签列（execute 需要 column_ids，或在 targets 中给每列 column_id）')
                 if len(change['column_ids'])!=1 and not change.get('target_product_ids'):raise ValueError('多列执行必须使用targets为每列明确商品范围')
                 if any(cols[x].definition.get('source') in ('image','both') for x in change['column_ids']):
                     from .capabilities import require_visual_tagging

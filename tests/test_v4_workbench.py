@@ -156,3 +156,39 @@ def test_query_scope_rejects_a_job_without_cell_scope(dataset):
         s.add(task);s.flush();task_id=task.id
     with pytest.raises(ValueError,match='逐单元格'):
         worksheet_query.query(did,[],job_id=task_id)
+
+
+def test_execute_targets_can_inherit_a_saved_scope(dataset):
+    from backend import worksheet_query
+    did=dataset['id'];c=add(did,'scoped')
+    scope=worksheet_query.query(did,[],save=True)
+    proposal=draft.propose(did,'按范围执行',[{'kind':'execute','scope_id':scope['scope_id'],'targets':[{'column_id':c['id']}]}])
+    jobs=draft.confirm(did,proposal['id'])
+    assert len(jobs)==1
+    assert len(jobs[0]['spec']['expected'])==scope['count']==10
+
+
+def test_execute_target_without_products_names_the_scope_option(dataset):
+    did=dataset['id'];c=add(did,'needscope')
+    with pytest.raises(ValueError,match='scope_id'):
+        draft.propose(did,'缺范围',[{'kind':'execute','targets':[{'column_id':c['id']}]}])
+
+
+def test_repair_scopes_are_listable_without_an_id(dataset):
+    from backend import task_control
+    did=dataset['id']
+    with Session.begin() as s:
+        s.add(WorkbenchMeta(id='repair:'+uid(),dataset_id=did,kind='repair_scope',
+            data={'cell_count':3,'column_count':1,'summary':[{'name':'上衣样式','failed':3}],'created_at':'2026-09-13T00:00:00'}))
+    rows=task_control.list_repair_scopes(did)
+    assert len(rows)==1 and rows[0]['repair_scope_id'].startswith('repair:')
+    assert rows[0]['cell_count']==3 and rows[0]['column_count']==1
+    assert task_control.list_repair_scopes('missing')==[]
+
+
+def test_query_requires_the_raw_prefix_for_table_headers(dataset):
+    from backend import worksheet_query
+    did=dataset['id']
+    assert worksheet_query.query(did,[{'column_id':'raw:ASIN','op':'not_empty'}])['count']>0
+    with pytest.raises(ValueError,match='筛选列不存在'):
+        worksheet_query.query(did,[{'column_id':'ASIN','op':'not_empty'}])
