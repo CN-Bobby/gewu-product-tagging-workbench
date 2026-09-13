@@ -18,7 +18,8 @@ RUNTIME_EVENT_TYPES=frozenset({
 # Bridge-owned session and turn events, plus the agent output the UI needs.
 BRIDGE_EVENT_TYPES=frozenset({
     'session_created','session_starting','session_started','session_stopping','session_stopped',
-    'session_failed','message_started','message_completed','message_failed','backend_event_ignored',
+    'session_failed','message_started','message_completed','message_failed',
+    'message_cancel_requested','message_cancelled','backend_event_ignored',
 })
 OUTPUT_EVENT_TYPES=frozenset({
     'assistant_text_delta','assistant_message_completed',

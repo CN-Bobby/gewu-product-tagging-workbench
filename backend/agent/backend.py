@@ -15,6 +15,28 @@ from typing import Callable, Protocol, runtime_checkable
 EventSink=Callable[[dict],None]
 
 
+class BackendError(Exception):
+    """Base for every failure a backend declares. ``fatal`` is the only thing the bridge reads
+    to decide whether the session survives, so no caller has to inspect text or codes."""
+    fatal=False
+    def __init__(self,message='',detail=None):
+        self.detail=detail
+        super().__init__(message or type(self).__name__)
+
+
+class TurnError(BackendError):
+    """One turn failed. The session and its runtime are still usable."""
+
+
+class CancelledError(BackendError):  # noqa: A001 - the contract name, not asyncio's
+    """The turn was cancelled on request. The session stays active."""
+
+
+class RuntimeUnavailable(BackendError):
+    """The backend can no longer do any work; the session must be rebuilt or recovered."""
+    fatal=True
+
+
 @runtime_checkable
 class AgentBackend(Protocol):
     """Minimal capability set. One backend instance serves exactly one agent session."""
@@ -26,7 +48,11 @@ class AgentBackend(Protocol):
         """Bring the runtime up. Raise on failure; the caller turns that into a session failure."""
 
     def send(self,text:str) -> None:
-        """Run one turn. Report deltas and completion through the sink before returning."""
+        """Run one turn. Report deltas and completion through the sink before returning.
+        Declared failures use BackendError subclasses so the caller knows if it is fatal."""
+
+    def cancel(self) -> None:
+        """Abort the turn in flight without discarding the backend session."""
 
     def stop(self) -> None:
         """Release the runtime. Must tolerate being called more than once."""
