@@ -1,5 +1,4 @@
 """Reasonix ACP v1 client. Real CLI sessions, tool events, cancellation and scoped MCP."""
-import concurrent.futures
 import hashlib
 import json
 import os
@@ -13,6 +12,8 @@ import tomllib
 import uuid
 from pathlib import Path
 from .db import ROOT, STORAGE, now
+from .agent import protocol
+from .agent.runtime import Runtime
 
 DEFAULT_MODEL='deepseek/deepseek-v4-flash'
 VISION_MODEL='deepseek/deepseek-v4-flash-vision-exp'
@@ -216,9 +217,9 @@ class ACP:
         providers={model.partition('/')[0]:credential_id} if credential_id else {}
         if vision_model and vision_credential_id:providers[vision_model.partition('/')[0]]=vision_credential_id
         isolated_env=environment(dataset_id,session_id,providers)
-        self.proc=subprocess.Popen([executable(),'acp','--model',model],cwd=cwd,env=isolated_env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8',errors='replace',bufsize=1,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-        threading.Thread(target=self._read,daemon=True).start()
-        threading.Thread(target=self._stderr,daemon=True).start()
+        self.runtime=Runtime(executable(),['acp','--model',model],cwd=cwd,env=isolated_env,
+            on_event=self._handle_message,on_diagnostic=self._on_diagnostic,on_lifecycle=self._on_lifecycle)
+        self.proc=self.runtime.start()
         try:
             from .build_info import VERSION
             self.capabilities=self.rpc('initialize',{'protocolVersion':1,'clientCapabilities':{},'clientInfo':{'name':'product-workbench','version':VERSION}},timeout=60)
@@ -240,108 +241,84 @@ class ACP:
         except Exception:
             self.close();raise
 
-    def _send(self,msg):
-        with self.lock:
-            if self.proc.poll() is not None:raise RuntimeError('Reasonix 进程已退出')
-            self.proc.stdin.write(json.dumps(msg,ensure_ascii=False)+'\n');self.proc.stdin.flush()
+    def _send(self,msg):self.runtime.send(msg)
 
-    def rpc(self,method,params,timeout=900):
-        with self.lock:
-            self.counter+=1;ident=self.counter
-            future=concurrent.futures.Future();self.pending[ident]=future
-        self._send({'jsonrpc':'2.0','id':ident,'method':method,'params':params})
-        try:return future.result(timeout=timeout)
-        except concurrent.futures.TimeoutError:raise RuntimeError(f'Reasonix {method} 超时，可重试未完成项')
-        finally:self.pending.pop(ident,None)
+    def rpc(self,method,params,timeout=900):return self.runtime.request(method,params,timeout)
 
-    def _read(self):
-        try:
-            for line in self.proc.stdout:
-                try:msg=json.loads(line)
-                except json.JSONDecodeError:continue
-                if 'method' in msg:
-                    if msg['method']=='session/update':
-                        u=msg.get('params',{}).get('update',{})
-                        kind=u.get('sessionUpdate')
-                        # Any ACP update is real activity, including hidden reasoning:
-                        # a long think must not be reported as a stalled turn.
-                        if self.first_event_at is None:self.first_event_at=time.monotonic()
-                        self.last_activity=time.monotonic()
-                        if kind=='agent_message_chunk':
-                            text=u.get('content',{}).get('text','');self.text.append(text)
-                            self.on_event({'type':'text','text':text})
-                        elif kind in ('tool_call','tool_call_update'):
-                            tid=u.get('toolCallId');previous=self.tool_calls.get(tid,{})
-                            current={**previous,**{k:u.get(k) for k in ('title','kind','status','rawInput') if u.get(k) is not None}}
-                            self.tool_calls[tid]=current
-                            workbench_call=current.get('title')=='use_capability' or 'product_workbench' in str(current.get('title',''))
-                            if workbench_call:
-                                if u.get('status')=='failed':self.workbench_failed+=1
-                                elif u.get('status')=='completed':self.workbench_completed+=1
-                                self._note_tool_result(u.get('status'),True)
-                            if u.get('status')=='failed':self.last_tool_failure={'tool':current.get('title','工具执行'),'detail':'工具返回失败'}
-                            label=_tool_label(current.get('rawInput'))
-                            if current.get('title')=='ask':label='等待你的选择'
-                            self.on_event({'type':'tool','title':label,'status':u.get('status'),'toolCallId':tid,'at':now()})
-                        # Deliberately do not store/emit agent_thought_chunk.
-                    elif 'id' in msg:
-                        if msg['method']=='session/request_permission':
-                            question=self._business_question(msg)
-                            if question and not question.get('error'):
-                                with self.question_lock:self.pending_questions[question['id']]={**question,'request_id':msg['id']}
-                                self.ask_seen=True;self.question_count+=1;self.on_event(question)
-                            elif question:
-                                raw=msg.get('params',{}).get('toolCall',{}).get('rawInput',{})
-                                if isinstance(raw,str):
-                                    try:raw=json.loads(raw)
-                                    except ValueError:raw={}
-                                if isinstance(raw,dict) and str(raw.get('question','')).strip():
-                                    # Permission responses accept one wire option only. Preserve
-                                    # unsupported questions for a normal, subsequent chat answer.
-                                    self.fallback_question={'prompt':str(raw['question'])[:1000], 'options':raw.get('options',[]) if isinstance(raw.get('options'),list) else []}
-                                self._register_issue('unsupported_question',question['error'])
-                                self._send({'jsonrpc':'2.0','id':msg['id'],'result':{'outcome':{'outcome':'cancelled'}}})
-                                self.on_event({'type':'interaction_error','code':'unsupported_question','title':question['error']})
-                            else:
-                                tool=(msg.get('params',{}).get('toolCall',{}).get('title') or '未知工具').split()[0]
-                                self._register_issue('tool_permission_denied',f'Reasonix 尝试调用工作台未开放的工具“{tool}”，已阻止。')
-                                self.on_event({'type':'permission_denied','code':'tool_permission_denied','title':self.current_issue['message']})
-                                self._send({'jsonrpc':'2.0','id':msg['id'],'result':{'outcome':{'outcome':'cancelled'}}})
-                        else:self._send({'jsonrpc':'2.0','id':msg['id'],'error':{'code':-32601,'message':'Client method not supported'}})
-                elif 'id' in msg:
-                    f=self.pending.get(msg['id'])
-                    if f and not f.done():
-                        if 'error' in msg:f.set_exception(RuntimeError(str(msg['error'].get('message','ACP error'))))
-                        else:f.set_result(msg.get('result',{}))
-        finally:
-            with self.question_lock:
-                interrupted=list(self.pending_questions.values());self.pending_questions.clear()
-            for question in interrupted:self.on_event({'type':'question_interrupted','id':question['id'],'code':'reasonix_process_error'})
-            for f in list(self.pending.values()):
-                if not f.done():f.set_exception(RuntimeError('Reasonix 连接已断开'))
+    def _handle_message(self,message):
+        if protocol.method_of(message)==protocol.SESSION_UPDATE:
+            update=protocol.update_of(message);kind=protocol.update_kind(update)
+            # Any ACP update is real activity, including hidden reasoning:
+            # a long think must not be reported as a stalled turn.
+            if self.first_event_at is None:self.first_event_at=time.monotonic()
+            self.last_activity=time.monotonic()
+            if kind=='agent_message_chunk':
+                text=protocol.chunk_text(update);self.text.append(text)
+                self.on_event({'type':'text','text':text})
+            elif kind in ('tool_call','tool_call_update'):
+                tid=protocol.tool_call_id(update);current=protocol.merge_tool_state(self.tool_calls.get(tid,{}),update)
+                self.tool_calls[tid]=current;status=protocol.tool_status(update)
+                if protocol.is_capability_proxy(current):
+                    if status=='failed':self.workbench_failed+=1
+                    elif status=='completed':self.workbench_completed+=1
+                    self._note_tool_result(status,True)
+                if status=='failed':self.last_tool_failure={'tool':current.get('title','工具执行'),'detail':'工具返回失败'}
+                label=_tool_label(current.get('rawInput'))
+                if current.get('title')=='ask':label='等待你的选择'
+                self.on_event({'type':'tool','title':label,'status':status,'toolCallId':tid,'at':now()})
+            # Deliberately do not store/emit agent_thought_chunk.
+            return
+        if protocol.method_of(message)==protocol.PERMISSION and 'id' in message:
+            params=protocol.params_of(message)
+            question=self._business_question(message)
+            if question and not question.get('error'):
+                with self.question_lock:self.pending_questions[question['id']]={**question,'request_id':message['id']}
+                self.ask_seen=True;self.question_count+=1;self.on_event(question)
+            elif question:
+                raw=protocol.permission_raw_input(params) or {}
+                if str(raw.get('question','')).strip():
+                    # Permission responses accept one wire option only. Preserve
+                    # unsupported questions for a normal, subsequent chat answer.
+                    self.fallback_question={'prompt':str(raw['question'])[:1000],'options':raw.get('options',[]) if isinstance(raw.get('options'),list) else []}
+                self._register_issue('unsupported_question',question['error'])
+                self._send(protocol.response(message['id'],{'outcome':{'outcome':'cancelled'}}))
+                self.on_event({'type':'interaction_error','code':'unsupported_question','title':question['error']})
+            else:
+                tool=protocol.permission_tool_title(params).split()[0]
+                self._register_issue('tool_permission_denied',f'Reasonix 尝试调用工作台未开放的工具“{tool}”，已阻止。')
+                self.on_event({'type':'permission_denied','code':'tool_permission_denied','title':self.current_issue['message']})
+                self._send(protocol.response(message['id'],{'outcome':{'outcome':'cancelled'}}))
+            return
+        if 'id' in message:self._send(protocol.error_response(message['id'],protocol.METHOD_NOT_FOUND,protocol.CLIENT_UNSUPPORTED))
+
+    def _on_diagnostic(self,kind,line):
+        # M1 keeps the previous behaviour for stdout parse failures: the runtime reports them
+        # and keeps its own bounded list, while this caller still ignores them. Only stderr
+        # feeds the bounded diagnostic window.
+        if kind!='stderr':return
+        # Bounded diagnostics kept in memory, never expose credentials or global config.
+        self.diagnostics.append(line[-500:]);self.diagnostics=self.diagnostics[-10:]
+
+    def _on_lifecycle(self,kind):
+        if kind!='reader_stopped':return
+        with self.question_lock:
+            interrupted=list(self.pending_questions.values());self.pending_questions.clear()
+        for question in interrupted:self.on_event({'type':'question_interrupted','id':question['id'],'code':'reasonix_process_error'})
 
     def _business_question(self,msg):
-        params=msg.get('params',{});tool=params.get('toolCall',{});tid=str(tool.get('toolCallId',''))
+        params=protocol.params_of(msg);tool=protocol.permission_tool(params);tid=str(tool.get('toolCallId',''))
         if not (tid.startswith('ask-') and tool.get('kind')=='other'):return None
-        raw=tool.get('rawInput')
-        if isinstance(raw,str):
-            try:raw=json.loads(raw)
-            except json.JSONDecodeError:raw=None
+        raw=protocol.permission_raw_input(params)
         if not isinstance(raw,dict):return {'error':'Reasonix 提问缺少结构化内容，已停止等待。'}
         prompt=str(raw.get('question','')).strip();header=str(raw.get('header','')).strip();options=raw.get('options')
-        if raw.get('multi') is True or raw.get('multiSelect') is True:return {'error':'当前网页暂不支持多选问题，请让 Reasonix 改为单选后重试。'}
+        if protocol.is_multi_question(raw):return {'error':'当前网页暂不支持多选问题，请让 Reasonix 改为单选后重试。'}
         if self.question_count>=3:return {'error':'单次回复的问题超过3个，请合并关键选择后重试。'}
         if not str(raw.get('id','')).strip() or not prompt or not isinstance(options,list) or not 2<=len(options)<=3:return {'error':'问题需要有效标识和2至3个互斥选项。'}
-        offered=[x for x in params.get('options',[]) if isinstance(x,dict) and x.get('kind')=='allow_once']
+        offered=protocol.allow_once_options(params)
         if len(offered)!=len(options):return {'error':'Reasonix 问题选项与 ACP 返回通道不一致。'}
         result=[]
         for raw_option,wire in zip(options,offered):
-            if isinstance(raw_option,str):label=raw_option;description=''
-            elif isinstance(raw_option,dict):
-                label=raw_option.get('label') or raw_option.get('Label') or raw_option.get('name') or raw_option.get('title')
-                description=raw_option.get('description') or raw_option.get('Description') or raw_option.get('detail') or ''
-            else:label='';description=''
-            wire_id=wire.get('optionId') or wire.get('option_id')
+            label,description=protocol.option_text(raw_option);wire_id=protocol.wire_option_id(wire)
             if not str(label or '').strip() or not wire_id:
                 return {'error':'Reasonix 问题包含无效选项。'}
             result.append({'option_id':str(wire_id),'label':str(label).strip()[:200],'description':str(description).strip()[:500]})
@@ -354,7 +331,7 @@ class ACP:
             if not question:raise ValueError('问题已结束或 Reasonix 会话已中断')
             offered={x['option_id'] for x in question['options']}
             if option_id not in offered:raise ValueError('所选答案不属于当前问题')
-            self._send({'jsonrpc':'2.0','id':question['request_id'],'result':{'outcome':{'outcome':'selected','optionId':option_id}}})
+            self._send(protocol.response(question['request_id'],{'outcome':{'outcome':'selected','optionId':option_id}}))
             self.pending_questions.pop(question_id,None)
         return question
 
@@ -362,14 +339,9 @@ class ACP:
         with self.question_lock:
             questions=list(self.pending_questions.values());self.pending_questions.clear()
         for question in questions:
-            try:self._send({'jsonrpc':'2.0','id':question['request_id'],'result':{'outcome':{'outcome':'cancelled'}}})
+            try:self._send(protocol.response(question['request_id'],{'outcome':{'outcome':'cancelled'}}))
             except (RuntimeError,OSError):pass
         return [q['id'] for q in questions]
-
-    def _stderr(self):
-        for line in self.proc.stderr:
-            # Bounded diagnostics kept in memory, never expose credentials or global config.
-            self.diagnostics.append(line[-500:]);self.diagnostics=self.diagnostics[-10:]
 
     def _register_issue(self,code,message,weight=None):
         """Recoverable tool refusals must not outlive later proof that the workspace works."""
@@ -476,7 +448,7 @@ class ACP:
     def cancel(self):
         if self.session_id and not self.closed:
             self.user_cancelled=True;self.cancel_questions()
-            try:self._send({'jsonrpc':'2.0','method':'session/cancel','params':{'sessionId':self.session_id}})
+            try:self._send(protocol.notification('session/cancel',{'sessionId':self.session_id}))
             except (RuntimeError,OSError):pass
 
     def close(self):
@@ -485,13 +457,7 @@ class ACP:
             try:self.rpc('session/close',{'sessionId':self.session_id},timeout=5)
             except (RuntimeError,OSError):pass
         self.closed=True
-        if self.proc.poll() is None:
-            self.proc.terminate()
-            try:self.proc.wait(timeout=8)
-            except subprocess.TimeoutExpired:self.proc.kill()
-        for stream in (self.proc.stdin,self.proc.stdout,self.proc.stderr):
-            try:stream.close()
-            except (OSError,ValueError):pass
+        self.runtime.stop()
 
 def status():
     try:
