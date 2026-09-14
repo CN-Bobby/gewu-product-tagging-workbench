@@ -30,7 +30,7 @@ DIAGNOSTIC_EVENT_TYPES=frozenset({'backend_event_ignored'})
 BRIDGE_EMITTED_TYPES=SESSION_EVENT_TYPES|MESSAGE_EVENT_TYPES|DIAGNOSTIC_EVENT_TYPES
 OUTPUT_SOURCE_BY_TYPE={
     'assistant_text_delta':ASSISTANT_SOURCE,'assistant_message_completed':ASSISTANT_SOURCE,
-    'tool_call_started':TOOL_SOURCE,'tool_call_completed':TOOL_SOURCE,'tool_call_failed':TOOL_SOURCE,
+    'tool_call_started':TOOL_SOURCE,'tool_call_settled':TOOL_SOURCE,
 }
 OUTPUT_FIELDS_EXCLUDED=('type','session_id','timestamp','source')
 

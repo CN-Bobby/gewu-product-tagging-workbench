@@ -22,7 +22,11 @@ KNOWN_MODES={'normal','hang','silent','exit','noise','crash_after_prompt','noisy
              'initialize_fail','session_new_fail','close_exit_1','protocol_version_mismatch',
              'no_resume_capability','no_reload_capability','resume_fail','resume_invalid',
              'resume_no_echo','reload_fail','reload_invalid',
-             'prompt_fail','prompt_multi','prompt_extra','prompt_slow','tool_failed_context_cancelled'}
+             'prompt_fail','prompt_multi','prompt_extra','prompt_slow','tool_failed_context_cancelled',
+             'tool_dup_start','tool_dup_settle','tool_flip_status','tool_orphan_update',
+             'tool_non_pending_start','tool_missing_status','tool_unknown_status','tool_multi',
+             'tool_internal','tool_discovery','tool_handler_failed',
+             'tool_missing_status_then_terminal','tool_unknown_start_then_terminal'}
 _MODE_ARG=sys.argv[1] if len(sys.argv)>1 else None
 MODE=_MODE_ARG if _MODE_ARG in KNOWN_MODES else (os.environ.get('STUB_MODE') or 'normal')
 LOG=os.environ.get('STUB_LOG')
@@ -66,6 +70,27 @@ def chunk(text):
         'update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':text}}}}
 
 
+def tool_call_frame(call_id,capability='mcp-tool:probe/slow_probe',status='pending',
+                    action='call',title='use_capability',arguments=None,raw=None):
+    """A tool_call frame shaped like the real wire. status=None omits the field entirely."""
+    update={'sessionUpdate':'tool_call','toolCallId':call_id,'title':title,'kind':'other'}
+    if status is not None:update['status']=status
+    if raw is not None:update['rawInput']=raw
+    elif title=='use_capability':
+        payload={'action':action}
+        if capability is not None:payload['capability_id']=capability
+        if arguments is not None:payload['arguments']=arguments
+        update['rawInput']=payload
+    return {'jsonrpc':'2.0','method':'session/update','params':{'update':update}}
+
+
+def tool_update_frame(call_id,status,text=None):
+    update={'sessionUpdate':'tool_call_update','toolCallId':call_id,'status':status}
+    if text is not None:
+        update['content']=[{'type':'content','content':{'type':'text','text':text}}]
+    return {'jsonrpc':'2.0','method':'session/update','params':{'update':update}}
+
+
 def prompt_stream():
     """What one turn emits before its response. Default keeps the original four-update stream."""
     if MODE=='tool_failed_context_cancelled':
@@ -73,15 +98,67 @@ def prompt_stream():
         # It is NOT a full session/cancel fixture — the turn here still ends with end_turn, because
         # the cancel lifecycle belongs to a later step. Its one purpose is to show that a host
         # failure is not upgraded into a claim about the tool's physical execution.
-        emit({'jsonrpc':'2.0','method':'session/update','params':{'update':{
-            'sessionUpdate':'tool_call','toolCallId':'call_cancel_1','title':'use_capability',
-            'kind':'other','status':'pending',
-            'rawInput':{'action':'call','capability_id':'mcp-tool:probe/slow_probe',
-                        'arguments':{'seconds':10,'label':'cancelled'}}}}})
-        emit({'jsonrpc':'2.0','method':'session/update','params':{'update':{
-            'sessionUpdate':'tool_call_update','toolCallId':'call_cancel_1','status':'failed',
-            'content':[{'type':'content','content':{'type':'text','text':'context canceled'}}]}}})
+        emit(tool_call_frame('call_cancel_1',arguments={'seconds':10,'label':'cancelled'}))
+        emit(tool_update_frame('call_cancel_1','failed','context canceled'))
         emit(chunk('after-cancel'))
+        return
+    if MODE=='tool_handler_failed':
+        # The other real failed shape: the handler itself raised, so the host reports a tool error.
+        emit(tool_call_frame('call_raised',arguments={'label':'B'}))
+        emit(tool_update_frame('call_raised','failed',
+             'plugin tool reported error: Error executing tool slow_probe: probe handler failure for B'))
+        return
+    if MODE=='tool_missing_status_then_terminal':
+        # A start that never opened an outward lifecycle must not be closed by a later terminal.
+        emit(tool_call_frame('call_void',status=None))
+        emit(tool_update_frame('call_void','completed','no start was ever reported'))
+        return
+    if MODE=='tool_unknown_start_then_terminal':
+        emit(tool_call_frame('call_running',status='running'))
+        emit(tool_update_frame('call_running','failed','no start was ever reported'))
+        return
+    if MODE=='tool_dup_start':
+        emit(tool_call_frame('call_dup',arguments={'n':1}))
+        emit(tool_call_frame('call_dup',arguments={'n':1}))
+        emit(tool_update_frame('call_dup','completed','once'))
+        return
+    if MODE=='tool_dup_settle':
+        emit(tool_call_frame('call_dup'))
+        emit(tool_update_frame('call_dup','completed','first'))
+        emit(tool_update_frame('call_dup','completed','second'))
+        return
+    if MODE=='tool_flip_status':
+        emit(tool_call_frame('call_flip'))
+        emit(tool_update_frame('call_flip','completed','first'))
+        emit(tool_update_frame('call_flip','failed','second'))
+        return
+    if MODE=='tool_orphan_update':
+        emit(tool_update_frame('call_orphan','completed','nobody started me'))
+        return
+    if MODE=='tool_non_pending_start':
+        emit(tool_call_frame('call_late',status='completed'))
+        return
+    if MODE=='tool_missing_status':
+        emit(tool_call_frame('call_void',status=None))
+        return
+    if MODE=='tool_unknown_status':
+        emit(tool_call_frame('call_running'))
+        emit(tool_update_frame('call_running','running','still going'))
+        return
+    if MODE=='tool_multi':
+        emit(tool_call_frame('call_A',arguments={'n':'A'}))
+        emit(tool_call_frame('call_B',arguments={'n':'B'}))
+        emit(tool_update_frame('call_B','completed','B done'))
+        emit(tool_update_frame('call_A','failed','A done'))
+        emit(chunk('after-tools'))
+        return
+    if MODE=='tool_internal':
+        emit(tool_call_frame('call_goal',title='update_goal',raw={'status':'complete'}))
+        emit(tool_update_frame('call_goal','failed','no goal turn'))
+        return
+    if MODE=='tool_discovery':
+        emit(tool_call_frame('call_list',action='list'))
+        emit(tool_update_frame('call_list','completed'))
         return
     if MODE=='prompt_multi':
         for text in ('你','好','M3B3','_OK'):emit(chunk(text))

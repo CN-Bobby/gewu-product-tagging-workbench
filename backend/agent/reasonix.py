@@ -22,6 +22,9 @@ PROVIDER='reasonix'
 PROTOCOL_VERSION=1
 MESSAGE_CHUNK='agent_message_chunk'
 TOOL_CALL_KINDS=('tool_call','tool_call_update')
+TOOL_CALL_KIND='tool_call'
+TOOL_PENDING='pending'
+TOOL_TERMINAL_STATUSES=('completed','failed')
 TOOL_CALL_CAPACITY=50
 INITIALIZE_TIMEOUT_SECONDS=60.0
 SESSION_TIMEOUT_SECONDS=90.0
@@ -355,7 +358,7 @@ class ReasonixAdapter:
         update=protocol.update_of(message)
         kind=protocol.update_kind(update)
         if kind in TOOL_CALL_KINDS:
-            self._classify_tool_frame(update)
+            self._note_tool_frame(update)
             return
         if kind!=MESSAGE_CHUNK:
             key=kind or 'unknown'
@@ -366,27 +369,67 @@ class ReasonixAdapter:
         self._turn_text.append(text)
         self._emit({'type':'assistant_text_delta','text':text})
 
-    def _classify_tool_frame(self,update):
-        """Classify tool activity for diagnostics only.
+    def _note_tool_frame(self,update):
+        """Track one tool frame and, when it qualifies, report its host lifecycle.
 
-        Nothing is emitted: a wire status is the host's disposition for that call, not evidence
-        about what the tool itself did, so turning it into a workbench tool outcome would assert
-        something this adapter cannot know. The call id is the only correlation key, so a call and
-        its updates are merged under it and never under the tool name.
+        Only a real MCP invocation has a workbench lifecycle, and only a start frame can establish
+        that: an update carries no rawInput, so it can never identify itself and must never be used
+        to promote a call. Each call reports at most one start and one settle; a repeat or a later
+        contradicting terminal stays a diagnostic, because the wire has only been verified to go
+        pending -> completed|failed.
         """
         call_id=protocol.tool_call_id(update)
         if not call_id:return None
-        state=protocol.merge_tool_state(self._tool_calls.get(call_id,{}),update)
-        self._tool_calls[call_id]=state
-        while len(self._tool_calls)>TOOL_CALL_CAPACITY:
-            self._tool_calls.pop(next(iter(self._tool_calls)))
-        return protocol.classify_tool_call(self._tool_calls[call_id])
+        record=self._tool_calls.get(call_id)
+        if record is None:
+            record={'state':{},'started':False,'settled':False}
+            self._tool_calls[call_id]=record
+            while len(self._tool_calls)>TOOL_CALL_CAPACITY:
+                self._tool_calls.pop(next(iter(self._tool_calls)))
+        record['state']=protocol.merge_tool_state(record['state'],update)
+        classification=protocol.classify_tool_call(record['state'])
+        if classification!=protocol.CLASS_MCP_TOOL_CALL:return classification
+        if protocol.update_kind(update)==TOOL_CALL_KIND:self._start_tool_call(call_id,record,update)
+        else:self._settle_tool_call(call_id,record,update)
+        return classification
+
+    def _start_tool_call(self,call_id,record,update):
+        """Open the outward lifecycle, but only once and only if the start was really delivered."""
+        if record['started']:return False
+        status=protocol.tool_status(update)
+        if status!=TOOL_PENDING:return False
+        record['started']=self._emit(self._tool_event('tool_call_started',call_id,record['state'],status))
+        return record['started']
+
+    def _settle_tool_call(self,call_id,record,update):
+        """Close a lifecycle that was actually opened outward: a classified call is not the same
+        fact as a started one, so an unreported start can never be followed by a reported end."""
+        if record['settled'] or not record['started']:return False
+        status=protocol.tool_status(update)
+        if status not in TOOL_TERMINAL_STATUSES:return False
+        record['settled']=self._emit(self._tool_event('tool_call_settled',call_id,record['state'],status))
+        return record['settled']
+
+    def _tool_event(self,event_type,call_id,state,status):
+        """The first-version lifecycle payload: identity and the host status, nothing else.
+
+        Tool inputs and outputs are deliberately absent — everything written here is persisted, and
+        no retention, size or redaction policy has been decided for business data yet. Fields can
+        be added later without changing an event name.
+        """
+        raw_input=state.get('rawInput') if isinstance(state.get('rawInput'),dict) else {}
+        target=protocol.mcp_tool_target(raw_input)
+        event={'type':event_type,'tool_call_id':call_id,'host_status':status}
+        if target is not None:event['server'],event['tool']=target
+        capability_id=raw_input.get('capability_id')
+        if isinstance(capability_id,str) and capability_id:event['capability_id']=capability_id
+        return event
 
     def _tool_class_counts(self):
         """Distinct calls seen, grouped by classification. Nothing here claims an outcome."""
         counts={}
-        for state in self._tool_calls.values():
-            key=protocol.classify_tool_call(state)
+        for record in self._tool_calls.values():
+            key=protocol.classify_tool_call(record['state'])
             counts[key]=counts.get(key,0)+1
         return counts
 

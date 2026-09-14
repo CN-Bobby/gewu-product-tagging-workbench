@@ -801,18 +801,16 @@ def test_a_turn_after_a_completion_only_failure_can_succeed(workspace,request_lo
     assert 'session/resume' not in methods and 'session/load' not in methods
 
 
-# --- M3B-4A: tool classification is internal bookkeeping only --------------
+# --- M3B-4A: tool classification feeds diagnostics -------------------------
 
-TOOL_EVENT_NAMES=('tool_call_started','tool_call_completed','tool_call_failed','tool_call_settled')
+TOOL_EVENT_NAMES=('tool_call_started','tool_call_settled')
 
 
-def test_tool_frames_are_classified_but_never_emitted(workspace,request_log,adapters):
-    """A real MCP invocation is recognized, and still produces no workbench tool event."""
+def test_tool_frames_are_classified_for_diagnostics(workspace,request_log,adapters):
     adapter=make(workspace,request_log,opened=adapters)
-    events=collect(adapter)
+    collect(adapter)
     adapter.start()
     adapter.send('hi')
-    assert not [kind for kind in kinds(events) if kind in TOOL_EVENT_NAMES]
     assert adapter.diagnostics()['tool_classes']=={'mcp_tool_call':1}
     assert adapter.diagnostics()['tool_frames_seen']==1
 
@@ -824,17 +822,3 @@ def test_a_non_mcp_capability_call_is_counted_without_a_tool_event(workspace,req
     adapter.send('hi')
     assert not [kind for kind in kinds(events) if kind in TOOL_EVENT_NAMES]
     assert adapter.diagnostics()['tool_classes']=={'other_capability':1}
-
-
-def test_a_host_failed_tool_frame_is_never_reported_as_a_tool_failure(workspace,request_log,adapters):
-    """This fixture replays only the host-failed frame ("context canceled"), not a full cancel
-    lifecycle — the turn still ends with end_turn. What it guards is that the adapter emits no
-    tool event for it, least of all a failure."""
-    adapter=make(workspace,request_log,mode='tool_failed_context_cancelled',opened=adapters)
-    events=collect(adapter)
-    adapter.start()
-    adapter.send('hi')
-    assert not [kind for kind in kinds(events) if kind in TOOL_EVENT_NAMES]
-    assert adapter.diagnostics()['tool_classes']=={'mcp_tool_call':1}
-    assert kinds(events)[-1]=='assistant_message_completed'
-    assert [e['text'] for e in events if e.get('type')=='assistant_text_delta']==['after-cancel']

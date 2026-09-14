@@ -246,7 +246,7 @@ EXPECTED_BRIDGE_EVENTS=(
     'session_failed','message_started','message_completed','message_failed',
     'message_cancel_requested','message_cancelled','backend_event_ignored',
     'assistant_text_delta','assistant_message_completed',
-    'tool_call_started','tool_call_completed','tool_call_failed')
+    'tool_call_started','tool_call_settled')
 
 
 def test_every_bridge_emitted_event_type_is_in_the_persistence_policy():
@@ -278,4 +278,17 @@ def test_an_undocumented_output_type_is_recorded_as_ignored():
     ignored=[row['payload']['backend_type'] for row in events.read(sid)
              if row['event_type']=='backend_event_ignored']
     assert ignored==['assistant_bogus','tool_bogus']
+    assert bridge.get_session(sid)['status']=='active'
+
+
+def test_the_removed_tool_event_names_cannot_come_back_as_events():
+    """The two names M3B-4B deleted must never be accepted again: no alias, no quiet mapping, and
+    no persisted event under those names. A backend that still sends them is recorded as a
+    contract violation instead, and the session is unaffected."""
+    bridge,backends,sid=active('normal',tool_events=('tool_call_completed','tool_call_failed'))
+    assert bridge.send(sid,'你好')['event_type']=='message_completed'
+    rows=[(row['event_type'],row['payload'].get('backend_type')) for row in events.read(sid)]
+    assert ('backend_event_ignored','tool_call_completed') in rows
+    assert ('backend_event_ignored','tool_call_failed') in rows
+    assert not [row for row in rows if row[0] in ('tool_call_completed','tool_call_failed')]
     assert bridge.get_session(sid)['status']=='active'

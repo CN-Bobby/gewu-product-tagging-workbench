@@ -168,10 +168,10 @@ def test_21_a_cancelled_turn_flushes_what_is_left():
 
 
 def test_22_and_23_tool_events_are_not_coalesced_and_do_not_touch_the_text_buffer():
-    bridge,backends,sid=active('normal',tool_events=('tool_call_started','tool_call_completed'),reply=('甲','乙'))
+    bridge,backends,sid=active('normal',tool_events=('tool_call_started','tool_call_settled'),reply=('甲','乙'))
     bridge.send(sid,'带工具')
     rows=[(row['event_type'],row['source']) for row in events.read(sid)]
-    assert rows[-5:]==[('tool_call_started','tool'),('tool_call_completed','tool'),
+    assert rows[-5:]==[('tool_call_started','tool'),('tool_call_settled','tool'),
                        ('assistant_text_delta','assistant'),('assistant_message_completed','assistant'),
                        ('message_completed','bridge')]
     assert [payload['text'] for payload in payloads_of(sid,'assistant_text_delta')]==['甲乙']

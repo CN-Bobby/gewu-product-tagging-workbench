@@ -7,8 +7,12 @@ Codex or Qoder adapter, or the fake backend the tests use.
 
 Event types a backend may report through the sink:
   assistant_text_delta, assistant_message_completed,
-  tool_call_started, tool_call_completed, tool_call_failed
+  tool_call_started, tool_call_settled
 Anything else is treated as a contract violation and recorded as backend_event_ignored.
+
+Tool events describe the host's own lifecycle for one invocation, never the tool's physical
+execution: ``tool_call_settled`` carries the host status, which a cancelled turn reports as
+``failed`` while the real tool keeps running.
 """
 from typing import Callable, Protocol, runtime_checkable
 
