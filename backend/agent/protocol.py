@@ -67,7 +67,15 @@ def update_of(message):return params_of(message).get('update') or {}
 def update_kind(update):return update.get('sessionUpdate')
 def chunk_text(update):return (update.get('content') or {}).get('text','')
 def tool_call_id(update):return update.get('toolCallId')
-def tool_status(update):return update.get('status')
+
+def tool_status(update):
+    """The Reasonix host status on the wire: pending / completed / failed.
+
+    Host observable state only. ``failed`` can mean the host stopped waiting while the real tool
+    kept running, so it is never evidence about what the tool actually did.
+    """
+    value=update.get('status') if isinstance(update,dict) else None
+    return value if isinstance(value,str) and value else None
 
 def merge_tool_state(previous,update):
     """tool_call / tool_call_update only carry the fields they change."""
@@ -105,3 +113,97 @@ def option_text(option):
         description=option.get('description') or option.get('Description') or option.get('detail') or ''
         return label,description
     return '',''
+
+
+# --- Reasonix capability / tool classification ----------------------------
+#
+# One tool frame is NOT one tool execution: a single turn can carry several, and only a capability
+# call whose target is an MCP tool corresponds to a workbench tool invocation at all. The status on
+# the wire is the host's disposition for that call, never evidence about what the underlying tool
+# did — a cancelled turn reports ``failed`` while the tool keeps running. These helpers therefore
+# parse and classify only; nothing here infers an execution outcome.
+
+CAPABILITY_PROXY='use_capability'
+CAPABILITY_CALL='call'
+DISCOVERY_ACTIONS=('list','inspect','decline')
+MCP_TOOL_SCHEME='mcp-tool'
+
+CLASS_CAPABILITY_DISCOVERY='capability_discovery'
+CLASS_MCP_TOOL_CALL='mcp_tool_call'
+# Anything that is not the capability proxy. The members observed so far (update_goal, ask) are
+# Reasonix-internal tools, but the wire only proves "this is not the capability proxy", so the
+# class claims exactly that and nothing stronger.
+CLASS_NON_CAPABILITY_TOOL='non_capability_tool'
+CLASS_OTHER_CAPABILITY='other_capability'
+CLASS_UNKNOWN='unknown'
+
+
+def capability_action(raw_input):
+    """The proxy action (``list``/``inspect``/``decline``/``call``), or None when unusable."""
+    value=raw_input.get('action') if isinstance(raw_input,dict) else None
+    return value if isinstance(value,str) and value else None
+
+
+def capability_target(raw_input):
+    """Parse ``<scheme>:<server>/<tool>`` into a ``(scheme,server,tool)`` tuple.
+
+    Anything that does not parse returns None: a malformed identifier must degrade to
+    "unidentified" instead of raising or being mistaken for a real MCP tool.
+    """
+    value=raw_input.get('capability_id') if isinstance(raw_input,dict) else None
+    if not isinstance(value,str):return None
+    scheme,colon,remainder=value.partition(':')
+    if not colon or not scheme or not remainder:return None
+    server,slash,tool=remainder.partition('/')
+    if not slash or not server or not tool:return None
+    return (scheme,server,tool)
+
+
+def mcp_tool_target(raw_input):
+    """The ``(server,tool)`` of a real MCP tool invocation, or None for everything else."""
+    target=capability_target(raw_input)
+    return None if target is None or target[0]!=MCP_TOOL_SCHEME else (target[1],target[2])
+
+
+def tool_arguments(raw_input):
+    """The invocation arguments exactly as sent, or None when absent or not an object.
+
+    Nothing is serialized, rewritten, dropped or redacted here; whether any of it may be persisted
+    is a separate concern.
+    """
+    value=raw_input.get('arguments') if isinstance(raw_input,dict) else None
+    return value if isinstance(value,dict) else None
+
+
+def classify_tool_call(update):
+    """Which kind of tool activity one frame describes.
+
+    Pass a ``tool_call`` frame, or a state merged across a call and its updates, so the title and
+    rawInput survive. The status is deliberately not consulted: a failed call is the same kind of
+    call as a successful one.
+    """
+    if not isinstance(update,dict):return CLASS_UNKNOWN
+    title=update.get('title')
+    if not isinstance(title,str) or not title:return CLASS_UNKNOWN
+    if title!=CAPABILITY_PROXY:return CLASS_NON_CAPABILITY_TOOL
+    raw_input=update.get('rawInput')
+    action=capability_action(raw_input)
+    if action in DISCOVERY_ACTIONS:return CLASS_CAPABILITY_DISCOVERY
+    if action==CAPABILITY_CALL and mcp_tool_target(raw_input) is not None:return CLASS_MCP_TOOL_CALL
+    return CLASS_OTHER_CAPABILITY
+
+
+def normalize_tool_content(update):
+    """Content blocks of a tool update: known text lifted, unknown blocks preserved verbatim.
+
+    Deliberately not ``tool_result_text``: the wire is not guaranteed to carry text, so a
+    structured or future block shape survives untouched instead of being flattened away.
+    """
+    raw=update.get('content') if isinstance(update,dict) else None
+    items=raw if isinstance(raw,list) else ([] if raw is None else [raw])
+    blocks=[]
+    for item in items:
+        inner=item.get('content') if isinstance(item,dict) else None
+        text=inner.get('text') if isinstance(inner,dict) and inner.get('type')=='text' else None
+        blocks.append({'raw':item,'text':text if isinstance(text,str) else None})
+    return blocks

@@ -21,6 +21,8 @@ from .runtime import Runtime
 PROVIDER='reasonix'
 PROTOCOL_VERSION=1
 MESSAGE_CHUNK='agent_message_chunk'
+TOOL_CALL_KINDS=('tool_call','tool_call_update')
+TOOL_CALL_CAPACITY=50
 INITIALIZE_TIMEOUT_SECONDS=60.0
 SESSION_TIMEOUT_SECONDS=90.0
 RELOAD_TIMEOUT_SECONDS=90.0
@@ -110,6 +112,7 @@ class ReasonixAdapter:
         self._in_flight=False
         self._turn_text=[]
         self._ignored_updates={}
+        self._tool_calls={}
         self._emit_failure=None
         self._exit=None
         self._inbox=[]
@@ -245,6 +248,8 @@ class ReasonixAdapter:
                 'in_flight':self._in_flight,'turn_chars':sum(len(part) for part in self._turn_text),
                 'emit_failure':self._emit_failure,
                 'ignored_updates':dict(self._ignored_updates),
+                'tool_classes':self._tool_class_counts(),
+                'tool_frames_seen':len(self._tool_calls),
                 'reader_alive':bool(runtime is not None and runtime.reader_alive),
                 'inbox':list(self._inbox),'lifecycle':list(self._lifecycle),'exit':self._exit,
                 'runtime':runtime.diagnostics() if runtime is not None
@@ -349,6 +354,9 @@ class ReasonixAdapter:
         if method!=protocol.SESSION_UPDATE:return
         update=protocol.update_of(message)
         kind=protocol.update_kind(update)
+        if kind in TOOL_CALL_KINDS:
+            self._classify_tool_frame(update)
+            return
         if kind!=MESSAGE_CHUNK:
             key=kind or 'unknown'
             self._ignored_updates[key]=self._ignored_updates.get(key,0)+1
@@ -357,6 +365,30 @@ class ReasonixAdapter:
         if not text:return
         self._turn_text.append(text)
         self._emit({'type':'assistant_text_delta','text':text})
+
+    def _classify_tool_frame(self,update):
+        """Classify tool activity for diagnostics only.
+
+        Nothing is emitted: a wire status is the host's disposition for that call, not evidence
+        about what the tool itself did, so turning it into a workbench tool outcome would assert
+        something this adapter cannot know. The call id is the only correlation key, so a call and
+        its updates are merged under it and never under the tool name.
+        """
+        call_id=protocol.tool_call_id(update)
+        if not call_id:return None
+        state=protocol.merge_tool_state(self._tool_calls.get(call_id,{}),update)
+        self._tool_calls[call_id]=state
+        while len(self._tool_calls)>TOOL_CALL_CAPACITY:
+            self._tool_calls.pop(next(iter(self._tool_calls)))
+        return protocol.classify_tool_call(self._tool_calls[call_id])
+
+    def _tool_class_counts(self):
+        """Distinct calls seen, grouped by classification. Nothing here claims an outcome."""
+        counts={}
+        for state in self._tool_calls.values():
+            key=protocol.classify_tool_call(state)
+            counts[key]=counts.get(key,0)+1
+        return counts
 
     def _on_lifecycle(self,event):
         self._lifecycle.append(event.get('type'))

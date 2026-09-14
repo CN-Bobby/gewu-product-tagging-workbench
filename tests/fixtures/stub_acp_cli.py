@@ -22,7 +22,7 @@ KNOWN_MODES={'normal','hang','silent','exit','noise','crash_after_prompt','noisy
              'initialize_fail','session_new_fail','close_exit_1','protocol_version_mismatch',
              'no_resume_capability','no_reload_capability','resume_fail','resume_invalid',
              'resume_no_echo','reload_fail','reload_invalid',
-             'prompt_fail','prompt_multi','prompt_extra','prompt_slow'}
+             'prompt_fail','prompt_multi','prompt_extra','prompt_slow','tool_failed_context_cancelled'}
 _MODE_ARG=sys.argv[1] if len(sys.argv)>1 else None
 MODE=_MODE_ARG if _MODE_ARG in KNOWN_MODES else (os.environ.get('STUB_MODE') or 'normal')
 LOG=os.environ.get('STUB_LOG')
@@ -68,6 +68,21 @@ def chunk(text):
 
 def prompt_stream():
     """What one turn emits before its response. Default keeps the original four-update stream."""
+    if MODE=='tool_failed_context_cancelled':
+        # Replays only the frame a cancelled turn leaves behind: status failed, "context canceled".
+        # It is NOT a full session/cancel fixture — the turn here still ends with end_turn, because
+        # the cancel lifecycle belongs to a later step. Its one purpose is to show that a host
+        # failure is not upgraded into a claim about the tool's physical execution.
+        emit({'jsonrpc':'2.0','method':'session/update','params':{'update':{
+            'sessionUpdate':'tool_call','toolCallId':'call_cancel_1','title':'use_capability',
+            'kind':'other','status':'pending',
+            'rawInput':{'action':'call','capability_id':'mcp-tool:probe/slow_probe',
+                        'arguments':{'seconds':10,'label':'cancelled'}}}}})
+        emit({'jsonrpc':'2.0','method':'session/update','params':{'update':{
+            'sessionUpdate':'tool_call_update','toolCallId':'call_cancel_1','status':'failed',
+            'content':[{'type':'content','content':{'type':'text','text':'context canceled'}}]}}})
+        emit(chunk('after-cancel'))
+        return
     if MODE=='prompt_multi':
         for text in ('你','好','M3B3','_OK'):emit(chunk(text))
         return
