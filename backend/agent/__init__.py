@@ -9,4 +9,6 @@ Layout and boundary rules:
 - ``stream.py`` turns the log into SSE and never writes. ``backend.py`` declares the agent
   backend contract, and ``bridge.py`` drives a backend and records what it reports; neither may
   know a concrete agent runtime, read a process stream, parse a wire format or serve HTTP.
+- ``reasonix.py`` is a concrete adapter: it owns one agent runtime's handshake sequence and
+  nothing else, so it carries no dataset, storage or UI coupling.
 """
