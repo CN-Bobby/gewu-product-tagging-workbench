@@ -15,14 +15,16 @@ from dataclasses import dataclass
 from typing import Callable, Mapping
 
 from . import protocol
-from .backend import RuntimeUnavailable
+from .backend import RuntimeUnavailable,TurnError
 from .runtime import Runtime
 
 PROVIDER='reasonix'
 PROTOCOL_VERSION=1
+MESSAGE_CHUNK='agent_message_chunk'
 INITIALIZE_TIMEOUT_SECONDS=60.0
 SESSION_TIMEOUT_SECONDS=90.0
 RELOAD_TIMEOUT_SECONDS=90.0
+PROMPT_TIMEOUT_SECONDS=1200.0
 CLOSE_TIMEOUT_SECONDS=5.0
 DETAIL_LIMIT=200
 INBOX_CAPACITY=50
@@ -67,6 +69,11 @@ def _text(value):
     return value.strip() if isinstance(value,str) else ''
 
 
+def _failure_detail(failure):
+    failure=failure or {}
+    return ('%s: %s' % (failure.get('type'),failure.get('detail')))[:DETAIL_LIMIT]
+
+
 class ReasonixAdapter:
     """One adapter instance owns one runtime process and one remote session.
 
@@ -100,6 +107,10 @@ class ReasonixAdapter:
         self._reload_method=None
         self._started_as=None
         self._ready=False
+        self._in_flight=False
+        self._turn_text=[]
+        self._ignored_updates={}
+        self._emit_failure=None
         self._exit=None
         self._inbox=[]
         self._lifecycle=[]
@@ -138,7 +149,61 @@ class ReasonixAdapter:
             self._ready=True
 
     def send(self,text:str) -> None:
-        raise NotImplementedError('send 在后续步骤实现')
+        """Run one turn: stream assistant text, then report completion from the peer's answer.
+
+        Completion is never inferred from the text, from silence or from an idle reader: it is the
+        ``session/prompt`` response, which the peer sends after the last update.
+        """
+        if not isinstance(text,str) or not text.strip():raise ValueError('消息需要非空文本')
+        runtime=self._runtime
+        with self._lock:
+            if not self._ready or runtime is None or not runtime.alive:
+                raise RuntimeUnavailable('会话当前不可发送')
+            if self._in_flight:raise TurnError('同一会话已有回合在执行')
+            self._in_flight=True
+            self._turn_text=[]
+            self._emit_failure=None
+        try:
+            try:
+                result=runtime.request('session/prompt',
+                    {'sessionId':self._remote_session_id,
+                     'prompt':[{'type':'text','text':text}]},timeout=PROMPT_TIMEOUT_SECONDS)
+            except Exception as error:
+                # A live runtime means only this turn failed; a dead one means the session is gone.
+                if runtime.alive:raise TurnError('回合执行失败',detail=_detail(error)) from error
+                with self._lock:self._ready=False
+                raise RuntimeUnavailable('回合执行期间运行时已退出',detail=_detail(error)) from error
+            # The protocol turn is done. A turn is only delivered when every event it owes was
+            # delivered: a consumer failure anywhere, including the completion itself, fails the
+            # turn — and a broken consumer must never be told the turn completed normally.
+            if self._emit_failure is not None:
+                raise TurnError('回合事件交付失败',detail=_failure_detail(self._emit_failure))
+            if not self._turn_completed(result):
+                raise TurnError('回合事件交付失败',detail=_failure_detail(self._emit_failure))
+        finally:
+            with self._lock:self._in_flight=False
+
+    def _emit(self,event):
+        """Hand one event to the consumer without letting the consumer break the transport.
+
+        Only ordinary exceptions are absorbed: a broken sink must not kill the runtime reader,
+        because the peer's connection is still perfectly usable. The first failure is recorded
+        for the turn and further outward emits are suppressed, so one bad callback cannot turn
+        into an exception storm for the rest of the turn.
+        """
+        if self._emit_failure is not None:return False
+        try:
+            self._sink(event)
+        except Exception as error:
+            self._emit_failure={'type':type(error).__name__,'detail':str(error)[:DETAIL_LIMIT]}
+            return False
+        return True
+
+    def _turn_completed(self,result):
+        stop=_text(str((result or {}).get('stopReason'))) if isinstance(result,dict) else ''
+        event={'type':'assistant_message_completed'}
+        if stop:event['stop_reason']=stop
+        return self._emit(event)
 
     def cancel(self) -> None:
         raise NotImplementedError('cancel 在后续步骤实现')
@@ -177,6 +242,9 @@ class ReasonixAdapter:
         runtime=self._runtime
         return {'provider':PROVIDER,'remote_session_id':self._remote_session_id,'ready':self._ready,
                 'started_as':self._started_as,'reload_method':self._reload_method,
+                'in_flight':self._in_flight,'turn_chars':sum(len(part) for part in self._turn_text),
+                'emit_failure':self._emit_failure,
+                'ignored_updates':dict(self._ignored_updates),
                 'reader_alive':bool(runtime is not None and runtime.reader_alive),
                 'inbox':list(self._inbox),'lifecycle':list(self._lifecycle),'exit':self._exit,
                 'runtime':runtime.diagnostics() if runtime is not None
@@ -270,11 +338,25 @@ class ReasonixAdapter:
                     'lifecycle':runtime.lifecycle_tail()}
 
     def _on_message(self,message):
-        """Inbound messages are recorded for now; translating them is a later step's job."""
-        try:method=protocol.method_of(message)
-        except Exception:method=None
+        """Normalize what this step supports: assistant text, one delta at a time.
+
+        Nothing is coalesced here — the bridge owns that — and nothing unmapped is allowed to look
+        like assistant output. Unknown kinds are counted so they stay visible without guessing.
+        """
+        method=protocol.method_of(message)
         self._inbox.append(method or 'unparsed')
         del self._inbox[:-INBOX_CAPACITY]
+        if method!=protocol.SESSION_UPDATE:return
+        update=protocol.update_of(message)
+        kind=protocol.update_kind(update)
+        if kind!=MESSAGE_CHUNK:
+            key=kind or 'unknown'
+            self._ignored_updates[key]=self._ignored_updates.get(key,0)+1
+            return
+        text=protocol.chunk_text(update)
+        if not text:return
+        self._turn_text.append(text)
+        self._emit({'type':'assistant_text_delta','text':text})
 
     def _on_lifecycle(self,event):
         self._lifecycle.append(event.get('type'))

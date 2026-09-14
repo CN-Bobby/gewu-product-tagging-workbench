@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from backend.agent import reasonix
-from backend.agent.backend import AgentBackend, RuntimeUnavailable
+from backend.agent.backend import AgentBackend,RuntimeUnavailable,TurnError
 
 REPO=Path(__file__).resolve().parents[1]
 STUB=Path(__file__).resolve().parent/'fixtures'/'stub_acp_cli.py'
@@ -90,6 +90,17 @@ def make(workspace,request_log,mode='normal',opened=None,**overrides):
 
 def resume_state(session_id='persisted-session-1',runtime_key=RUNTIME_KEY):
     return reasonix.ReasonixResumeState(session_id=session_id,runtime_key=runtime_key)
+
+
+def collect(adapter):
+    """Bind a sink that keeps every normalized event in arrival order."""
+    events=[]
+    adapter.bind(events.append)
+    return events
+
+
+def kinds(events):
+    return [event.get('type') for event in events]
 
 
 def imported_targets():
@@ -356,10 +367,14 @@ def test_a_nonzero_exit_code_on_close_is_not_a_failure(workspace,request_log):
 
 # --- 26-27: not implemented yet, and explicitly so -------------------------
 
-def test_26_send_is_explicitly_not_implemented(workspace,request_log):
-    adapter=make(workspace,request_log)
-    adapter.bind(lambda event:None)
-    with pytest.raises(NotImplementedError):adapter.send('你好')
+def test_26_send_is_implemented_and_completes_a_turn(workspace,request_log,adapters):
+    """M3B-1 asserted send was unimplemented; M3B-3 implements it, so this slot now asserts the
+    opposite contract rather than disappearing."""
+    adapter=make(workspace,request_log,opened=adapters)
+    events=collect(adapter)
+    adapter.start()
+    adapter.send('hi')
+    assert kinds(events).count('assistant_message_completed')==1
 
 
 def test_27_cancel_is_explicitly_not_implemented(workspace,request_log):
@@ -490,3 +505,296 @@ def test_stop_on_a_resumed_session_closes_and_is_idempotent(workspace,request_lo
     assert adapter.request_methods()==['initialize','session/resume',RELOAD_METHOD,'session/close']
     assert frames(request_log)[3]['params']=={'sessionId':'persisted-session-1'}
     assert adapter.status()['alive'] is False
+
+
+# --- M3B-3: send, streaming and turn completion ----------------------------
+
+def test_send_before_start_is_refused(workspace,request_log):
+    adapter=make(workspace,request_log)
+    collect(adapter)
+    with pytest.raises(RuntimeUnavailable):adapter.send('hi')
+    assert not request_log.exists()
+
+
+def test_send_on_a_dead_runtime_is_runtime_unavailable(workspace,request_log):
+    adapter=make(workspace,request_log)
+    collect(adapter)
+    adapter.start()
+    adapter._runtime.kill()
+    assert wait_until(lambda:adapter.status()['alive'] is False)
+    with pytest.raises(RuntimeUnavailable):adapter.send('hi')
+
+
+def test_blank_text_is_refused_without_any_request(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,opened=adapters)
+    collect(adapter)
+    adapter.start()
+    with pytest.raises(ValueError):adapter.send('   ')
+    assert [f.get('method') for f in frames(request_log)]==['initialize','session/new']
+
+
+def test_send_uses_the_prompt_wire_shape_and_the_current_session(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,opened=adapters)
+    collect(adapter)
+    adapter.start()
+    adapter.send('hello')
+    prompts=[f for f in frames(request_log) if f.get('method')=='session/prompt']
+    assert len(prompts)==1
+    assert prompts[0]['params']=={'sessionId':'stub-session',
+                                  'prompt':[{'type':'text','text':'hello'}]}
+    assert adapter.status()['remote_session_id']=='stub-session'
+
+
+def test_one_send_never_opens_a_second_session_or_prompt(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,opened=adapters)
+    collect(adapter)
+    adapter.start()
+    adapter.send('hello')
+    methods=[f.get('method') for f in frames(request_log)]
+    assert methods.count('session/prompt')==1
+    assert 'session/new' not in methods[2:] and 'session/resume' not in methods
+
+
+def test_a_single_delta_is_emitted_once(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,opened=adapters)
+    events=collect(adapter)
+    adapter.start()
+    adapter.send('hi')
+    assert [e['text'] for e in events if e.get('type')=='assistant_text_delta']==['你好']
+
+
+def test_deltas_keep_their_order_and_their_text(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,mode='prompt_multi',opened=adapters)
+    events=collect(adapter)
+    adapter.start()
+    adapter.send('hi')
+    deltas=[e['text'] for e in events if e.get('type')=='assistant_text_delta']
+    assert deltas==['你','好','M3B3','_OK']
+    assert ''.join(deltas)=='你好M3B3_OK'
+    assert adapter.diagnostics()['turn_chars']==len('你好M3B3_OK')
+
+
+def test_each_delta_is_emitted_immediately_not_coalesced(workspace,request_log,adapters):
+    """The bridge owns coalescing, so four chunks must arrive as four separate events."""
+    adapter=make(workspace,request_log,mode='prompt_multi',opened=adapters)
+    events=collect(adapter)
+    adapter.start()
+    adapter.send('hi')
+    assert len([e for e in events if e.get('type')=='assistant_text_delta'])==4
+
+
+def test_completion_comes_after_the_last_delta_and_only_once(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,mode='prompt_multi',opened=adapters)
+    events=collect(adapter)
+    adapter.start()
+    adapter.send('hi')
+    order=kinds(events)
+    assert order.count('assistant_message_completed')==1
+    assert order[-1]=='assistant_message_completed'
+    assert order.index('assistant_message_completed')>max(
+        index for index,kind in enumerate(order) if kind=='assistant_text_delta')
+
+
+def test_completion_carries_the_normalized_stop_reason(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,opened=adapters)
+    events=collect(adapter)
+    adapter.start()
+    adapter.send('hi')
+    completed=[e for e in events if e.get('type')=='assistant_message_completed']
+    assert completed[0]['stop_reason']=='end_turn'
+
+
+def test_a_completed_turn_leaves_the_session_ready_and_sendable(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,opened=adapters)
+    events=collect(adapter)
+    adapter.start()
+    adapter.send('one')
+    assert adapter.status()['ready'] is True and adapter.status()['alive'] is True
+    assert adapter.diagnostics()['in_flight'] is False
+    adapter.send('two')
+    prompts=[f for f in frames(request_log) if f.get('method')=='session/prompt']
+    assert [p['params']['prompt'][0]['text'] for p in prompts]==['one','two']
+    assert {p['params']['sessionId'] for p in prompts}=={'stub-session'}
+    assert adapter.status()['remote_session_id']=='stub-session'
+
+
+def test_a_second_send_while_one_is_in_flight_is_refused(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,mode='prompt_slow',opened=adapters)
+    events=collect(adapter)
+    adapter.start()
+    first=threading.Thread(target=lambda:adapter.send('one'),daemon=True)
+    first.start()
+    assert wait_until(lambda:adapter.diagnostics()['in_flight'] is True)
+    with pytest.raises(TurnError):adapter.send('two')
+    first.join(timeout=15)
+    assert adapter.diagnostics()['in_flight'] is False
+    assert [f.get('method') for f in frames(request_log)].count('session/prompt')==1
+    assert kinds(events).count('assistant_message_completed')==1
+
+
+def test_unmapped_updates_never_become_assistant_text(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,mode='prompt_extra',opened=adapters)
+    events=collect(adapter)
+    adapter.start()
+    adapter.send('hi')
+    assert [e['text'] for e in events if e.get('type')=='assistant_text_delta']==['only-text']
+    ignored=adapter.diagnostics()['ignored_updates']
+    assert ignored.get('agent_thought_chunk')==1
+    assert ignored.get('tool_call')==1
+    assert ignored.get('available_commands_update')==1
+    assert '_reasonix.io/session/status_update' in adapter.diagnostics()['inbox']
+
+
+def test_a_prompt_error_with_a_live_runtime_is_only_a_turn_error(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,mode='prompt_fail',opened=adapters)
+    events=collect(adapter)
+    adapter.start()
+    with pytest.raises(TurnError):adapter.send('hi')
+    assert adapter.status()['ready'] is True
+    assert adapter.status()['alive'] is True
+    assert adapter.diagnostics()['in_flight'] is False
+    assert 'assistant_message_completed' not in kinds(events)
+
+
+def test_a_turn_error_still_allows_the_next_send(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,mode='prompt_fail',opened=adapters)
+    events=collect(adapter)
+    adapter.start()
+    with pytest.raises(TurnError):adapter.send('one')
+    with pytest.raises(TurnError):adapter.send('two')
+    assert [f.get('method') for f in frames(request_log)].count('session/prompt')==2
+    assert adapter.diagnostics()['in_flight'] is False
+    assert adapter.status()['remote_session_id']=='stub-session'
+
+
+def test_runtime_death_during_a_turn_is_runtime_unavailable(workspace,request_log):
+    adapter=make(workspace,request_log,mode='crash_after_prompt')
+    events=collect(adapter)
+    adapter.start()
+    with pytest.raises(RuntimeUnavailable):adapter.send('hi')
+    assert adapter.status()['ready'] is False
+    assert adapter.status()['alive'] is False
+    assert adapter.diagnostics()['in_flight'] is False
+    assert 'assistant_message_completed' not in kinds(events)
+
+
+def test_a_sink_that_raises_ends_the_turn_as_a_turn_error(workspace,request_log,adapters):
+    """A consumer failure is a delivery failure, not a transport failure."""
+    adapter=make(workspace,request_log,mode='prompt_multi',opened=adapters)
+    seen=[]
+    def sink(event):
+        seen.append(event.get('type'))
+        raise RuntimeError('sink exploded')
+    adapter.bind(sink)
+    adapter.start()
+    with pytest.raises(TurnError):adapter.send('hi')
+    assert adapter.diagnostics()['emit_failure']['type']=='RuntimeError'
+    assert adapter.diagnostics()['in_flight'] is False
+    assert adapter.status()['ready'] is True
+    assert adapter.status()['alive'] is True
+    assert adapter.status()['remote_session_id']=='stub-session'
+    assert 'assistant_message_completed' not in seen
+
+
+def test_a_raising_sink_still_lets_the_prompt_response_land(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,mode='prompt_multi',opened=adapters)
+    adapter.bind(lambda event:(_ for _ in ()).throw(RuntimeError('sink exploded')))
+    adapter.start()
+    with pytest.raises(TurnError):adapter.send('hi')
+    completed=[event for event in adapter.diagnostics()['runtime']['lifecycle']
+               if event.get('type')=='request_completed' and event.get('method')=='session/prompt']
+    assert completed
+    assert not [event for event in adapter.diagnostics()['runtime']['lifecycle']
+                if event.get('type') in ('request_failed','request_timeout')]
+
+
+def test_a_raising_sink_does_not_kill_the_reader_or_the_process(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,mode='prompt_multi',opened=adapters)
+    adapter.bind(lambda event:(_ for _ in ()).throw(RuntimeError('sink exploded')))
+    adapter.start()
+    with pytest.raises(TurnError):adapter.send('hi')
+    assert adapter.diagnostics()['reader_alive'] is True
+    assert adapter.status()['alive'] is True
+    assert not [event for event in adapter.diagnostics()['runtime']['lifecycle']
+                if event.get('type') in ('reader_failed','reader_closed')]
+
+
+def test_a_broken_sink_is_called_once_per_turn_not_once_per_event(workspace,request_log,adapters):
+    """Four deltas plus a completion must not become five exceptions."""
+    adapter=make(workspace,request_log,mode='prompt_multi',opened=adapters)
+    calls={'n':0}
+    def sink(event):
+        calls['n']+=1
+        raise RuntimeError('sink exploded')
+    adapter.bind(sink)
+    adapter.start()
+    with pytest.raises(TurnError):adapter.send('hi')
+    assert calls['n']==1
+
+
+def test_the_emit_failure_is_reset_for_the_next_turn(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,mode='prompt_multi',opened=adapters)
+    seen=[]
+    def sink(event):
+        seen.append(event.get('type'))
+        if seen.count('assistant_text_delta')==1:raise RuntimeError('only the first time')
+    adapter.bind(sink)
+    adapter.start()
+    with pytest.raises(TurnError):adapter.send('one')
+    assert adapter.diagnostics()['emit_failure']['type']=='RuntimeError'
+    adapter.send('two')
+    assert adapter.diagnostics()['emit_failure'] is None
+    assert adapter.diagnostics()['in_flight'] is False
+    assert seen.count('assistant_message_completed')==1
+    assert adapter.status()['ready'] is True and adapter.status()['alive'] is True
+
+
+def test_the_emit_boundary_only_absorbs_ordinary_exceptions(workspace,request_log):
+    """White-box on purpose: the guarantee is about which exception classes are absorbed."""
+    class Fatal(BaseException):pass
+    adapter=make(workspace,request_log)
+    adapter.bind(lambda event:(_ for _ in ()).throw(Fatal('not an Exception')))
+    with pytest.raises(Fatal):adapter._emit({'type':'assistant_text_delta','text':'x'})
+    assert adapter.diagnostics()['emit_failure'] is None
+
+
+def test_a_completion_only_sink_failure_still_fails_the_turn(workspace,request_log,adapters):
+    """Streaming can succeed while the turn is still undelivered: losing only the completion is
+    still a delivery failure, so send() must not report success."""
+    adapter=make(workspace,request_log,mode='prompt_multi',opened=adapters)
+    seen=[]
+    def sink(event):
+        seen.append(event.get('type'))
+        if event.get('type')=='assistant_message_completed':raise RuntimeError('completion exploded')
+    adapter.bind(sink)
+    adapter.start()
+    with pytest.raises(TurnError):adapter.send('hi')
+    assert seen.count('assistant_text_delta')==4            # every delta was accepted
+    assert seen.count('assistant_message_completed')==1     # and the completion was attempted
+    assert adapter.diagnostics()['emit_failure']['type']=='RuntimeError'
+    completed=[event for event in adapter.diagnostics()['runtime']['lifecycle']
+               if event.get('type')=='request_completed' and event.get('method')=='session/prompt']
+    assert completed
+    assert adapter.diagnostics()['reader_alive'] is True
+    assert adapter.diagnostics()['in_flight'] is False
+    assert adapter.status()['ready'] is True
+    assert adapter.status()['alive'] is True
+    assert adapter.status()['remote_session_id']=='stub-session'
+
+
+def test_a_turn_after_a_completion_only_failure_can_succeed(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,mode='prompt_multi',opened=adapters)
+    def bad(event):
+        if event.get('type')=='assistant_message_completed':raise RuntimeError('completion exploded')
+    adapter.bind(bad)
+    adapter.start()
+    with pytest.raises(TurnError):adapter.send('one')
+    events=collect(adapter)                                 # a healthy consumer for the next turn
+    adapter.send('two')
+    assert kinds(events).count('assistant_message_completed')==1
+    assert adapter.diagnostics()['emit_failure'] is None
+    assert adapter.diagnostics()['in_flight'] is False
+    methods=[frame.get('method') for frame in frames(request_log)]
+    assert methods.count('session/new')==1
+    assert methods.count('session/prompt')==2
+    assert 'session/resume' not in methods and 'session/load' not in methods
