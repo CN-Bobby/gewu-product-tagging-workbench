@@ -88,7 +88,7 @@ try:
     executable=harness.executable()
     step('0 解析可执行文件',bool(executable),{'executable':executable})
     adapter=ReasonixAdapter(ReasonixLaunchConfig(executable=executable,model=args.model,
-        cwd=str(cwd),env=isolated))
+        cwd=str(cwd),env=isolated,runtime_key='m3b1-smoke'))
     step('0b 装配启动命令',adapter.launch_args()==['acp','--model',args.model],
          {'launch_args':adapter.launch_args(),'configured_cwd':str(cwd)})
     adapter.start()

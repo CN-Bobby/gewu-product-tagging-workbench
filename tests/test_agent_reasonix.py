@@ -23,6 +23,9 @@ REPO=Path(__file__).resolve().parents[1]
 STUB=Path(__file__).resolve().parent/'fixtures'/'stub_acp_cli.py'
 SOURCE=Path(reasonix.__file__).read_text(encoding='utf-8')
 MODEL='deepseek/deepseek-v4-flash'
+RUNTIME_KEY='runtime-key-1'
+# The real v1.25.1 handshake advertises exactly this name; the adapter must read it, not guess it.
+RELOAD_METHOD='_reasonix.io/session/reloadExtensions'
 
 FORBIDDEN_IMPORTS=('harness','conversation','db','runtime_isolation','mcp_server',
                    'business_questions','conversation_presentation','tagging_rules')
@@ -77,11 +80,16 @@ def frames(request_log):
 
 def make(workspace,request_log,mode='normal',opened=None,**overrides):
     values=dict(executable=sys.executable,model=MODEL,cwd=str(workspace),
-                env=dict(os.environ,STUB_MODE=mode,STUB_LOG=str(request_log)))
+                env=dict(os.environ,STUB_MODE=mode,STUB_LOG=str(request_log)),
+                runtime_key=RUNTIME_KEY)
     values.update(overrides)
     adapter=reasonix.ReasonixAdapter(reasonix.ReasonixLaunchConfig(**values))
     if opened is not None:opened.append(adapter)
     return adapter
+
+
+def resume_state(session_id='persisted-session-1',runtime_key=RUNTIME_KEY):
+    return reasonix.ReasonixResumeState(session_id=session_id,runtime_key=runtime_key)
 
 
 def imported_targets():
@@ -189,7 +197,7 @@ def test_12_status_reports_pid_alive_and_ready(workspace,request_log,adapters):
     adapter=make(workspace,request_log,opened=adapters)
     adapter.start()
     state=adapter.status()
-    assert {'provider','model','remote_session_id','pid','alive','ready'}<=set(state)
+    assert {'provider','model','remote_session_id','runtime_key','pid','alive','ready'}<=set(state)
     assert state['provider']=='reasonix'
     assert state['model']==MODEL
     assert state['alive'] is True and state['ready'] is True and isinstance(state['pid'],int)
@@ -359,6 +367,126 @@ def test_27_cancel_is_explicitly_not_implemented(workspace,request_log):
     with pytest.raises(NotImplementedError):adapter.cancel()
 
 
-def test_resuming_an_existing_session_is_rejected_in_this_step(workspace,request_log):
-    with pytest.raises(NotImplementedError):
-        make(workspace,request_log,remote_session_id='existing-session')
+# --- M3B-2: resuming a persisted session ----------------------------------
+
+def test_resume_runs_initialize_resume_and_reload(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,resume=resume_state(),opened=adapters)
+    adapter.start()
+    assert adapter.request_methods()==['initialize','session/resume',RELOAD_METHOD]
+    assert adapter.status()['ready'] is True
+    assert adapter.status()['remote_session_id']=='persisted-session-1'
+    assert adapter.diagnostics()['started_as']=='resumed'
+    assert adapter.diagnostics()['reload_method']==RELOAD_METHOD
+
+
+def test_resume_sends_the_configured_cwd_and_no_servers(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,resume=resume_state(),opened=adapters)
+    adapter.start()
+    frame=frames(request_log)[1]
+    assert frame['method']=='session/resume'
+    assert frame['params']=={'sessionId':'persisted-session-1','cwd':str(workspace),'mcpServers':[]}
+
+
+def test_resume_never_calls_session_new_or_load(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,resume=resume_state(),opened=adapters)
+    adapter.start()
+    methods=adapter.request_methods()
+    assert 'session/new' not in methods and 'session/load' not in methods
+
+
+def test_new_path_never_resumes_and_never_reloads(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,opened=adapters)
+    adapter.start()
+    assert adapter.request_methods()==['initialize','session/new']
+    assert adapter.diagnostics()['started_as']=='new'
+    assert adapter.diagnostics()['reload_method'] is None
+
+
+def test_resume_identity_comes_from_the_request_not_the_echo(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,mode='resume_no_echo',
+                 resume=resume_state(session_id='requested-id'),opened=adapters)
+    adapter.start()
+    assert adapter.status()['remote_session_id']=='requested-id'
+
+
+def test_resume_capability_is_required(workspace,request_log):
+    adapter=make(workspace,request_log,mode='no_resume_capability',resume=resume_state())
+    with pytest.raises(RuntimeUnavailable):adapter.start()
+    assert adapter.request_methods()==['initialize']
+    assert adapter.status()['ready'] is False
+    assert wait_until(lambda:not live_reader_threads())
+
+
+def test_reload_method_is_read_before_resuming(workspace,request_log):
+    """Without the advertised vendor method there is nothing safe to call, so nothing is."""
+    adapter=make(workspace,request_log,mode='no_reload_capability',resume=resume_state())
+    with pytest.raises(RuntimeUnavailable):adapter.start()
+    assert adapter.request_methods()==['initialize']
+    assert wait_until(lambda:not live_reader_threads())
+
+
+def test_resume_error_tears_down(workspace,request_log):
+    adapter=make(workspace,request_log,mode='resume_fail',resume=resume_state())
+    with pytest.raises(RuntimeUnavailable):adapter.start()
+    assert adapter.request_methods()==['initialize','session/resume']
+    assert adapter.status()['ready'] is False and adapter.status()['alive'] is False
+    assert adapter.diagnostics()['exit']['alive'] is False
+    assert wait_until(lambda:not live_reader_threads())
+
+
+def test_resume_invalid_result_tears_down_before_reloading(workspace,request_log):
+    adapter=make(workspace,request_log,mode='resume_invalid',resume=resume_state())
+    with pytest.raises(RuntimeUnavailable):adapter.start()
+    assert adapter.request_methods()==['initialize','session/resume']
+    assert adapter.status()['ready'] is False
+    assert wait_until(lambda:not live_reader_threads())
+
+
+def test_reload_error_tears_down(workspace,request_log):
+    adapter=make(workspace,request_log,mode='reload_fail',resume=resume_state())
+    with pytest.raises(RuntimeUnavailable):adapter.start()
+    assert adapter.request_methods()==['initialize','session/resume',RELOAD_METHOD]
+    assert adapter.status()['ready'] is False and adapter.status()['alive'] is False
+    assert wait_until(lambda:not live_reader_threads())
+
+
+def test_reload_invalid_result_tears_down(workspace,request_log):
+    adapter=make(workspace,request_log,mode='reload_invalid',resume=resume_state())
+    with pytest.raises(RuntimeUnavailable):adapter.start()
+    assert adapter.request_methods()==['initialize','session/resume',RELOAD_METHOD]
+    assert adapter.status()['ready'] is False
+    assert wait_until(lambda:not live_reader_threads())
+
+
+def test_runtime_key_must_not_be_blank(workspace,request_log):
+    with pytest.raises(ValueError):make(workspace,request_log,runtime_key='   ')
+
+
+def test_runtime_key_mismatch_fails_before_any_process_or_request(workspace,request_log):
+    with pytest.raises(ValueError):
+        make(workspace,request_log,resume=resume_state(runtime_key='a-different-key'))
+    assert not request_log.exists()
+    assert not live_reader_threads()
+
+
+def test_resume_with_a_matching_key_is_allowed(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,resume=resume_state(runtime_key=RUNTIME_KEY),opened=adapters)
+    adapter.start()
+    assert adapter.status()['ready'] is True
+    assert adapter.status()['runtime_key']==RUNTIME_KEY
+
+
+def test_resume_needs_a_session_id(workspace,request_log):
+    with pytest.raises(ValueError):
+        make(workspace,request_log,
+             resume=reasonix.ReasonixResumeState(session_id='   ',runtime_key=RUNTIME_KEY))
+
+
+def test_stop_on_a_resumed_session_closes_and_is_idempotent(workspace,request_log,adapters):
+    adapter=make(workspace,request_log,resume=resume_state(),opened=adapters)
+    adapter.start()
+    adapter.stop()
+    adapter.stop()
+    assert adapter.request_methods()==['initialize','session/resume',RELOAD_METHOD,'session/close']
+    assert frames(request_log)[3]['params']=={'sessionId':'persisted-session-1'}
+    assert adapter.status()['alive'] is False

@@ -6,7 +6,7 @@ The adapter owns the handshake sequence, the backend contract and the launch com
 runtime it speaks to; the binary path, working directory and process environment are injected,
 so nothing here depends on where the workbench keeps its files or how it names its concepts.
 
-Scope of this step: bind, start (initialize plus a new session), status and stop. Turning text
+Scope of this step: bind, start (a new session or a resumed one), status and stop. Turning text
 into a turn (``send``) and aborting one (``cancel``) belong to later steps and raise until then.
 """
 import os
@@ -22,10 +22,24 @@ PROVIDER='reasonix'
 PROTOCOL_VERSION=1
 INITIALIZE_TIMEOUT_SECONDS=60.0
 SESSION_TIMEOUT_SECONDS=90.0
+RELOAD_TIMEOUT_SECONDS=90.0
 CLOSE_TIMEOUT_SECONDS=5.0
 DETAIL_LIMIT=200
 INBOX_CAPACITY=50
 LIFECYCLE_CAPACITY=50
+VENDOR_META_KEY='reasonix.io'
+RELOAD_CAPABILITY_KEY='sessionReloadExtensions'
+
+
+@dataclass(frozen=True)
+class ReasonixResumeState:
+    """What it takes to ask a fresh runtime for an existing session.
+
+    ``runtime_key`` is an opaque caller-owned string. The adapter only ever compares it; it never
+    generates, derives, hashes or interprets it.
+    """
+    session_id: str
+    runtime_key: str
 
 
 @dataclass(frozen=True)
@@ -39,13 +53,18 @@ class ReasonixLaunchConfig:
     model: str
     cwd: str
     env: Mapping[str,str]
-    remote_session_id: str|None=None
+    runtime_key: str
+    resume: ReasonixResumeState|None=None
     client_name: str='gewu-workbench'
     client_version: str='0'
 
 
 def _detail(error):
     return ('%s: %s' % (type(error).__name__,error))[:DETAIL_LIMIT]
+
+
+def _text(value):
+    return value.strip() if isinstance(value,str) else ''
 
 
 class ReasonixAdapter:
@@ -58,19 +77,28 @@ class ReasonixAdapter:
 
     def __init__(self,config,on_diagnostic=None):
         if not isinstance(config,ReasonixLaunchConfig):raise TypeError('需要 ReasonixLaunchConfig')
-        if config.remote_session_id is not None:raise NotImplementedError('本步骤只创建新会话')
         if not config.executable:raise ValueError('缺少可执行文件')
         if not config.cwd:raise ValueError('缺少工作目录')
-        # session/new carries this path to the peer, so it must be a real absolute directory
-        # rather than something the peer would have to interpret relative to its own start-up.
+        # session/new and session/resume carry this path to the peer, so it must be a real
+        # absolute directory instead of something the peer interprets relative to its own start.
         if not os.path.isabs(config.cwd):raise ValueError('工作目录必须是绝对路径：'+config.cwd)
         if not os.path.isdir(config.cwd):raise ValueError('工作目录不存在：'+config.cwd)
+        if not _text(config.runtime_key):raise ValueError('缺少 runtime_key')
+        # Whether to abandon an unusable context and open a fresh session is the caller's policy,
+        # so a mismatched key stops here: no process, no request and no quiet fallback.
+        if config.resume is not None:
+            if not isinstance(config.resume,ReasonixResumeState):raise TypeError('需要 ReasonixResumeState')
+            if not _text(config.resume.session_id):raise ValueError('缺少会话标识')
+            if config.resume.runtime_key!=config.runtime_key:
+                raise ValueError('runtime_key 与恢复目标不一致')
         self._config=config
         self._sink=lambda event:None
         self._on_diagnostic=on_diagnostic or (lambda kind,line:None)
         self._runtime=None
         self._remote_session_id=None
         self._handshake=None
+        self._reload_method=None
+        self._started_as=None
         self._ready=False
         self._exit=None
         self._inbox=[]
@@ -98,7 +126,12 @@ class ReasonixAdapter:
                 raise RuntimeUnavailable('运行时启动失败',detail=_detail(error)) from error
             try:
                 self._handshake=self._initialize(runtime)
-                self._remote_session_id=self._create_session(runtime)
+                if self._config.resume is None:
+                    self._remote_session_id=self._create_session(runtime)
+                    self._started_as='new'
+                else:
+                    self._resume(runtime,self._config.resume)
+                    self._started_as='resumed'
             except BaseException:
                 self._teardown()
                 raise
@@ -128,6 +161,7 @@ class ReasonixAdapter:
         live=bool(runtime is not None and runtime.alive)
         return {'provider':PROVIDER,'model':self._config.model,
                 'remote_session_id':self._remote_session_id,
+                'runtime_key':self._config.runtime_key,
                 'pid':runtime.pid if live else None,
                 'alive':live,
                 'ready':self._ready}
@@ -142,6 +176,7 @@ class ReasonixAdapter:
         """Read-only transport facts, including what a torn-down runtime left behind."""
         runtime=self._runtime
         return {'provider':PROVIDER,'remote_session_id':self._remote_session_id,'ready':self._ready,
+                'started_as':self._started_as,'reload_method':self._reload_method,
                 'reader_alive':bool(runtime is not None and runtime.reader_alive),
                 'inbox':list(self._inbox),'lifecycle':list(self._lifecycle),'exit':self._exit,
                 'runtime':runtime.diagnostics() if runtime is not None
@@ -175,8 +210,50 @@ class ReasonixAdapter:
         except Exception as error:
             raise RuntimeUnavailable('创建会话失败',detail=_detail(error)) from error
         session_id=result.get('sessionId') if isinstance(result,dict) else None
-        if not session_id:raise RuntimeUnavailable('创建会话未返回会话标识')
+        if not _text(str(session_id)):raise RuntimeUnavailable('创建会话未返回会话标识')
         return str(session_id)
+
+    def _resume(self,runtime,resume):
+        """Resume, then re-establish the extension surface before the session counts as ready."""
+        self._require_capability('resume','该运行时未声明 session/resume 能力')
+        method=self._read_reload_method()
+        try:
+            result=runtime.request('session/resume',
+                {'sessionId':resume.session_id,'cwd':self._config.cwd,'mcpServers':[]},
+                timeout=SESSION_TIMEOUT_SECONDS)
+        except Exception as error:
+            raise RuntimeUnavailable('恢复会话失败',detail=_detail(error)) from error
+        if not isinstance(result,dict):
+            raise RuntimeUnavailable('恢复会话未返回会话状态')
+        try:
+            reloaded=runtime.request(method,{'sessionId':resume.session_id},timeout=RELOAD_TIMEOUT_SECONDS)
+        except Exception as error:
+            raise RuntimeUnavailable('恢复会话后重载扩展失败',detail=_detail(error)) from error
+        if not isinstance(reloaded,dict):
+            raise RuntimeUnavailable('重载扩展未返回结果对象')
+        self._reload_method=method
+        # The peer does not echo the session id, so the resumed identity is the requested one.
+        self._remote_session_id=resume.session_id
+
+    # --- capabilities -----------------------------------------------------
+
+    def _capabilities(self):
+        value=(self._handshake or {}).get('agentCapabilities')
+        return value if isinstance(value,dict) else {}
+
+    def _require_capability(self,key,message):
+        if key not in (self._capabilities().get('sessionCapabilities') or {}):
+            raise RuntimeUnavailable(message,detail='sessionCapabilities.%s 未广告' % key)
+
+    def _read_reload_method(self):
+        """The vendor method name comes from the handshake, never from a guess in this file."""
+        vendor=(self._capabilities().get('_meta') or {}).get(VENDOR_META_KEY)
+        entry=(vendor or {}).get(RELOAD_CAPABILITY_KEY) if isinstance(vendor,dict) else None
+        method=_text((entry or {}).get('method')) if isinstance(entry,dict) else ''
+        if not method:
+            raise RuntimeUnavailable('该运行时未声明扩展重载方法',
+                detail='%s.%s.method 未广告' % (VENDOR_META_KEY,RELOAD_CAPABILITY_KEY))
+        return method
 
     # --- internals --------------------------------------------------------
 
