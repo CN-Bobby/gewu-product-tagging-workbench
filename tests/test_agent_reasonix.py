@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from backend.agent import reasonix
-from backend.agent.backend import AgentBackend,RuntimeUnavailable,TurnError
+from backend.agent.backend import AgentBackend,CancelledError,RuntimeUnavailable,TurnError
 
 REPO=Path(__file__).resolve().parents[1]
 STUB=Path(__file__).resolve().parent/'fixtures'/'stub_acp_cli.py'
@@ -374,7 +374,7 @@ def test_26_send_is_implemented_and_completes_a_turn(workspace,request_log,adapt
     events=collect(adapter)
     adapter.start()
     adapter.send('hi')
-    assert kinds(events).count('assistant_message_completed')==1
+    assert kinds(events).count('turn_settled')==1
 
 
 def test_27_cancel_is_explicitly_not_implemented(workspace,request_log):
@@ -507,7 +507,7 @@ def test_stop_on_a_resumed_session_closes_and_is_idempotent(workspace,request_lo
     assert adapter.status()['alive'] is False
 
 
-# --- M3B-3: send, streaming and turn completion ----------------------------
+# --- M3B-3: send, streaming and turn outcome -------------------------------
 
 def test_send_before_start_is_refused(workspace,request_log):
     adapter=make(workspace,request_log)
@@ -583,28 +583,28 @@ def test_each_delta_is_emitted_immediately_not_coalesced(workspace,request_log,a
     assert len([e for e in events if e.get('type')=='assistant_text_delta'])==4
 
 
-def test_completion_comes_after_the_last_delta_and_only_once(workspace,request_log,adapters):
+def test_turn_settled_comes_after_the_last_delta_and_only_once(workspace,request_log,adapters):
     adapter=make(workspace,request_log,mode='prompt_multi',opened=adapters)
     events=collect(adapter)
     adapter.start()
     adapter.send('hi')
     order=kinds(events)
-    assert order.count('assistant_message_completed')==1
-    assert order[-1]=='assistant_message_completed'
-    assert order.index('assistant_message_completed')>max(
+    assert order.count('turn_settled')==1
+    assert order[-1]=='turn_settled'
+    assert order.index('turn_settled')>max(
         index for index,kind in enumerate(order) if kind=='assistant_text_delta')
 
 
-def test_completion_carries_the_normalized_stop_reason(workspace,request_log,adapters):
+def test_turn_settled_carries_the_normalized_stop_reason(workspace,request_log,adapters):
     adapter=make(workspace,request_log,opened=adapters)
     events=collect(adapter)
     adapter.start()
     adapter.send('hi')
-    completed=[e for e in events if e.get('type')=='assistant_message_completed']
-    assert completed[0]['stop_reason']=='end_turn'
+    settled=[e for e in events if e.get('type')=='turn_settled']
+    assert settled[0]['stop_reason']=='end_turn'
 
 
-def test_a_completed_turn_leaves_the_session_ready_and_sendable(workspace,request_log,adapters):
+def test_a_settled_turn_leaves_the_session_ready_and_sendable(workspace,request_log,adapters):
     adapter=make(workspace,request_log,opened=adapters)
     events=collect(adapter)
     adapter.start()
@@ -629,7 +629,7 @@ def test_a_second_send_while_one_is_in_flight_is_refused(workspace,request_log,a
     first.join(timeout=15)
     assert adapter.diagnostics()['in_flight'] is False
     assert [f.get('method') for f in frames(request_log)].count('session/prompt')==1
-    assert kinds(events).count('assistant_message_completed')==1
+    assert kinds(events).count('turn_settled')==1
 
 
 def test_unmapped_updates_never_become_assistant_text(workspace,request_log,adapters):
@@ -654,7 +654,7 @@ def test_a_prompt_error_with_a_live_runtime_is_only_a_turn_error(workspace,reque
     assert adapter.status()['ready'] is True
     assert adapter.status()['alive'] is True
     assert adapter.diagnostics()['in_flight'] is False
-    assert 'assistant_message_completed' not in kinds(events)
+    assert 'turn_settled' not in kinds(events)
 
 
 def test_a_turn_error_still_allows_the_next_send(workspace,request_log,adapters):
@@ -676,7 +676,7 @@ def test_runtime_death_during_a_turn_is_runtime_unavailable(workspace,request_lo
     assert adapter.status()['ready'] is False
     assert adapter.status()['alive'] is False
     assert adapter.diagnostics()['in_flight'] is False
-    assert 'assistant_message_completed' not in kinds(events)
+    assert 'turn_settled' not in kinds(events)
 
 
 def test_a_sink_that_raises_ends_the_turn_as_a_turn_error(workspace,request_log,adapters):
@@ -694,7 +694,7 @@ def test_a_sink_that_raises_ends_the_turn_as_a_turn_error(workspace,request_log,
     assert adapter.status()['ready'] is True
     assert adapter.status()['alive'] is True
     assert adapter.status()['remote_session_id']=='stub-session'
-    assert 'assistant_message_completed' not in seen
+    assert 'turn_settled' not in seen
 
 
 def test_a_raising_sink_still_lets_the_prompt_response_land(workspace,request_log,adapters):
@@ -721,7 +721,7 @@ def test_a_raising_sink_does_not_kill_the_reader_or_the_process(workspace,reques
 
 
 def test_a_broken_sink_is_called_once_per_turn_not_once_per_event(workspace,request_log,adapters):
-    """Four deltas plus a completion must not become five exceptions."""
+    """Four deltas plus a settle must not become five exceptions."""
     adapter=make(workspace,request_log,mode='prompt_multi',opened=adapters)
     calls={'n':0}
     def sink(event):
@@ -746,7 +746,7 @@ def test_the_emit_failure_is_reset_for_the_next_turn(workspace,request_log,adapt
     adapter.send('two')
     assert adapter.diagnostics()['emit_failure'] is None
     assert adapter.diagnostics()['in_flight'] is False
-    assert seen.count('assistant_message_completed')==1
+    assert seen.count('turn_settled')==1
     assert adapter.status()['ready'] is True and adapter.status()['alive'] is True
 
 
@@ -759,23 +759,23 @@ def test_the_emit_boundary_only_absorbs_ordinary_exceptions(workspace,request_lo
     assert adapter.diagnostics()['emit_failure'] is None
 
 
-def test_a_completion_only_sink_failure_still_fails_the_turn(workspace,request_log,adapters):
-    """Streaming can succeed while the turn is still undelivered: losing only the completion is
-    still a delivery failure, so send() must not report success."""
+def test_a_turn_settled_only_sink_failure_still_fails_the_turn(workspace,request_log,adapters):
+    """Streaming can succeed while the turn outcome is still undelivered: losing only the turn
+    event is still a delivery failure, so send() must not report success."""
     adapter=make(workspace,request_log,mode='prompt_multi',opened=adapters)
     seen=[]
     def sink(event):
         seen.append(event.get('type'))
-        if event.get('type')=='assistant_message_completed':raise RuntimeError('completion exploded')
+        if event.get('type')=='turn_settled':raise RuntimeError('turn event exploded')
     adapter.bind(sink)
     adapter.start()
     with pytest.raises(TurnError):adapter.send('hi')
     assert seen.count('assistant_text_delta')==4            # every delta was accepted
-    assert seen.count('assistant_message_completed')==1     # and the completion was attempted
+    assert seen.count('turn_settled')==1                    # and the turn event was attempted
     assert adapter.diagnostics()['emit_failure']['type']=='RuntimeError'
-    completed=[event for event in adapter.diagnostics()['runtime']['lifecycle']
-               if event.get('type')=='request_completed' and event.get('method')=='session/prompt']
-    assert completed
+    settled=[event for event in adapter.diagnostics()['runtime']['lifecycle']
+             if event.get('type')=='request_completed' and event.get('method')=='session/prompt']
+    assert settled
     assert adapter.diagnostics()['reader_alive'] is True
     assert adapter.diagnostics()['in_flight'] is False
     assert adapter.status()['ready'] is True
@@ -783,22 +783,120 @@ def test_a_completion_only_sink_failure_still_fails_the_turn(workspace,request_l
     assert adapter.status()['remote_session_id']=='stub-session'
 
 
-def test_a_turn_after_a_completion_only_failure_can_succeed(workspace,request_log,adapters):
+def test_a_turn_after_a_turn_settled_delivery_failure_can_succeed(workspace,request_log,adapters):
     adapter=make(workspace,request_log,mode='prompt_multi',opened=adapters)
     def bad(event):
-        if event.get('type')=='assistant_message_completed':raise RuntimeError('completion exploded')
+        if event.get('type')=='turn_settled':raise RuntimeError('turn event exploded')
     adapter.bind(bad)
     adapter.start()
     with pytest.raises(TurnError):adapter.send('one')
     events=collect(adapter)                                 # a healthy consumer for the next turn
     adapter.send('two')
-    assert kinds(events).count('assistant_message_completed')==1
+    assert kinds(events).count('turn_settled')==1
     assert adapter.diagnostics()['emit_failure'] is None
     assert adapter.diagnostics()['in_flight'] is False
     methods=[frame.get('method') for frame in frames(request_log)]
     assert methods.count('session/new')==1
     assert methods.count('session/prompt')==2
     assert 'session/resume' not in methods and 'session/load' not in methods
+
+
+# --- M3B-4C: turn outcome mapping ------------------------------------------
+
+def run_turn(workspace,request_log,mode,opened):
+    """Run one turn and hand back the adapter, its events and whatever it raised."""
+    adapter=make(workspace,request_log,mode=mode,opened=opened)
+    seen=[]
+    adapter.bind(seen.append)
+    adapter.start()
+    error=None
+    try:adapter.send('hi')
+    except Exception as raised:error=raised
+    return adapter,seen,error
+
+
+def settled(seen):
+    return [event for event in seen if event.get('type')=='turn_settled']
+
+
+def test_an_end_turn_settles_and_returns_normally(workspace,request_log,adapters):
+    adapter,seen,error=run_turn(workspace,request_log,'normal',adapters)
+    assert error is None
+    assert settled(seen)[-1]['stop_reason']=='end_turn'
+    assert adapter.status()['ready'] is True
+
+
+def test_a_cancelled_turn_settles_then_raises_cancelled_error(workspace,request_log,adapters):
+    """The turn outcome is delivered first, so the log keeps it even though send() fails."""
+    adapter,seen,error=run_turn(workspace,request_log,'prompt_cancelled',adapters)
+    assert isinstance(error,CancelledError) and not isinstance(error,TurnError)
+    assert settled(seen)[-1]['stop_reason']=='cancelled'
+    assert [event['type'] for event in seen][-1]=='turn_settled'
+    assert adapter.diagnostics()['in_flight'] is False
+    assert adapter.status()['ready'] is True
+    assert adapter.status()['alive'] is True
+
+
+def test_an_unknown_stop_reason_is_passed_through_then_fails_the_turn(workspace,request_log,adapters):
+    """An unrecognised reason is reported verbatim and counted; it is not a session failure."""
+    adapter,seen,error=run_turn(workspace,request_log,'prompt_unknown_stop',adapters)
+    assert isinstance(error,TurnError) and not isinstance(error,CancelledError)
+    assert settled(seen)[-1]['stop_reason']=='future_reason'
+    assert adapter.diagnostics()['unknown_stop_reasons']=={'future_reason':1}
+    assert adapter.status()['ready'] is True and adapter.status()['alive'] is True
+
+
+@pytest.mark.parametrize('mode',['prompt_missing_stop','prompt_null_stop','prompt_numeric_stop'])
+def test_a_missing_stop_reason_settles_without_the_field_and_fails_the_turn(workspace,request_log,adapters,mode):
+    adapter,seen,error=run_turn(workspace,request_log,mode,adapters)
+    assert isinstance(error,TurnError) and not isinstance(error,CancelledError)
+    assert 'stop_reason' not in settled(seen)[-1]
+    assert adapter.diagnostics()['unknown_stop_reasons']=={'missing':1}
+    assert adapter.status()['ready'] is True and adapter.status()['alive'] is True
+
+
+def test_a_cancelled_turn_leaves_the_session_usable_for_the_next_turn(workspace,request_log,adapters):
+    adapter,seen,error=run_turn(workspace,request_log,'prompt_cancelled_once',adapters)
+    assert isinstance(error,CancelledError)
+    state=adapter.status()
+    assert state['ready'] is True and state['alive'] is True
+    assert state['remote_session_id']=='stub-session'
+    assert adapter.diagnostics()['reader_alive'] is True
+    assert adapter.diagnostics()['in_flight'] is False
+    events=collect(adapter)
+    adapter.send('再问一次')
+    assert settled(events)[-1]['stop_reason']=='end_turn'
+    assert adapter.status()['remote_session_id']=='stub-session'
+    methods=[frame.get('method') for frame in frames(request_log)]
+    assert methods.count('session/new')==1 and methods.count('session/prompt')==2
+    assert 'session/resume' not in methods and 'session/load' not in methods
+
+
+def test_delivery_failure_outranks_a_cancelled_outcome(workspace,request_log,adapters):
+    """Delivery has precedence: the caller must not be told the turn ended cleanly when part of
+    its outward contract never reached the log."""
+    adapter=make(workspace,request_log,mode='prompt_cancelled',opened=adapters)
+    def sink(event):
+        if event.get('type')=='turn_settled':raise RuntimeError('turn event exploded')
+    adapter.bind(sink)
+    adapter.start()
+    with pytest.raises(TurnError) as failure:adapter.send('hi')
+    assert not isinstance(failure.value,CancelledError)
+    assert adapter.diagnostics()['emit_failure']['type']=='RuntimeError'
+    assert adapter.diagnostics()['reader_alive'] is True
+    assert adapter.diagnostics()['in_flight'] is False
+    assert adapter.status()['ready'] is True and adapter.status()['alive'] is True
+
+
+def test_a_cancelled_turn_keeps_the_tool_fact_and_the_turn_fact_separate(workspace,request_log,adapters):
+    """The host reporting a failed tool call and the host cancelling the turn are two independent
+    facts, and neither may be folded into the other."""
+    adapter,seen,error=run_turn(workspace,request_log,'prompt_cancelled_with_tool',adapters)
+    assert isinstance(error,CancelledError)
+    assert [event['type'] for event in seen]==['assistant_text_delta','tool_call_started',
+                                              'tool_call_settled','turn_settled']
+    assert seen[2]['host_status']=='failed'
+    assert seen[3]['stop_reason']=='cancelled'
 
 
 # --- M3B-4A: tool classification feeds diagnostics -------------------------

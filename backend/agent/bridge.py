@@ -29,7 +29,9 @@ MESSAGE_EVENT_TYPES=frozenset({
 DIAGNOSTIC_EVENT_TYPES=frozenset({'backend_event_ignored'})
 BRIDGE_EMITTED_TYPES=SESSION_EVENT_TYPES|MESSAGE_EVENT_TYPES|DIAGNOSTIC_EVENT_TYPES
 OUTPUT_SOURCE_BY_TYPE={
-    'assistant_text_delta':ASSISTANT_SOURCE,'assistant_message_completed':ASSISTANT_SOURCE,
+    # Source is the routing and storage category, not a claim about which layer produced it:
+    # turn_settled keeps the assistant category it inherited so no new taxonomy is invented here.
+    'assistant_text_delta':ASSISTANT_SOURCE,'turn_settled':ASSISTANT_SOURCE,
     'tool_call_started':TOOL_SOURCE,'tool_call_settled':TOOL_SOURCE,
 }
 OUTPUT_FIELDS_EXCLUDED=('type','session_id','timestamp','source')
@@ -265,15 +267,18 @@ class AgentBridge:
     def _on_backend_event(self,session_id,event):
         """Route backend output to the log. A typed violation is recorded, never dropped."""
         if not isinstance(event,dict) or not event.get('type'):
+            self._flush_delta(session_id,'ordered')
             return self._record(session_id,'backend_event_ignored',reason='missing_type')
         type=str(event['type'])
         if type=='assistant_text_delta':return self._buffer_delta(session_id,event.get('text') or '')
+        # Any other event closes the text that came before it. Flushing first keeps the stored
+        # order equal to the wire's causal order, instead of letting a tool event overtake the
+        # short reply that is still sitting in the buffer.
+        self._flush_delta(session_id,'completed' if type=='turn_settled' else 'ordered')
         # Only the documented output types carry output; anything else is a contract violation,
         # including a type that merely looks like one.
         source=OUTPUT_SOURCE_BY_TYPE.get(type)
         if source is None:return self._record(session_id,'backend_event_ignored',backend_type=type)
-        # The buffered text must reach the log before the event that closes the message.
-        if type=='assistant_message_completed':self._flush_delta(session_id,'completed')
         fields={key:value for key,value in event.items() if key not in OUTPUT_FIELDS_EXCLUDED}
         return self._record(session_id,type,source=source,**fields)
 

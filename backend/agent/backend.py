@@ -6,13 +6,13 @@ stream and never parses a wire format; those belong to a concrete adapter such a
 Codex or Qoder adapter, or the fake backend the tests use.
 
 Event types a backend may report through the sink:
-  assistant_text_delta, assistant_message_completed,
+  assistant_text_delta, turn_settled,
   tool_call_started, tool_call_settled
 Anything else is treated as a contract violation and recorded as backend_event_ignored.
 
-Tool events describe the host's own lifecycle for one invocation, never the tool's physical
-execution: ``tool_call_settled`` carries the host status, which a cancelled turn reports as
-``failed`` while the real tool keeps running.
+``turn_settled`` reports the turn's terminal outcome and nothing else: it does not claim the
+session is healthy, the tools succeeded or the work is done. Tool events likewise describe the
+host's own lifecycle for one invocation, never the tool's physical execution.
 """
 from typing import Callable, Protocol, runtime_checkable
 

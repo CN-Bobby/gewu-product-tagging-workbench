@@ -22,7 +22,7 @@ BRIDGE_EVENT_TYPES=frozenset({
     'message_cancel_requested','message_cancelled','backend_event_ignored',
 })
 OUTPUT_EVENT_TYPES=frozenset({
-    'assistant_text_delta','assistant_message_completed',
+    'assistant_text_delta','turn_settled',
     'tool_call_started','tool_call_settled',
 })
 PERSISTED_EVENT_TYPES=RUNTIME_EVENT_TYPES|BRIDGE_EVENT_TYPES|OUTPUT_EVENT_TYPES

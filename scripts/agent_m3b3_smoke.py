@@ -1,4 +1,4 @@
-"""M3B-3 smoke against the real binary: one turn, streamed assistant text, then completion.
+"""M3B-3 smoke against the real binary: one turn, streamed assistant text, then the turn outcome.
 
 Opt-in on purpose: it launches the real Reasonix process and sends a real prompt, so it costs a
 model call and must not run inside the pytest suite. Two rounds run in the same session.
@@ -105,25 +105,25 @@ try:
         seconds=round(time.perf_counter()-started,3)
         turn=events[before:]
         deltas=[e['event'].get('text') for e in turn if e['event'].get('type')=='assistant_text_delta']
-        completed=[e for e in turn if e['event'].get('type')=='assistant_message_completed']
+        settled=[e for e in turn if e['event'].get('type')=='turn_settled']
         kinds=[e['event'].get('type') for e in turn]
-        order_ok=(kinds and kinds[-1]=='assistant_message_completed'
-                  and kinds.index('assistant_message_completed')>max(
+        order_ok=(kinds and kinds[-1]=='turn_settled'
+                  and kinds.index('turn_settled')>max(
                       i for i,k in enumerate(kinds) if k=='assistant_text_delta'))
         methods=methods_since(mark)
         return {'label':label,'text':text,'seconds':seconds,'methods':methods,
                 'delta_count':len(deltas),'deltas':deltas[:20],'joined':''.join(deltas),
-                'completion_count':len(completed),
-                'stop_reason':(completed[0]['event'].get('stop_reason') if completed else None),
-                'completion_after_last_delta':order_ok,'kinds':kinds}
+                'turn_settled_count':len(settled),
+                'stop_reason':(settled[0]['event'].get('stop_reason') if settled else None),
+                'turn_settled_after_last_delta':order_ok,'kinds':kinds}
 
     first=run_turn(1,'Reply with exactly: M3B3_OK','first')
     step('2 首轮请求方法',first['methods']==['session/prompt'],{'methods':first['methods']})
     step('3 收到真实 assistant 文本',first['delta_count']>=1,
          {'delta_count':first['delta_count'],'deltas':first['deltas'],'joined':first['joined']})
     step('4 拼接文本',True,{'joined':first['joined'],'equals_expected':first['joined']=='M3B3_OK'})
-    step('5 completion 晚于最后一个 delta',
-         first['completion_after_last_delta'] and first['completion_count']==1)
+    step('5 turn_settled 晚于最后一个 delta',
+         first['turn_settled_after_last_delta'] and first['turn_settled_count']==1)
     step('6 stopReason 为真实值',bool(first['stop_reason']),{'stop_reason':first['stop_reason']})
     state=adapter.status()
     step('7 首轮结束后会话仍可用',
@@ -137,7 +137,7 @@ try:
          second['methods']==['session/prompt'] and not (forbidden & set(second['methods'])),
          {'methods':second['methods']})
     step('9 第二轮完成且 session id 不变',
-         second['completion_count']==1 and adapter.status()['remote_session_id']==session_id,
+         second['turn_settled_count']==1 and adapter.status()['remote_session_id']==session_id,
          {'joined':second['joined'],'stop_reason':second['stop_reason'],
           'session_id':adapter.status()['remote_session_id']})
     report['turns']=[first,second]

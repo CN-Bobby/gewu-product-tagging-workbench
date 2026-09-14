@@ -15,17 +15,20 @@ from dataclasses import dataclass
 from typing import Callable, Mapping
 
 from . import protocol
-from .backend import RuntimeUnavailable,TurnError
+from .backend import CancelledError,RuntimeUnavailable,TurnError
 from .runtime import Runtime
 
 PROVIDER='reasonix'
 PROTOCOL_VERSION=1
 MESSAGE_CHUNK='agent_message_chunk'
+TURN_END='end_turn'
+TURN_CANCELLED='cancelled'
 TOOL_CALL_KINDS=('tool_call','tool_call_update')
 TOOL_CALL_KIND='tool_call'
 TOOL_PENDING='pending'
 TOOL_TERMINAL_STATUSES=('completed','failed')
 TOOL_CALL_CAPACITY=50
+UNKNOWN_STOP_CAPACITY=16
 INITIALIZE_TIMEOUT_SECONDS=60.0
 SESSION_TIMEOUT_SECONDS=90.0
 RELOAD_TIMEOUT_SECONDS=90.0
@@ -117,6 +120,7 @@ class ReasonixAdapter:
         self._ignored_updates={}
         self._tool_calls={}
         self._emit_failure=None
+        self._unknown_stop_reasons={}
         self._exit=None
         self._inbox=[]
         self._lifecycle=[]
@@ -180,14 +184,33 @@ class ReasonixAdapter:
                 with self._lock:self._ready=False
                 raise RuntimeUnavailable('回合执行期间运行时已退出',detail=_detail(error)) from error
             # The protocol turn is done. A turn is only delivered when every event it owes was
-            # delivered: a consumer failure anywhere, including the completion itself, fails the
+            # delivered: a consumer failure anywhere, including the turn event itself, fails the
             # turn — and a broken consumer must never be told the turn completed normally.
             if self._emit_failure is not None:
                 raise TurnError('回合事件交付失败',detail=_failure_detail(self._emit_failure))
-            if not self._turn_completed(result):
+            stop=self._stop_reason(result)
+            if not self._turn_settled(stop) or self._emit_failure is not None:
                 raise TurnError('回合事件交付失败',detail=_failure_detail(self._emit_failure))
+            # Delivery has precedence over the protocol outcome: the caller only hears success or
+            # cancellation once the turn's whole outward contract reached the log.
+            if stop==TURN_END:return
+            if stop==TURN_CANCELLED:raise CancelledError('本轮已被取消，会话仍可继续')
+            self._note_unknown_stop(stop)
+            raise TurnError('回合以未识别的终止原因结束',detail='stop_reason=%s' % (stop or '<missing>'))
         finally:
             with self._lock:self._in_flight=False
+
+    def _stop_reason(self,result):
+        """The peer's terminal reason. A missing, null or non-string value is simply absent."""
+        raw=result.get('stopReason') if isinstance(result,dict) else None
+        return _text(raw) if isinstance(raw,str) else ''
+
+    def _note_unknown_stop(self,stop):
+        """Count outcomes we do not recognise instead of guessing what they mean."""
+        key=stop or 'missing'
+        self._unknown_stop_reasons[key]=self._unknown_stop_reasons.get(key,0)+1
+        while len(self._unknown_stop_reasons)>UNKNOWN_STOP_CAPACITY:
+            self._unknown_stop_reasons.pop(next(iter(self._unknown_stop_reasons)))
 
     def _emit(self,event):
         """Hand one event to the consumer without letting the consumer break the transport.
@@ -205,9 +228,9 @@ class ReasonixAdapter:
             return False
         return True
 
-    def _turn_completed(self,result):
-        stop=_text(str((result or {}).get('stopReason'))) if isinstance(result,dict) else ''
-        event={'type':'assistant_message_completed'}
+    def _turn_settled(self,stop):
+        """Report the turn's terminal outcome, read straight off the peer's response."""
+        event={'type':'turn_settled'}
         if stop:event['stop_reason']=stop
         return self._emit(event)
 
@@ -250,6 +273,7 @@ class ReasonixAdapter:
                 'started_as':self._started_as,'reload_method':self._reload_method,
                 'in_flight':self._in_flight,'turn_chars':sum(len(part) for part in self._turn_text),
                 'emit_failure':self._emit_failure,
+                'unknown_stop_reasons':dict(self._unknown_stop_reasons),
                 'ignored_updates':dict(self._ignored_updates),
                 'tool_classes':self._tool_class_counts(),
                 'tool_frames_seen':len(self._tool_calls),

@@ -139,13 +139,15 @@ def test_17_and_18_a_thousand_deltas_become_few_chunks_and_keep_the_exact_text()
     assert all(chunk['message_id'] for chunk in chunks)
 
 
-def test_19_the_completion_flushes_what_is_left_and_keeps_chinese_intact():
+def test_19_the_turn_settled_flushes_what_is_left_and_keeps_chinese_intact():
+    """A five-character reply never crosses the size or time threshold on its own, so the turn
+    event is the only thing that gets it into the log."""
     bridge,backends,sid=active('normal',reply=('你好，世界',))
     bridge.send(sid,'短回复')
     chunks=payloads_of(sid,'assistant_text_delta')
     assert [chunk['text'] for chunk in chunks]==['你好，世界']
     assert chunks[0]['flushed_by']=='completed' and chunks[0]['merged']==1
-    assert types_of(sid)[-3:]==['assistant_text_delta','assistant_message_completed','message_completed']
+    assert types_of(sid)[-3:]==['assistant_text_delta','turn_settled','message_completed']
 
 
 def test_20_a_failed_turn_flushes_what_is_left():
@@ -172,7 +174,7 @@ def test_22_and_23_tool_events_are_not_coalesced_and_do_not_touch_the_text_buffe
     bridge.send(sid,'带工具')
     rows=[(row['event_type'],row['source']) for row in events.read(sid)]
     assert rows[-5:]==[('tool_call_started','tool'),('tool_call_settled','tool'),
-                       ('assistant_text_delta','assistant'),('assistant_message_completed','assistant'),
+                       ('assistant_text_delta','assistant'),('turn_settled','assistant'),
                        ('message_completed','bridge')]
     assert [payload['text'] for payload in payloads_of(sid,'assistant_text_delta')]==['甲乙']
 
@@ -224,3 +226,42 @@ def test_28_to_30_the_bridge_still_stays_inside_its_boundary():
         assert not [line for line in imports if name in line],name
     for token in ('reasonix','ACP','conversation','draft','presentation','business_question','Runtime(','subprocess'):
         assert token not in source,token
+
+
+# --- M3B-4C: the turn outcome reaches the message outcome -----------------
+
+def test_a_cancelled_turn_records_the_outcome_then_cancels_the_message():
+    bridge,backends,sid=active('cancelled_turn')
+    with pytest.raises(CancelledError):bridge.send(sid,'取消')
+    assert types_of(sid)[-3:]==['assistant_text_delta','turn_settled','message_cancelled']
+    assert bridge.status(sid)['status']=='active'
+    assert bridge.get_session(sid)['status']=='active'
+
+
+def test_a_cancelled_turn_keeps_the_wire_causal_order_in_one_log():
+    """The text arrives before the tool events on the wire, so it must be stored before them too:
+    a buffered short reply may not be overtaken by a later event."""
+    bridge,backends,sid=active('cancelled_turn',tool_events=('tool_call_started','tool_call_settled'))
+    with pytest.raises(CancelledError):bridge.send(sid,'带工具的取消')
+    rows=[row['event_type'] for row in events.read(sid)]
+    assert rows[-5:]==['assistant_text_delta','tool_call_started','tool_call_settled',
+                       'turn_settled','message_cancelled']
+    assert payloads_of(sid,'assistant_text_delta')[0]['text']=='半'
+
+
+def test_a_short_delta_is_flushed_before_a_following_tool_event():
+    """Half a character never crosses MAX_DELTA_CHARS, so a flush at the tool event is the only
+    thing that keeps the stored order causal; without it the tool would be logged first."""
+    bridge,backends,sid=active('cancelled_turn',tool_events=('tool_call_started',))
+    with pytest.raises(CancelledError):bridge.send(sid,'短')
+    assert len('半')<MAX_DELTA_CHARS
+    assert types_of(sid)[-4:]==['assistant_text_delta','tool_call_started',
+                                'turn_settled','message_cancelled']
+    chunks=payloads_of(sid,'assistant_text_delta')
+    assert [chunk['text'] for chunk in chunks]==['半'] and chunks[0]['flushed_by']=='ordered'
+
+
+def test_an_end_turn_still_completes_the_message():
+    bridge,backends,sid=active()
+    assert bridge.send(sid,'正常')['event_type']=='message_completed'
+    assert types_of(sid)[-3:]==['assistant_text_delta','turn_settled','message_completed']

@@ -72,7 +72,7 @@ def test_5_to_9_a_turn_is_recorded_in_order_without_copying_the_prompt():
     assert [(row['event_type'],row['source']) for row in rows]==[
         ('session_created','bridge'),('session_starting','bridge'),('session_started','bridge'),
         ('message_started','bridge'),('assistant_text_delta','assistant'),
-        ('assistant_message_completed','assistant'),('message_completed','bridge')]
+        ('turn_settled','assistant'),('message_completed','bridge')]
     payloads=[row['payload'] for row in rows]
     assert [p['text'] for p in payloads if p['type']=='assistant_text_delta']==['你好']   # coalesced
     started=next(p for p in payloads if p['type']=='message_started')
@@ -175,7 +175,9 @@ def test_19_backend_output_keeps_sequence_order():
     bridge.send(sid,'你好')
     rows=events.read(sid)
     assert [row['sequence'] for row in rows]==list(range(1,len(rows)+1))
-    assert [row['sequence'] for row in rows if row['event_type'].startswith('assistant_')]==[5,6]
+    # The assistant-category output is the streamed text plus the turn outcome, in that order.
+    assert [(row['sequence'],row['event_type']) for row in rows if row['source']=='assistant']==[
+        (5,'assistant_text_delta'),(6,'turn_settled')]
 
 
 def test_20_the_sse_stream_carries_bridge_and_assistant_events_in_order():
@@ -194,7 +196,7 @@ def test_20_the_sse_stream_carries_bridge_and_assistant_events_in_order():
     frames=asyncio.run(collect())
     assert [int(re.match(r'id: (\d+)\n',frame).group(1)) for frame in frames]==[1,2,3,4,5,6,7]
     assert [json.loads(frame.split('\n')[2][len('data: '):])['event_type'] for frame in frames][3:]==[
-        'message_started','assistant_text_delta','assistant_message_completed','message_completed']
+        'message_started','assistant_text_delta','turn_settled','message_completed']
 
 
 def test_21_to_24_the_bridge_stays_inside_its_boundary():
@@ -229,7 +231,7 @@ def test_a_delayed_backend_still_records_one_ordered_turn():
     bridge,backends,sid=active('normal',delay=0.01)
     started=time.perf_counter();bridge.send(sid,'你好')
     assert time.perf_counter()-started>=0.02
-    assert types_of(sid)[-3:]==['assistant_text_delta','assistant_message_completed','message_completed']
+    assert types_of(sid)[-3:]==['assistant_text_delta','turn_settled','message_completed']
 
 
 def test_a_non_conforming_factory_result_fails_the_session():
@@ -245,7 +247,7 @@ EXPECTED_BRIDGE_EVENTS=(
     'session_created','session_starting','session_started','session_stopping','session_stopped',
     'session_failed','message_started','message_completed','message_failed',
     'message_cancel_requested','message_cancelled','backend_event_ignored',
-    'assistant_text_delta','assistant_message_completed',
+    'assistant_text_delta','turn_settled',
     'tool_call_started','tool_call_settled')
 
 

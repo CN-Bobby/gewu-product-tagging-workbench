@@ -26,13 +26,29 @@ KNOWN_MODES={'normal','hang','silent','exit','noise','crash_after_prompt','noisy
              'tool_dup_start','tool_dup_settle','tool_flip_status','tool_orphan_update',
              'tool_non_pending_start','tool_missing_status','tool_unknown_status','tool_multi',
              'tool_internal','tool_discovery','tool_handler_failed',
-             'tool_missing_status_then_terminal','tool_unknown_start_then_terminal'}
+             'tool_missing_status_then_terminal','tool_unknown_start_then_terminal',
+             'prompt_cancelled','prompt_cancelled_with_tool','prompt_unknown_stop',
+             'prompt_missing_stop','prompt_null_stop','prompt_numeric_stop','prompt_cancelled_once'}
 _MODE_ARG=sys.argv[1] if len(sys.argv)>1 else None
 MODE=_MODE_ARG if _MODE_ARG in KNOWN_MODES else (os.environ.get('STUB_MODE') or 'normal')
 LOG=os.environ.get('STUB_LOG')
 if LOG is None and _MODE_ARG in KNOWN_MODES and len(sys.argv)>2:LOG=sys.argv[2]
 RELOAD_METHOD='_reasonix.io/session/reloadExtensions'
-# A Python peer on Windows defaults to the console codepage; the transport expects UTF-8.
+# A turn's terminal response. Anything not listed gets the ordinary end_turn.
+STOP_RESPONSES={
+    'prompt_cancelled':{'stopReason':'cancelled'},
+    'prompt_cancelled_with_tool':{'stopReason':'cancelled'},
+    'prompt_unknown_stop':{'stopReason':'future_reason'},
+    'prompt_missing_stop':{},
+    'prompt_null_stop':{'stopReason':None},
+    'prompt_numeric_stop':{'stopReason':7},
+    'prompt_cancelled_once':{'stopReason':'cancelled'},
+}
+PROMPT_COUNT={'n':0}
+# A Python peer on Windows defaults to the console codepage; the transport expects UTF-8. stdin
+# matters as much as stdout: a non-ASCII prompt decoded with the wrong code page yields lone
+# surrogates that cannot be written back out.
+sys.stdin.reconfigure(encoding='utf-8')
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
 sys.stderr.write('stub ready\n')
@@ -107,6 +123,13 @@ def prompt_stream():
         emit(tool_call_frame('call_raised',arguments={'label':'B'}))
         emit(tool_update_frame('call_raised','failed',
              'plugin tool reported error: Error executing tool slow_probe: probe handler failure for B'))
+        return
+    if MODE=='prompt_cancelled_with_tool':
+        # The host gave up on the turn while the tool itself was reported failed: two independent
+        # facts that must both survive.
+        emit(chunk('half'))
+        emit(tool_call_frame('call_c',arguments={'n':1}))
+        emit(tool_update_frame('call_c','failed','context canceled'))
         return
     if MODE=='tool_missing_status_then_terminal':
         # A start that never opened an outward lifecycle must not be closed by a later terminal.
@@ -238,7 +261,11 @@ def main():
             if MODE=='prompt_fail':
                 emit({'jsonrpc':'2.0','id':ident,'error':{'code':-32000,'message':'stub prompt failure'}})
             else:
-                emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
+                PROMPT_COUNT['n']+=1
+                if MODE=='prompt_cancelled_once' and PROMPT_COUNT['n']>1:
+                    emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
+                else:
+                    emit({'jsonrpc':'2.0','id':ident,'result':STOP_RESPONSES.get(MODE,{'stopReason':'end_turn'})})
         elif method=='session/close':
             emit({'jsonrpc':'2.0','id':ident,'result':{}})
             sys.exit(1 if MODE=='close_exit_1' else 0)

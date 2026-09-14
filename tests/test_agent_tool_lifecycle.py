@@ -213,7 +213,7 @@ def test_the_outward_order_follows_the_wire_order(workspace,request_log,adapters
     adapter.start()
     adapter.send('hi')
     assert [event.get('type') for event in seen]==['tool_call_started','tool_call_started',
-        'tool_call_settled','tool_call_settled','assistant_text_delta','assistant_message_completed']
+        'tool_call_settled','tool_call_settled','assistant_text_delta','turn_settled']
     assert [event['text'] for event in seen if event.get('type')=='assistant_text_delta']==['after-tools']
 
 
