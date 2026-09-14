@@ -78,7 +78,9 @@ class FakeBackend:
         self._sink({'type':'turn_settled','stop_reason':'end_turn'})
 
     def cancel(self):
+        """The double only ever cancels a turn it is running, so this always reports a request."""
         self.cancel_calls+=1;self.cancelled=True;self.release.set()
+        return True
 
     def answer_question(self,interaction_id,option_id):
         return self._settle(interaction_id,'question',option_id,'question_settled')

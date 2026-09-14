@@ -29,7 +29,9 @@ KNOWN_MODES={'normal','hang','silent','exit','noise','crash_after_prompt','noisy
              'tool_missing_status_then_terminal','tool_unknown_start_then_terminal',
              'prompt_cancelled','prompt_cancelled_with_tool','prompt_unknown_stop',
              'prompt_missing_stop','prompt_null_stop','prompt_numeric_stop','prompt_cancelled_once',
-             'ask_client','ask_client_cancelled','permission_client','malformed_client','ask_client_once'}
+             'ask_client','ask_client_cancelled','permission_client','malformed_client','ask_client_once',
+             'cancel_aware','cancel_aware_no_stop','cancel_aware_tool','cancel_aware_once',
+             'ignore_cancel','hang_once','unsolicited_update'}
 _MODE_ARG=sys.argv[1] if len(sys.argv)>1 else None
 MODE=_MODE_ARG if _MODE_ARG in KNOWN_MODES else (os.environ.get('STUB_MODE') or 'normal')
 LOG=os.environ.get('STUB_LOG')
@@ -47,6 +49,7 @@ STOP_RESPONSES={
 }
 PROMPT_COUNT={'n':0}
 ASKED={'n':0}
+CANCELLED={'n':0}
 # A Python peer on Windows defaults to the console codepage; the transport expects UTF-8. stdin
 # matters as much as stdout: a non-ASCII prompt decoded with the wrong code page yields lone
 # surrogates that cannot be written back out.
@@ -152,6 +155,41 @@ def tool_update_frame(call_id,status,text=None):
     if text is not None:
         update['content']=[{'type':'content','content':{'type':'text','text':text}}]
     return {'jsonrpc':'2.0','method':'session/update','params':{'update':update}}
+
+
+def await_cancel(ident,stop='cancelled',announce=True):
+    """Stay in the turn until the client cancels it. Returns False when the turn was torn down
+    instead, so the caller can stop pretending to answer."""
+    if announce:emit(chunk('半'))
+    for line in sys.stdin:
+        line=line.strip()
+        if not line:continue
+        try:message=json.loads(line)
+        except json.JSONDecodeError:continue
+        record(message)
+        method=message.get('method')
+        if method=='session/cancel':
+            if stop=='none':emit({'jsonrpc':'2.0','id':ident,'result':{}})
+            else:emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':stop}})
+            return True
+        if method=='session/close':
+            emit({'jsonrpc':'2.0','id':message['id'],'result':{}})
+            sys.exit(1)
+    return False
+
+
+def await_close_only():
+    """Ignore a cancel and answer only a close: the peer that will not abandon its turn."""
+    emit(chunk('半'))
+    for line in sys.stdin:
+        line=line.strip()
+        if not line:continue
+        try:message=json.loads(line)
+        except json.JSONDecodeError:continue
+        record(message)
+        if message.get('method')=='session/close':
+            emit({'jsonrpc':'2.0','id':message['id'],'result':{}})
+            sys.exit(1)
 
 
 def prompt_stream():
@@ -282,6 +320,11 @@ def main():
                 emit({'jsonrpc':'2.0','id':ident,'error':{'code':-32000,'message':'stub session failure'}})
             else:
                 emit({'jsonrpc':'2.0','id':ident,'result':{'sessionId':(message.get('params') or {}).get('sessionId') or 'stub-session'}})
+                if MODE=='unsolicited_update':
+                    # One update nobody asked for, sent right after the handshake. It exists so a
+                    # test can break the client's read path with no request in flight.
+                    emit({'jsonrpc':'2.0','method':'session/update','params':{'update':{
+                        'sessionUpdate':'agent_thought_chunk','content':{'text':'unsolicited'}}}})
         elif method=='session/resume':
             if MODE=='resume_fail':
                 emit({'jsonrpc':'2.0','id':ident,'error':{'code':-32000,'message':'stub resume failure'}})
@@ -303,6 +346,33 @@ def main():
             if MODE=='hang':continue
             if MODE=='noise':raw('not json at all');raw('null')
             if MODE=='prompt_slow':time.sleep(0.5)
+            if MODE=='cancel_aware':
+                await_cancel(ident,'cancelled')
+                continue
+            if MODE=='cancel_aware_no_stop':
+                await_cancel(ident,'none')
+                continue
+            if MODE=='ignore_cancel':
+                await_close_only()
+                continue
+            if MODE=='hang_once':
+                PROMPT_COUNT['n']+=1
+                if PROMPT_COUNT['n']==1:continue
+                emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
+                continue
+            if MODE=='cancel_aware_tool':
+                # A cancelled turn whose tool call the host reported failed: two separate facts.
+                emit(chunk('半'))
+                emit(tool_call_frame('call_cancel_2',arguments={'n':1}))
+                emit(tool_update_frame('call_cancel_2','failed','context canceled'))
+                await_cancel(ident,'cancelled',announce=False)
+                continue
+            if MODE=='cancel_aware_once':
+                # Abandons only the first turn, so a later turn can prove the session still works.
+                CANCELLED['n']+=1
+                if CANCELLED['n']==1:
+                    await_cancel(ident,'cancelled')
+                    continue
             if MODE=='ask_client_once':
                 # Asks on the first turn only, so a later turn can prove the session still works.
                 ASKED['n']+=1

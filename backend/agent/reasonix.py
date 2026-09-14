@@ -6,11 +6,13 @@ The adapter owns the handshake sequence, the backend contract and the launch com
 runtime it speaks to; the binary path, working directory and process environment are injected,
 so nothing here depends on where the workbench keeps its files or how it names its concepts.
 
-Scope of this step: bind, start (a new session or a resumed one), status and stop. Turning text
-into a turn (``send``) and aborting one (``cancel``) belong to later steps and raise until then.
+It implements the whole backend contract: bind, start (a new session or a resumed one), send,
+cancel, answer/refuse an inbound interaction, status and stop. Cancelling abandons a turn and
+keeps the session; stopping is the only move that discards the runtime.
 """
 import os
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Callable, Mapping
@@ -40,6 +42,7 @@ EVENT_QUESTION_REQUESTED='question_requested'
 EVENT_QUESTION_SETTLED='question_settled'
 EVENT_PERMISSION_REQUESTED='permission_requested'
 EVENT_PERMISSION_SETTLED='permission_settled'
+SETTLED_EVENT_BY_KIND={QUESTION_KIND:EVENT_QUESTION_SETTLED,PERMISSION_KIND:EVENT_PERMISSION_SETTLED}
 INITIALIZE_TIMEOUT_SECONDS=60.0
 SESSION_TIMEOUT_SECONDS=90.0
 RELOAD_TIMEOUT_SECONDS=90.0
@@ -127,6 +130,9 @@ class ReasonixAdapter:
         self._started_as=None
         self._ready=False
         self._in_flight=False
+        self._turn_active=False
+        self._cancel_requested=False
+        self._stopping=False
         self._turn_text=[]
         self._ignored_updates={}
         self._tool_calls={}
@@ -187,15 +193,32 @@ class ReasonixAdapter:
                 raise RuntimeUnavailable('会话当前不可发送')
             if self._in_flight:raise TurnError('同一会话已有回合在执行')
             self._in_flight=True
+            self._turn_active=True
+            self._cancel_requested=False
             self._turn_text=[]
             self._emit_failure=None
+        started=time.monotonic()
         try:
             try:
                 result=runtime.request('session/prompt',
                     {'sessionId':self._remote_session_id,
                      'prompt':[{'type':'text','text':text}]},timeout=PROMPT_TIMEOUT_SECONDS)
             except Exception as error:
-                # A live runtime means only this turn failed; a dead one means the session is gone.
+                # A deliberate local cancel or teardown is not an unexpected runtime loss and must
+                # not be reported as one. The budget comparison is our own measurement, so no
+                # message is ever inspected to decide any of this.
+                if self._stopping or self._cancel_requested:
+                    raise CancelledError('本轮已被本地取消或停止') from error
+                # A live process is not a live session. With the reader gone nothing can ever be
+                # answered again, so this runtime is finished for every future request and not
+                # only for this turn — which is why it is decided before the budget is even read.
+                if not runtime.alive or not runtime.reader_alive:
+                    with self._lock:self._ready=False
+                    raise RuntimeUnavailable('回合执行期间运行时失去响应通道',detail=_detail(error)) from error
+                if time.monotonic()-started>=PROMPT_TIMEOUT_SECONDS:
+                    # The budget ran out: abandon the turn, then let liveness decide fatality.
+                    self.cancel()
+                    if runtime.alive:raise TurnError('回合超过预算已放弃',detail=_detail(error)) from error
                 if runtime.alive:raise TurnError('回合执行失败',detail=_detail(error)) from error
                 with self._lock:self._ready=False
                 raise RuntimeUnavailable('回合执行期间运行时已退出',detail=_detail(error)) from error
@@ -210,11 +233,16 @@ class ReasonixAdapter:
             # Delivery has precedence over the protocol outcome: the caller only hears success or
             # cancellation once the turn's whole outward contract reached the log.
             if stop==TURN_END:return
+            # A turn we asked to abandon ends here even when the peer phrases it as an error: the
+            # caller asked for it, so a cancellation is the honest answer, not a failure.
+            if self._cancel_requested:raise CancelledError('本轮已被取消，会话仍可继续')
             if stop==TURN_CANCELLED:raise CancelledError('本轮已被取消，会话仍可继续')
             self._note_unknown_stop(stop)
             raise TurnError('回合以未识别的终止原因结束',detail='stop_reason=%s' % (stop or '<missing>'))
         finally:
-            with self._lock:self._in_flight=False
+            with self._lock:
+                self._in_flight=False
+                self._turn_active=False
 
     def _stop_reason(self,result):
         """The peer's terminal reason. A missing, null or non-string value is simply absent."""
@@ -255,19 +283,62 @@ class ReasonixAdapter:
         with self._interaction_lock:
             return self._emit(event)
 
-    def cancel(self) -> None:
-        raise NotImplementedError('cancel 在后续步骤实现')
+    def cancel(self) -> bool:
+        """Abandon the turn in flight, keeping the runtime and the peer session.
+
+        This is a request, not a guarantee: the peer stops waiting, but work it already dispatched
+        (an MCP tool, for instance) may keep running. Nothing here is a teardown.
+        """
+        with self._lock:
+            runtime=self._runtime
+            # Readiness is deliberately not consulted: stop() clears it before asking for the
+            # in-flight turn to be abandoned, and that abandon is exactly what must still happen.
+            if runtime is None or not self._turn_active:return False
+            if self._cancel_requested:return True          # idempotent: one notification per turn
+            self._cancel_requested=True
+            session_id=self._remote_session_id
+        # A waiting interaction cannot be answered any more. Refusing it now keeps the peer from
+        # waiting, and settles it before the terminal this cancellation is about to cause.
+        self._invalidate_interactions('cancelled')
+        try:runtime.notify('session/cancel',{'sessionId':session_id})
+        except Exception as error:self._on_diagnostic('cancel',_detail(error))
+        return True
 
     def stop(self) -> None:
+        """Release everything: abandon the turn, close the peer session, tear the runtime down.
+
+        A running tool may outlive this, so nothing here waits for it; the wait that does exist is
+        bounded by the close timeout.
+        """
         with self._lock:
             runtime=self._runtime
             if runtime is None:return
+            self._stopping=True
             self._ready=False
-            session_id=self._remote_session_id
-            if session_id and runtime.alive:
-                try:runtime.request('session/close',{'sessionId':session_id},timeout=CLOSE_TIMEOUT_SECONDS)
-                except Exception as error:self._on_diagnostic('close',_detail(error))
-            self._teardown()
+            in_flight=self._turn_active
+        if in_flight:self.cancel()
+        self._invalidate_interactions('stopped')
+        session_id=self._remote_session_id
+        if session_id and runtime.alive:
+            try:runtime.request('session/close',{'sessionId':session_id},timeout=CLOSE_TIMEOUT_SECONDS)
+            except Exception as error:self._on_diagnostic('close',_detail(error))
+        self._teardown()
+
+    def _invalidate_interactions(self,outcome):
+        """Nothing can answer these any more, so refuse them instead of leaving the peer waiting.
+
+        The whole refuse-and-settle stays inside the interaction lock for the same reason an answer
+        does: the reply wakes the peer, whose response can reach the turn terminal thread before
+        this loop finishes. Holding the lock means the settlement always precedes the terminal it
+        is about to cause, in the cancel path exactly as in the answer path.
+        """
+        with self._interaction_lock:
+            pending=list(self._pending_requests.items())
+            self._pending_requests.clear()
+            for interaction_id,request in pending:
+                self._reply(request['wire_request_id'],{'outcome':{'outcome':ANSWER_CANCELLED}})
+                self._settled_event(SETTLED_EVENT_BY_KIND.get(request['kind'],EVENT_QUESTION_SETTLED),
+                                    interaction_id,outcome=outcome)
 
     def status(self) -> dict:
         runtime=self._runtime

@@ -204,11 +204,18 @@ def test_the_wire_carries_the_selected_option_id(workspace,request_log,adapters)
 # --- invalid answers -------------------------------------------------------
 
 def test_an_unknown_interaction_id_is_refused(workspace,request_log,adapters):
-    outcome=run_turn(workspace,request_log,'ask_client',
-                     lambda adapter,request:adapter.answer_question('no-such-interaction','q1:1'),adapters)
-    assert isinstance(outcome['answer_error'],ValueError)
-    # a bad answer must not consume the real interaction
-    assert outcome['adapter'].diagnostics()['pending_requests']==[outcome['request']['interaction_id']]
+    adapter=make(workspace,request_log,mode='ask_client',opened=adapters)
+    seen=[]
+    adapter.bind(seen.append)
+    adapter.start()
+    outcome,worker=start_turn(adapter,seen)
+    announced=wait_for(lambda:[event for event in seen if event.get('type')=='question_requested'],10)
+    interaction_id=announced[0]['interaction_id']
+    with pytest.raises(ValueError):adapter.answer_question('no-such-interaction','q1:1')
+    # a bad answer must not consume the real interaction: the right one still works
+    assert adapter.diagnostics()['pending_requests']==[interaction_id]
+    assert adapter.answer_question(interaction_id,'q1:1') is True
+    worker.join(timeout=15)
 
 
 def test_an_option_the_peer_never_offered_is_refused(workspace,request_log,adapters):

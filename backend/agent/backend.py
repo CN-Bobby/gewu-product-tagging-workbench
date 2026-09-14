@@ -55,8 +55,13 @@ class AgentBackend(Protocol):
         """Run one turn. Report deltas and completion through the sink before returning.
         Declared failures use BackendError subclasses so the caller knows if it is fatal."""
 
-    def cancel(self) -> None:
-        """Abort the turn in flight without discarding the backend session."""
+    def cancel(self) -> bool:
+        """Ask that the turn in flight be abandoned, without discarding the backend session.
+
+        This is a request, not a guarantee: work already dispatched may keep running, and the
+        peer's own answer decides how the turn ends. ``True`` means the request was made (or had
+        already been made for this turn); ``False`` means there was no turn to abandon. It never
+        claims the turn stopped."""
 
     def answer_question(self,interaction_id:str,option_id:str) -> bool:
         """Answer a pending question by a backend-neutral interaction id. The backend decides

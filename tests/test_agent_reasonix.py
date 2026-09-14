@@ -377,9 +377,14 @@ def test_26_send_is_implemented_and_completes_a_turn(workspace,request_log,adapt
     assert kinds(events).count('turn_settled')==1
 
 
-def test_27_cancel_is_explicitly_not_implemented(workspace,request_log):
-    adapter=make(workspace,request_log)
-    with pytest.raises(NotImplementedError):adapter.cancel()
+def test_27_cancel_is_implemented_and_idle_cancel_is_harmless(workspace,request_log,adapters):
+    """M3B-1 asserted cancel was unimplemented; M3B-6 implements it, so this slot now asserts the
+    opposite contract rather than disappearing."""
+    adapter=make(workspace,request_log,opened=adapters)
+    adapter.bind(lambda event:None)
+    adapter.start()
+    assert adapter.cancel() is False        # nothing in flight: idempotent and never fatal
+    assert adapter.status()['ready'] is True and adapter.status()['alive'] is True
 
 
 # --- M3B-2: resuming a persisted session ----------------------------------
