@@ -28,7 +28,8 @@ KNOWN_MODES={'normal','hang','silent','exit','noise','crash_after_prompt','noisy
              'tool_internal','tool_discovery','tool_handler_failed',
              'tool_missing_status_then_terminal','tool_unknown_start_then_terminal',
              'prompt_cancelled','prompt_cancelled_with_tool','prompt_unknown_stop',
-             'prompt_missing_stop','prompt_null_stop','prompt_numeric_stop','prompt_cancelled_once'}
+             'prompt_missing_stop','prompt_null_stop','prompt_numeric_stop','prompt_cancelled_once',
+             'ask_client','ask_client_cancelled','permission_client','malformed_client','ask_client_once'}
 _MODE_ARG=sys.argv[1] if len(sys.argv)>1 else None
 MODE=_MODE_ARG if _MODE_ARG in KNOWN_MODES else (os.environ.get('STUB_MODE') or 'normal')
 LOG=os.environ.get('STUB_LOG')
@@ -45,6 +46,7 @@ STOP_RESPONSES={
     'prompt_cancelled_once':{'stopReason':'cancelled'},
 }
 PROMPT_COUNT={'n':0}
+ASKED={'n':0}
 # A Python peer on Windows defaults to the console codepage; the transport expects UTF-8. stdin
 # matters as much as stdout: a non-ASCII prompt decoded with the wrong code page yields lone
 # surrogates that cannot be written back out.
@@ -79,6 +81,51 @@ def updates():
         'rawInput':{'action':'call','capability_id':'mcp-tool:product_workbench/read_worksheet'}}}})
     emit({'jsonrpc':'2.0','method':'session/update','params':{'update':{
         'sessionUpdate':'tool_call_update','toolCallId':'c1','status':'completed'}}})
+
+
+def question_request_frame(request_id=900):
+    """A real question-shaped permission request, trimmed from the v1.25.1 wire."""
+    return {'jsonrpc':'2.0','id':request_id,'method':'session/request_permission','params':{
+        'sessionId':'stub-session',
+        'toolCall':{'toolCallId':'ask-1-q1','title':'Which format should I use?','kind':'other',
+                    'status':'pending',
+                    'content':[{'type':'content','content':{'type':'text','text':'Intent'}}],
+                    'rawInput':{'id':'q1','multi':False,
+                                'options':[{'Label':'表格','Description':'用表格呈现'},
+                                           {'Label':'列表','Description':'用列表呈现'}],
+                                'question':'Which format should I use?'}},
+        'options':[{'optionId':'q1:1','name':'表格 - 用表格呈现','kind':'allow_once'},
+                   {'optionId':'q1:2','name':'列表 - 用列表呈现','kind':'allow_once'},
+                   {'optionId':'q1:cancel','name':'Cancel','kind':'reject_once'}]}}
+
+
+def permission_request_frame(request_id=901):
+    """A permission request that is not a question. The real tool-level shape is unverified, so
+    only the generic fields the wire actually carries are used."""
+    return {'jsonrpc':'2.0','id':request_id,'method':'session/request_permission','params':{
+        'sessionId':'stub-session',
+        'toolCall':{'toolCallId':'call_perm_1','title':'run_skill','kind':'other','status':'pending'},
+        'options':[{'optionId':'perm:1','name':'Allow once','kind':'allow_once'},
+                   {'optionId':'perm:2','name':'Reject','kind':'reject_once'}]}}
+
+
+def malformed_request_frame(request_id=902):
+    """A permission request with nothing answerable in it."""
+    return {'jsonrpc':'2.0','id':request_id,'method':'session/request_permission',
+            'params':{'sessionId':'stub-session'}}
+
+
+def await_inbound_reply():
+    """Block until the client answers the pending inbound request, then return its frame."""
+    for line in sys.stdin:
+        line=line.strip()
+        if not line:continue
+        try:message=json.loads(line)
+        except json.JSONDecodeError:continue
+        record(message)
+        if 'method' in message:continue
+        return message
+    return None
 
 
 def chunk(text):
@@ -256,6 +303,35 @@ def main():
             if MODE=='hang':continue
             if MODE=='noise':raw('not json at all');raw('null')
             if MODE=='prompt_slow':time.sleep(0.5)
+            if MODE=='ask_client_once':
+                # Asks on the first turn only, so a later turn can prove the session still works.
+                ASKED['n']+=1
+                if ASKED['n']==1:
+                    emit(question_request_frame())
+                    await_inbound_reply()
+                emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
+                continue
+            if MODE=='ask_client':
+                # Ask the client something and wait for its answer before the turn can end.
+                emit(question_request_frame())
+                reply=await_inbound_reply()
+                emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
+                continue
+            if MODE=='ask_client_cancelled':
+                emit(question_request_frame())
+                await_inbound_reply()
+                emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'error'}})
+                continue
+            if MODE=='permission_client':
+                emit(permission_request_frame())
+                await_inbound_reply()
+                emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
+                continue
+            if MODE=='malformed_client':
+                emit(malformed_request_frame())
+                await_inbound_reply()
+                emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
+                continue
             prompt_stream()
             if MODE=='crash_after_prompt':sys.exit(4)
             if MODE=='prompt_fail':

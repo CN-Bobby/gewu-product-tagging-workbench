@@ -24,6 +24,8 @@ BRIDGE_EVENT_TYPES=frozenset({
 OUTPUT_EVENT_TYPES=frozenset({
     'assistant_text_delta','turn_settled',
     'tool_call_started','tool_call_settled',
+    'question_requested','question_settled',
+    'permission_requested','permission_settled',
 })
 PERSISTED_EVENT_TYPES=RUNTIME_EVENT_TYPES|BRIDGE_EVENT_TYPES|OUTPUT_EVENT_TYPES
 # Ephemeral: high-frequency bookkeeping and raw stderr stay in the runtime ring buffer.

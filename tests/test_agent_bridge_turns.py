@@ -9,7 +9,7 @@ import pytest
 from backend.agent import events,stream
 from backend.agent.backend import CancelledError,RuntimeUnavailable,TurnError
 from backend.agent.bridge import (AgentBridge,BackendSendError,InvalidSessionState,
-    MAX_DELTA_CHARS,SessionBusy)
+    MAX_DELTA_CHARS,SessionBusy,SessionNotFound)
 from fake_backend import FakeBackend
 
 AGENT_DIR=Path(__file__).resolve().parents[1]/'backend'/'agent'
@@ -265,3 +265,46 @@ def test_an_end_turn_still_completes_the_message():
     bridge,backends,sid=active()
     assert bridge.send(sid,'正常')['event_type']=='message_completed'
     assert types_of(sid)[-3:]==['assistant_text_delta','turn_settled','message_completed']
+
+
+# --- M3B-5: interaction events obey the same ordering rule -----------------
+
+def test_a_question_request_does_not_overtake_the_buffered_delta():
+    """Any non-delta event flushes the text first, so a short reply cannot be overtaken by the
+    interaction request that came after it on the wire."""
+    bridge,backends,sid=active('ask_question')
+    bridge.send(sid,'提问')
+    rows=[(row['event_type'],row['source']) for row in events.read(sid)]
+    assert rows[-3:]==[('assistant_text_delta','assistant'),('question_requested','system'),
+                       ('message_completed','bridge')]
+    assert payloads_of(sid,'assistant_text_delta')[0]['text']=='半'
+
+
+# --- M3B-5: the application answers through the bridge ---------------------
+
+def test_an_application_answers_a_question_through_the_bridge():
+    """Application -> bridge -> backend: the caller uses only the neutral interaction id and
+    never learns how the backend addresses its peer."""
+    bridge,backends,sid=active('ask_interaction')
+    bridge.send(sid,'提问')
+    assert types_of(sid)[-3:]==['message_started','question_requested','message_completed']
+    assert bridge.answer_question(sid,'fake-interaction-1','a') is True
+    assert types_of(sid)[-1]=='question_settled'
+    assert types_of(sid).index('question_requested')<types_of(sid).index('question_settled')
+    settled=payloads_of(sid,'question_settled')[-1]
+    assert settled['interaction_id']=='fake-interaction-1'
+    assert settled['outcome']=='selected' and settled['option_id']=='a'
+
+
+def test_the_bridge_refuses_an_answer_the_backend_rejects():
+    bridge,backends,sid=active('ask_interaction')
+    bridge.send(sid,'提问')
+    with pytest.raises(ValueError):bridge.answer_question(sid,'fake-interaction-1','z')
+    with pytest.raises(ValueError):bridge.answer_question(sid,'unknown-id','a')
+    assert bridge.cancel_question(sid,'fake-interaction-1') is True
+    assert payloads_of(sid,'question_settled')[-1]['outcome']=='cancelled'
+
+
+def test_an_answer_for_an_unknown_session_is_refused():
+    bridge,backends,sid=active('ask_interaction')
+    with pytest.raises(SessionNotFound):bridge.answer_question('no-such-session','i','a')

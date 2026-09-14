@@ -18,6 +18,9 @@ from .backend import AgentBackend,BackendError,CancelledError
 BRIDGE_SOURCE='bridge'
 ASSISTANT_SOURCE='assistant'
 TOOL_SOURCE='tool'
+# Interaction requests are neither assistant prose nor tool activity; they reuse the existing
+# system category rather than inventing a new source taxonomy for one round.
+INTERACTION_SOURCE='system'
 # Declared up front so a new bridge event that nobody registers fails loudly instead of
 # vanishing: _record checks these sets, and a test asserts they stay inside the store policy.
 SESSION_EVENT_TYPES=frozenset({
@@ -33,6 +36,8 @@ OUTPUT_SOURCE_BY_TYPE={
     # turn_settled keeps the assistant category it inherited so no new taxonomy is invented here.
     'assistant_text_delta':ASSISTANT_SOURCE,'turn_settled':ASSISTANT_SOURCE,
     'tool_call_started':TOOL_SOURCE,'tool_call_settled':TOOL_SOURCE,
+    'question_requested':INTERACTION_SOURCE,'question_settled':INTERACTION_SOURCE,
+    'permission_requested':INTERACTION_SOURCE,'permission_settled':INTERACTION_SOURCE,
 }
 OUTPUT_FIELDS_EXCLUDED=('type','session_id','timestamp','source')
 
@@ -212,6 +217,37 @@ class AgentBridge:
         backend=self._backends.get(session_id)
         if backend is not None:backend.cancel()
         return {'session_id':session_id,'cancelled':True,'message_id':message_id}
+
+    # --- interactions -----------------------------------------------------
+    #
+    # Answers travel the same way everything else does: application -> bridge -> backend. The
+    # bridge hands over the backend-neutral interaction id and never learns how a backend
+    # addresses its peer, so no wire detail reaches a caller.
+    #
+    # A true return means the interaction was claimed and the peer was told. It says nothing about
+    # whether the settlement event reached the log, nor about the turn's outcome: a settlement that
+    # was lost surfaces as the turn failing, so this flag never carries two meanings.
+
+    def answer_question(self,session_id,interaction_id,option_id):
+        return self._interact(session_id,'answer_question',interaction_id,option_id)
+
+    def cancel_question(self,session_id,interaction_id):
+        return self._interact(session_id,'cancel_question',interaction_id)
+
+    def answer_permission(self,session_id,interaction_id,option_id):
+        return self._interact(session_id,'answer_permission',interaction_id,option_id)
+
+    def cancel_permission(self,session_id,interaction_id):
+        return self._interact(session_id,'cancel_permission',interaction_id)
+
+    def _interact(self,session_id,method,interaction_id,*arguments):
+        """Route one answer to the backend that owns this session. The backend validates it, so
+        its own error (such as an unknown interaction or an option it never offered) is what the
+        caller sees; the bridge adds no second policy of its own."""
+        self._require(session_id)
+        backend=self._backends.get(session_id)
+        if backend is None:raise InvalidSessionState('会话没有可用后端：'+str(session_id))
+        return getattr(backend,method)(interaction_id,*arguments)
 
     # --- internals --------------------------------------------------------
 

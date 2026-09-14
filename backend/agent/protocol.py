@@ -104,7 +104,6 @@ def permission_raw_input(params):
 
 def is_multi_question(raw):return raw.get('multi') is True or raw.get('multiSelect') is True
 def wire_option_id(option):return option.get('optionId') or option.get('option_id')
-
 def option_text(option):
     """A wire option is either a plain string or a labelled object."""
     if isinstance(option,str):return option,''
@@ -207,3 +206,59 @@ def normalize_tool_content(update):
         text=inner.get('text') if isinstance(inner,dict) and inner.get('type')=='text' else None
         blocks.append({'raw':item,'text':text if isinstance(text,str) else None})
     return blocks
+
+
+# --- Reasonix permission / question classification -------------------------
+#
+# The peer asks for tool permission and for user input through one method, so the two have to be
+# told apart structurally rather than by an id prefix or by reading the text. Nothing here says
+# what a tool did or will do: a request is only ever a request.
+
+def permission_is_question(params):
+    """A question is a request whose rawInput carries a non-empty question text."""
+    raw=permission_raw_input(params)
+    return bool(raw) and bool(str(raw.get('question') or '').strip())
+
+def permission_is_multi(params):
+    raw=permission_raw_input(params)
+    return isinstance(raw,dict) and is_multi_question(raw)
+
+def permission_question_text(params):
+    raw=permission_raw_input(params) or {}
+    return str(raw.get('question') or '').strip()
+
+def permission_question_id(params):
+    raw=permission_raw_input(params) or {}
+    value=raw.get('id')
+    return value.strip() if isinstance(value,str) and value.strip() else None
+
+def permission_wire_options(params):
+    """The answerable options exactly as offered: only their wire ids may be answered."""
+    options=[]
+    for option in (params.get('options') or []):
+        if not isinstance(option,dict):continue
+        option_id=wire_option_id(option)
+        if not option_id:continue
+        name=option.get('name') or option.get('label') or ''
+        options.append({'option_id':str(option_id),'name':str(name),
+                        'kind':str(option.get('kind') or '')})
+    return options
+
+def question_options(params):
+    """Wire options paired with their display text, positionally.
+
+    The answerable ids live in params.options while the readable labels live in
+    toolCall.rawInput.options; only the wire id can be answered, so a label is decoration and is
+    never a response value. Options without a display counterpart keep their own name.
+    """
+    display=[]
+    raw=permission_raw_input(params) or {}
+    for option in (raw.get('options') or []):
+        label,description=option_text(option)
+        display.append((label or '',description or ''))
+    options=[]
+    for index,wire in enumerate(permission_wire_options(params)):
+        label,description=display[index] if index<len(display) else ('','')
+        options.append({'option_id':wire['option_id'],'label':label or wire['name'],
+                        'description':description})
+    return options

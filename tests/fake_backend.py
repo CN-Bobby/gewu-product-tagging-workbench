@@ -21,6 +21,7 @@ class FakeBackend:
         self.release=threading.Event()
         self.on_delta=None
         self._sink=None
+        self.interactions={}
 
     def bind(self,emit):self._sink=emit
 
@@ -34,6 +35,21 @@ class FakeBackend:
         if self.mode=='crash_send':raise RuntimeError('fake contract violation')
         self.sent.append(text)
         self.entered.clear();self.release.clear();self.cancelled=False   # fresh turn state
+        if self.mode=='ask_interaction':
+            # Offers one pending question, so a bridge test can answer it without Reasonix.
+            self.interactions['fake-interaction-1']={'kind':'question','option_ids':{'a','b'}}
+            self._sink({'type':'question_requested','interaction_id':'fake-interaction-1',
+                        'question':'pick one','multi':False,
+                        'options':[{'option_id':'a','label':'A','description':''},
+                                   {'option_id':'b','label':'B','description':''}]})
+            return
+        if self.mode=='ask_question':
+            # A short reply, then an interaction request that must not overtake it in the log.
+            self._sink({'type':'assistant_text_delta','text':'半'})
+            self._sink({'type':'question_requested','interaction_id':'fake-interaction-1',
+                        'question':'pick one','multi':False,
+                        'options':[{'option_id':'q1:1','label':'A','description':''}]})
+            return
         if self.mode=='cancelled_turn':
             # Mirrors the adapter's contract: the turn's events are delivered, its outcome is
             # reported, and only then does the turn fail as cancelled.
@@ -63,6 +79,32 @@ class FakeBackend:
 
     def cancel(self):
         self.cancel_calls+=1;self.cancelled=True;self.release.set()
+
+    def answer_question(self,interaction_id,option_id):
+        return self._settle(interaction_id,'question',option_id,'question_settled')
+
+    def cancel_question(self,interaction_id):
+        return self._settle(interaction_id,'question',None,'question_settled')
+
+    def answer_permission(self,interaction_id,option_id):
+        return self._settle(interaction_id,'permission',option_id,'permission_settled')
+
+    def cancel_permission(self,interaction_id):
+        return self._settle(interaction_id,'permission',None,'permission_settled')
+
+    def _settle(self,interaction_id,kind,option_id,event_type):
+        """Mirrors the real backend's contract: unknown, wrong kind, twice and bad options fail."""
+        request=self.interactions.get(interaction_id)
+        if request is None:raise ValueError('该交互请求不存在或已结束：'+str(interaction_id))
+        if request['kind']!=kind:raise ValueError('该交互请求的类型不匹配：'+str(interaction_id))
+        if option_id is not None and option_id not in request['option_ids']:
+            raise ValueError('所选答案不属于该交互请求：'+str(option_id))
+        self.interactions.pop(interaction_id,None)
+        event={'type':event_type,'interaction_id':interaction_id,
+               'outcome':'selected' if option_id else 'cancelled'}
+        if option_id:event['option_id']=option_id
+        self._sink(event)
+        return True
 
     def stop(self):
         if self.mode=='fail_stop':raise RuntimeError('fake stop failure')

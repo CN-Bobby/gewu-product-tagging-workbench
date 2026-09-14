@@ -11,6 +11,7 @@ into a turn (``send``) and aborting one (``cancel``) belong to later steps and r
 """
 import os
 import threading
+import uuid
 from dataclasses import dataclass
 from typing import Callable, Mapping
 
@@ -29,6 +30,16 @@ TOOL_PENDING='pending'
 TOOL_TERMINAL_STATUSES=('completed','failed')
 TOOL_CALL_CAPACITY=50
 UNKNOWN_STOP_CAPACITY=16
+# One inbound method carries both tool permission and user questions; the two are different
+# things to the workbench, so they get different events and different host APIs.
+QUESTION_KIND='question'
+PERMISSION_KIND='permission'
+ANSWER_SELECTED='selected'
+ANSWER_CANCELLED='cancelled'
+EVENT_QUESTION_REQUESTED='question_requested'
+EVENT_QUESTION_SETTLED='question_settled'
+EVENT_PERMISSION_REQUESTED='permission_requested'
+EVENT_PERMISSION_SETTLED='permission_settled'
 INITIALIZE_TIMEOUT_SECONDS=60.0
 SESSION_TIMEOUT_SECONDS=90.0
 RELOAD_TIMEOUT_SECONDS=90.0
@@ -121,6 +132,11 @@ class ReasonixAdapter:
         self._tool_calls={}
         self._emit_failure=None
         self._unknown_stop_reasons={}
+        self._pending_requests={}
+        self._refused_requests={}
+        # Guards the pending interaction registry and the settle-before-reply-triggered-terminal
+        # ordering; the turn terminal waits on it so a settlement can never be overtaken.
+        self._interaction_lock=threading.RLock()
         self._exit=None
         self._inbox=[]
         self._lifecycle=[]
@@ -229,10 +245,15 @@ class ReasonixAdapter:
         return True
 
     def _turn_settled(self,stop):
-        """Report the turn's terminal outcome, read straight off the peer's response."""
+        """Report the turn's terminal outcome, read straight off the peer's response.
+
+        Taken under the interaction lock so a settlement the peer's answer already triggered is
+        always recorded before the terminal it caused.
+        """
         event={'type':'turn_settled'}
         if stop:event['stop_reason']=stop
-        return self._emit(event)
+        with self._interaction_lock:
+            return self._emit(event)
 
     def cancel(self) -> None:
         raise NotImplementedError('cancel 在后续步骤实现')
@@ -274,6 +295,8 @@ class ReasonixAdapter:
                 'in_flight':self._in_flight,'turn_chars':sum(len(part) for part in self._turn_text),
                 'emit_failure':self._emit_failure,
                 'unknown_stop_reasons':dict(self._unknown_stop_reasons),
+                'pending_requests':sorted(self._pending_requests),
+                'refused_requests':dict(self._refused_requests),
                 'ignored_updates':dict(self._ignored_updates),
                 'tool_classes':self._tool_class_counts(),
                 'tool_frames_seen':len(self._tool_calls),
@@ -361,6 +384,9 @@ class ReasonixAdapter:
         runtime=self._runtime
         self._runtime=None
         self._ready=False
+        # A request id belongs to one process: nothing can answer it once the runtime is gone.
+        with self._interaction_lock:
+            self._pending_requests.clear()
         if runtime is None:return
         try:runtime.stop()
         except Exception:pass
@@ -378,6 +404,9 @@ class ReasonixAdapter:
         method=protocol.method_of(message)
         self._inbox.append(method or 'unparsed')
         del self._inbox[:-INBOX_CAPACITY]
+        if method==protocol.PERMISSION and 'id' in message:
+            self._handle_interaction(message)
+            return
         if method!=protocol.SESSION_UPDATE:return
         update=protocol.update_of(message)
         kind=protocol.update_kind(update)
@@ -456,6 +485,139 @@ class ReasonixAdapter:
             key=protocol.classify_tool_call(record['state'])
             counts[key]=counts.get(key,0)+1
         return counts
+
+    # --- inbound interaction requests -------------------------------------
+
+    def _handle_interaction(self,message):
+        """Answer one inbound permission/question request, or refuse it.
+
+        The peer sends a JSON-RPC request with an id, so ignoring it would leave the turn blocked
+        until the peer's own timeout. Everything answerable is announced under a backend-neutral
+        interaction id; everything that is not is refused explicitly instead of being dropped.
+        """
+        wire_request_id=message['id']
+        params=protocol.params_of(message)
+        if protocol.permission_is_question(params):
+            if protocol.permission_is_multi(params):
+                return self._refuse_request(wire_request_id,'multi_question')
+            builder,kind=(self._question_event,QUESTION_KIND)
+        else:
+            builder,kind=(self._permission_event,PERMISSION_KIND)
+        interaction_id=uuid.uuid4().hex
+        payload=builder(interaction_id,params)
+        if payload is None:return self._refuse_request(wire_request_id,'malformed_'+kind)
+        return self._announce(interaction_id,wire_request_id,kind,payload)
+
+    def _question_event(self,interaction_id,params):
+        """The question as the workbench should see it: readable text plus answerable option ids."""
+        options=protocol.question_options(params)
+        question=protocol.permission_question_text(params)
+        if not options or not question:return None
+        payload={'type':EVENT_QUESTION_REQUESTED,'interaction_id':interaction_id,
+                 'question':question,'multi':False,'options':options}
+        question_id=protocol.permission_question_id(params)
+        if question_id:payload['question_id']=question_id
+        return payload
+
+    def _permission_event(self,interaction_id,params):
+        """A permission request. Only fields the wire actually carries, never an inferred target:
+        the real tool-level shape has not been verified, so nothing is claimed about the tool."""
+        options=protocol.permission_wire_options(params)
+        if not options:return None
+        payload={'type':EVENT_PERMISSION_REQUESTED,'interaction_id':interaction_id,'options':options}
+        tool=protocol.permission_tool(params)
+        tool_call_id=tool.get('toolCallId')
+        if isinstance(tool_call_id,str) and tool_call_id:payload['tool_call_id']=tool_call_id
+        title=tool.get('title')
+        if isinstance(title,str) and title:payload['title']=title
+        return payload
+
+    def _announce(self,interaction_id,wire_request_id,kind,payload):
+        """Publish a request and remember it, or refuse it when nobody could have seen it."""
+        option_ids=[option['option_id'] for option in payload['options']]
+        with self._interaction_lock:
+            self._pending_requests[interaction_id]={'wire_request_id':wire_request_id,
+                                                    'kind':kind,'option_ids':option_ids}
+            delivered=self._emit(payload)
+            if not delivered:self._pending_requests.pop(interaction_id,None)
+        if delivered:return payload
+        # The consumer never received the request, so no answer can ever arrive: refuse it now
+        # rather than leave the peer waiting on a decision that cannot come.
+        self._reply(wire_request_id,{'outcome':{'outcome':ANSWER_CANCELLED}})
+        self._note_refusal('undelivered_'+kind)
+        return None
+
+    def _refuse_request(self,wire_request_id,reason):
+        """Refuse something we cannot represent, so the peer is never left waiting."""
+        self._note_refusal(reason)
+        self._reply(wire_request_id,{'outcome':{'outcome':ANSWER_CANCELLED}})
+        return None
+
+    def _note_refusal(self,reason):
+        self._refused_requests[reason]=self._refused_requests.get(reason,0)+1
+        self._on_diagnostic('interaction','refused reason=%s' % reason)
+
+    def _reply(self,wire_request_id,result):
+        """Answer the peer's own request. The wire id never leaves this adapter."""
+        runtime=self._runtime
+        if runtime is None or not runtime.alive:return False
+        try:
+            runtime.respond(wire_request_id,result)
+            return True
+        except Exception as error:
+            self._on_diagnostic('interaction',_detail(error))
+            return False
+
+    # --- host answers ------------------------------------------------------
+    #
+    # The caller addresses an interaction by its backend-neutral id. The peer's request id stays
+    # private to this adapter, so nothing outside has to know how this backend addresses things.
+
+    def answer_question(self,interaction_id,option_id):
+        return self._answer(interaction_id,option_id,QUESTION_KIND,EVENT_QUESTION_SETTLED)
+
+    def cancel_question(self,interaction_id):
+        return self._cancel(interaction_id,QUESTION_KIND,EVENT_QUESTION_SETTLED)
+
+    def answer_permission(self,interaction_id,option_id):
+        return self._answer(interaction_id,option_id,PERMISSION_KIND,EVENT_PERMISSION_SETTLED)
+
+    def cancel_permission(self,interaction_id):
+        return self._cancel(interaction_id,PERMISSION_KIND,EVENT_PERMISSION_SETTLED)
+
+    def _answer(self,interaction_id,option_id,kind,event_type):
+        """Claim the interaction, answer the peer, and settle it — all before any terminal it
+        triggers can be delivered, so the settlement can never be overtaken."""
+        with self._interaction_lock:
+            request=self._require_pending(interaction_id,kind,option_id)
+            if not self._reply(request['wire_request_id'],
+                               {'outcome':{'outcome':ANSWER_SELECTED,'optionId':option_id}}):
+                raise RuntimeUnavailable('交互应答发送失败')
+            self._pending_requests.pop(interaction_id,None)
+            self._settled_event(event_type,interaction_id,outcome=ANSWER_SELECTED,option_id=option_id)
+        return True
+
+    def _cancel(self,interaction_id,kind,event_type):
+        with self._interaction_lock:
+            request=self._require_pending(interaction_id,kind)
+            if not self._reply(request['wire_request_id'],{'outcome':{'outcome':ANSWER_CANCELLED}}):
+                raise RuntimeUnavailable('交互应答发送失败')
+            self._pending_requests.pop(interaction_id,None)
+            self._settled_event(event_type,interaction_id,outcome=ANSWER_CANCELLED)
+        return True
+
+    def _require_pending(self,interaction_id,kind,option_id=None):
+        """Every invalid answer is a caller error: unknown, wrong kind, answered twice, bad option."""
+        request=self._pending_requests.get(interaction_id)
+        if request is None:raise ValueError('该交互请求不存在或已结束：'+str(interaction_id))
+        if request['kind']!=kind:raise ValueError('该交互请求的类型不匹配：'+str(interaction_id))
+        if option_id is not None and option_id not in request['option_ids']:
+            raise ValueError('所选答案不属于该交互请求：'+str(option_id))
+        return request
+
+    def _settled_event(self,event_type,interaction_id,**fields):
+        """The host sent its response. This says nothing about the turn or the tool."""
+        return self._emit({'type':event_type,'interaction_id':interaction_id,**fields})
 
     def _on_lifecycle(self,event):
         self._lifecycle.append(event.get('type'))

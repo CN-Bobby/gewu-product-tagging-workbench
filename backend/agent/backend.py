@@ -58,6 +58,27 @@ class AgentBackend(Protocol):
     def cancel(self) -> None:
         """Abort the turn in flight without discarding the backend session."""
 
+    def answer_question(self,interaction_id:str,option_id:str) -> bool:
+        """Answer a pending question by a backend-neutral interaction id. The backend decides
+        whether the answer is valid; callers never learn how this backend addresses its peer.
+
+        ``True`` means exactly one thing: the interaction was claimed and the protocol reply was
+        handed to the peer. It does not mean the settlement event was delivered, and it does not
+        mean the surrounding turn succeeded — a settlement that never reached the log surfaces as
+        the turn's own failure, never as a second meaning for this flag."""
+
+    def cancel_question(self,interaction_id:str) -> bool:
+        """Refuse a pending question, with the same meaning of ``True`` as ``answer_question``.
+        The turn's outcome is the peer's to report, not ours."""
+
+    def answer_permission(self,interaction_id:str,option_id:str) -> bool:
+        """Answer a pending permission request, with the same meaning of ``True`` as
+        ``answer_question``. An answer is not a claim about what a tool did."""
+
+    def cancel_permission(self,interaction_id:str) -> bool:
+        """Refuse a pending permission request, with the same meaning of ``True`` as
+        ``answer_question``."""
+
     def stop(self) -> None:
         """Release the runtime. Must tolerate being called more than once."""
 

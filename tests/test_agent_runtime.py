@@ -3,7 +3,9 @@
 Covers the 14-point checklist items 7-14 offline and deterministically; the real Reasonix CLI
 is exercised separately by scripts/agent_m1_smoke.py so the suite stays network-free.
 """
+import json
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -250,3 +252,44 @@ def test_lifecycle_events_are_structured(spawn):
     for event in lifecycle:assert {'type','timestamp'}<=set(event)
     assert next(event for event in lifecycle if event['type']=='process_started')['pid']==runtime.pid
     assert next(event for event in lifecycle if event['type']=='process_stopped')['returncode'] is not None
+
+
+# --- inbound request primitive --------------------------------------------
+
+def test_an_inbound_request_can_be_answered_from_the_event_callback():
+    """The peer asking us something and us answering it from the reader callback must not
+    deadlock: the callback runs without the transport lock held. A short timeout keeps a real
+    deadlock failing loudly instead of hanging the suite."""
+    runtime,events,diagnostics,lifecycle=build('ask_client')
+    runtime.start()
+    try:
+        seen=[]
+        def answer(message):
+            seen.append(message)
+            runtime.respond(message['id'],{'outcome':{'outcome':'selected','optionId':'q1:1'}})
+        runtime.on_event=answer
+        result=runtime.request('session/prompt',{'sessionId':'s','prompt':[]},timeout=5)
+        assert result=={'stopReason':'end_turn'}          # the turn only ends after our answer
+        assert [message['method'] for message in seen]==['session/request_permission']
+        assert runtime.alive and runtime.reader_alive
+    finally:
+        runtime.stop()
+
+
+def test_the_answered_request_carries_the_original_id():
+    """The reply must reuse the inbound id; the stub only finishes the turn when it sees it."""
+    log_path=Path(tempfile.mkdtemp(prefix='stub-reply-'))/'requests.jsonl'
+    runtime=Runtime(sys.executable,[STUB,'ask_client',str(log_path)],on_event=None)
+    runtime.start()
+    try:
+        def answer(message):
+            assert message['id']==900
+            runtime.respond(message['id'],{'outcome':{'outcome':'cancelled'}})
+        runtime.on_event=answer
+        assert runtime.request('session/prompt',{'sessionId':'s','prompt':[]},timeout=5)=={'stopReason':'end_turn'}
+        frames=[json.loads(line) for line in log_path.read_text(encoding='utf-8').splitlines() if line.strip()]
+        replies=[frame for frame in frames if frame.get('id')==900 and 'method' not in frame]
+        assert replies and replies[0]['result']=={'outcome':{'outcome':'cancelled'}}
+        assert runtime.alive and runtime.reader_alive
+    finally:
+        runtime.stop()
