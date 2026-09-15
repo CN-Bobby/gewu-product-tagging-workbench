@@ -8,3 +8,14 @@
 .message-business{padding:2px 2px 7px}.message-heading{font-size:10px;letter-spacing:1.2px;color:#66806c;font-weight:700;margin-bottom:7px}.message-error{padding:10px 12px;border-left:3px solid #b9684e;background:#fff2ec;color:#8e432f;border-radius:4px;line-height:1.7}.message-status{color:#728271;font-size:11px;padding:7px 0}.operation-log{margin:5px 2px 12px;border-top:1px solid #e2e7de;padding-top:7px;color:#7e8a7d}.operation-log summary{cursor:pointer;font-size:10px;color:#748176}.operation-log p{font-size:10px;margin:7px 0;line-height:1.5}.operation-log pre{font-size:10px;max-height:170px;margin:7px 0;background:#f1f4ef;padding:8px}
 .question-card{border:1px solid #b9caae;background:#f7faef;border-radius:9px;padding:13px;margin:8px 0 17px}.question-card h4{font-size:12px;line-height:1.65;margin:5px 0 10px;color:#2f4b39}.question-kicker{font-size:10px;color:#6c8067;letter-spacing:.7px}.question-options{display:grid;gap:7px}.question-options button{height:auto;min-height:42px;display:flex;flex-direction:column;align-items:flex-start;text-align:left;white-space:normal;padding:9px 10px}.question-options button b{font-size:11px}.question-options button span{font-size:10px;color:#7d897a;line-height:1.5;margin-top:3px}.question-options button.selected{border-color:#35654a;background:#e3eddc}.question-card>p{font-size:10px;margin:10px 0 0;color:#667662}.question-card.cancelled,.question-card.interrupted{border-color:#d6d9cf;background:#f6f6f2}
 .other-proposals{margin:8px 0 18px;border:1px solid #d7dfd2;border-radius:8px;background:#f7f9f3;padding:9px}.other-proposals>summary{cursor:pointer;font-size:11px;color:#60735f}.other-proposals>div{display:grid;gap:6px;margin-top:8px}.proposal-compact{width:100%;display:flex;justify-content:space-between;gap:9px;text-align:left;white-space:normal}.proposal-compact span{font-size:11px}.proposal-compact small{font-size:9px;white-space:nowrap}.proposal select{max-width:100%;margin:6px 0 11px}
+
+/* Agent panel: reuses the message and composer styles above so the two panels stay consistent.
+   Only the session/turn status line is new, and it reports two separate facts. */
+.agent-panel{display:flex;flex-direction:column;flex:1;min-height:0}
+.agent-status{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;padding:9px 16px;border-bottom:1px solid #e3e8df;background:#f4f7f0;font-size:10px;color:#6f8070}
+.agent-status span{white-space:nowrap}
+.agent-status button{margin-left:auto;font-size:10px;padding:5px 9px}
+.agent-status[data-status=active]{background:#eef5e9}
+.agent-status[data-status=failed],.agent-status[data-status=unavailable]{background:#fbeee7;color:#95462f}
+.agent-panel .composer textarea:disabled{background:#f1f3ee}
+.agent-panel .question-card{margin:8px 16px}

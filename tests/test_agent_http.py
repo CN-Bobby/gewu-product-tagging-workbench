@@ -269,6 +269,96 @@ def test_message_and_stop_racing_stay_bounded(client,monkeypatch,workspace,adapt
     assert 'session/close' in peer_methods(request_log)
 
 
+# --- interactions ----------------------------------------------------------
+#
+# The panel needs these to get past a question. They are pure forwarding: the caller addresses an
+# interaction by the identity the event carried and never learns how the peer is addressed.
+
+def question_of(session_id,timeout=15):
+    def announced():
+        return [row['payload'] for row in store.read(session_id,0,1000)
+                if row['event_type']=='question_requested']
+    return wait_for(announced,timeout)
+
+
+def test_a_question_is_answered_through_http(client,monkeypatch):
+    """The panel needs this to get past a question. The route forwards the interaction identity and
+    the option id the peer offered; the settlement then arrives as an event, not as the response."""
+    created=install(monkeypatch,'ask_interaction')
+    session_id=new_session(client)
+    start_message(client,session_id,'帮我选一个')
+    asked=question_of(session_id)
+    assert asked,'question_requested 没有进入事件仓库'
+    interaction_id=asked[0]['interaction_id']
+    answer=client.post('/api/agent/sessions/%s/questions/%s/answer'%(session_id,interaction_id),
+                       json={'option_id':'a'})
+    assert answer.status_code==200,answer.text
+    assert answer.json()=={'session_id':session_id,'interaction_id':interaction_id,'accepted':True}
+    kinds=[row['event_type'] for row in store.read(session_id,0,1000)]
+    assert kinds.index('question_requested')<kinds.index('question_settled')
+    settled=[row['payload'] for row in store.read(session_id,0,1000)
+             if row['event_type']=='question_settled'][0]
+    assert settled['outcome']=='selected' and settled['option_id']=='a'
+    assert settled['interaction_id']==interaction_id
+    assert created[0].sent==['帮我选一个']
+
+
+def test_a_question_can_be_refused_through_http(client,monkeypatch):
+    install(monkeypatch,'ask_interaction')
+    session_id=new_session(client)
+    start_message(client,session_id,'帮我选一个')
+    asked=question_of(session_id)
+    assert asked
+    refused=client.post('/api/agent/sessions/%s/questions/%s/cancel'%(session_id,asked[0]['interaction_id']))
+    assert refused.status_code==200 and refused.json()['accepted'] is True
+    settled=[row['payload'] for row in store.read(session_id,0,1000)
+             if row['event_type']=='question_settled'][0]
+    assert settled['outcome']=='cancelled'
+
+
+def test_a_permission_is_answered_through_http(client,monkeypatch):
+    """The permission routes forward to the same bridge contract; the double registers the
+    permission request this test answers, so what is covered here is the route, not a second
+    backend behaviour (the real adapter's permission contract has its own suite)."""
+    created=install(monkeypatch,'normal')
+    session_id=new_session(client)
+    created[0].interactions['perm-1']={'kind':'permission','option_ids':{'perm:1','perm:2'}}
+    answered=client.post('/api/agent/sessions/%s/permissions/perm-1/answer'%session_id,json={'option_id':'perm:1'})
+    assert answered.status_code==200 and answered.json()['accepted'] is True
+    created[0].interactions['perm-2']={'kind':'permission','option_ids':{'perm:1'}}
+    refused=client.post('/api/agent/sessions/%s/permissions/perm-2/cancel'%session_id)
+    assert refused.status_code==200 and refused.json()['accepted'] is True
+    assert [row['event_type'] for row in store.read(session_id,0,1000)].count('permission_settled')==2
+
+
+def test_a_stale_interaction_is_refused_by_the_backend_not_the_route(client,monkeypatch):
+    """Answering something that is not pending is the backend's judgement, surfaced as a refusal."""
+    install(monkeypatch,'normal')
+    session_id=new_session(client)
+    response=client.post('/api/agent/sessions/%s/questions/no-such-interaction/answer'%session_id,json={'option_id':'a'})
+    assert response.status_code==400
+    assert 'no-such-interaction' in json.dumps(response.json(),ensure_ascii=False)
+
+
+def test_answering_without_an_option_id_is_a_request_error(client,monkeypatch):
+    install(monkeypatch,'ask_interaction')
+    session_id=new_session(client)
+    start_message(client,session_id,'帮我选一个')
+    asked=question_of(session_id)
+    assert asked
+    response=client.post('/api/agent/sessions/%s/questions/%s/answer'%(session_id,asked[0]['interaction_id']),json={})
+    assert response.status_code==400
+    assert 'question_settled' not in [row['event_type'] for row in store.read(session_id,0,1000)]
+
+
+def test_interaction_routes_are_refused_for_an_unknown_session(client,monkeypatch):
+    install(monkeypatch,'normal')
+    assert client.post('/api/agent/sessions/nope/questions/i1/answer',json={'option_id':'a'}).status_code==404
+    assert client.post('/api/agent/sessions/nope/questions/i1/cancel').status_code==404
+    assert client.post('/api/agent/sessions/nope/permissions/i1/answer',json={'option_id':'a'}).status_code==404
+    assert client.post('/api/agent/sessions/nope/permissions/i1/cancel').status_code==404
+
+
 # --- boundary --------------------------------------------------------------
 
 def test_the_http_layer_knows_nothing_about_the_runtime():
@@ -283,10 +373,12 @@ def test_the_http_layer_knows_nothing_about_the_runtime():
 
 def test_a_response_never_carries_the_runtimes_own_error_text(client,monkeypatch):
     """The caller gets a stable code, a safe message and fatality — never the underlying text,
-    which is where wire frames, command lines and filesystem paths live."""
+    which is where wire frames, command lines and diagnostics live."""
+    internal='INTERNAL_DIAG_9137'
+
     class LeakyBackend(FakeBackend):
         def send(self,text):
-            raise TurnError('回合执行失败',detail='Reasonix session/prompt 超时 C:\\secret\\workbench.db')
+            raise TurnError('回合执行失败',detail='session/prompt 超时 '+internal)
 
     def factory(dataset_id,model):
         return lambda:LeakyBackend()
@@ -297,6 +389,6 @@ def test_a_response_never_carries_the_runtimes_own_error_text(client,monkeypatch
     response=client.post('/api/agent/sessions/%s/messages'%session_id,json={'text':'x'})
     assert response.status_code==502
     raw=response.text
-    for leaked in ('Reasonix','session/prompt','secret','workbench.db','C:\\'):
+    for leaked in ('session/prompt',internal,'Reasonix','超时'):
         assert leaked not in raw,leaked
     assert response.json()['detail']['code']=='turn_error'

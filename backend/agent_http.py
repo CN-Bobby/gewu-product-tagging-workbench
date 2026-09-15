@@ -90,3 +90,45 @@ def stop_session(session_id:str):
 @router.get('/sessions/{session_id}')
 def session_status(session_id:str):
     return _call(lambda:agent_application.status(session_id))
+
+
+# --- interactions ----------------------------------------------------------
+#
+# Pure forwarding, added because a panel has to answer a question to get past it. The caller
+# addresses an interaction by the identity the event carried; the label a user sees is never sent
+# back, because the peer only ever offered option ids.
+
+def _interaction_answer(session_id,interaction_id,body,method):
+    # The bridge lookup happens inside the call so an unknown session is translated like any other
+    # application failure instead of escaping as an unhandled error.
+    if method.startswith('answer'):
+        option_id=(body or {}).get('option_id')
+        if not isinstance(option_id,str) or not option_id.strip():raise ValueError('回答需要 option_id')
+        accepted=_call(lambda:getattr(agent_application.bridge_for(session_id),method)
+                       (session_id,interaction_id,option_id))
+    else:
+        accepted=_call(lambda:getattr(agent_application.bridge_for(session_id),method)
+                       (session_id,interaction_id))
+    # The flag says the answer was accepted and handed to the peer. It does not say the interaction
+    # is settled: that arrives as the settlement event.
+    return {'session_id':session_id,'interaction_id':interaction_id,'accepted':bool(accepted)}
+
+
+@router.post('/sessions/{session_id}/questions/{interaction_id}/answer')
+def answer_question(session_id:str,interaction_id:str,body:dict):
+    return _interaction_answer(session_id,interaction_id,body,'answer_question')
+
+
+@router.post('/sessions/{session_id}/questions/{interaction_id}/cancel')
+def cancel_question(session_id:str,interaction_id:str):
+    return _interaction_answer(session_id,interaction_id,None,'cancel_question')
+
+
+@router.post('/sessions/{session_id}/permissions/{interaction_id}/answer')
+def answer_permission(session_id:str,interaction_id:str,body:dict):
+    return _interaction_answer(session_id,interaction_id,body,'answer_permission')
+
+
+@router.post('/sessions/{session_id}/permissions/{interaction_id}/cancel')
+def cancel_permission(session_id:str,interaction_id:str):
+    return _interaction_answer(session_id,interaction_id,None,'cancel_permission')
