@@ -140,7 +140,7 @@ def system_prompt():
         return SYSTEM+'\n自动视觉打标以每件商品的一张主图为正式输入；补充套图只供人工核对，不能暗中改变批量判断。先按当前目标观察代表样本，再把用户确认的边界写入标签定义。'
     return SYSTEM+'\n当前部署关闭自动视觉观察和image/both标签提案。可以读取图片是否存在，但不能声称已观察图片像素。'
 
-def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_MODEL,conversation_id=None,vision_credential_id=None,role='coordinator'):
+def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_MODEL,conversation_id=None,vision_credential_id=None,role='coordinator',allow_business_questions=True):
     if role not in ('coordinator','worker'):raise ValueError('未知 Reasonix runtime role')
     from .model_settings import normalize_reference
     vision_model=normalize_reference(vision_model)
@@ -156,6 +156,10 @@ def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_M
     if conversation_id:environment['TAG_CONVERSATION_ID']=conversation_id
     if vision_credential_id:environment['TAG_VISION_CREDENTIAL_ID']=vision_credential_id
     environment['TAG_DISABLE_VISUAL_TAGGING']=os.environ.get('TAG_DISABLE_VISUAL_TAGGING','0')
+    # A persisted business question is answered by resuming the conversation that created it. A
+    # runtime with no such conversation is therefore not allowed to create one, and it says so
+    # here so the tool is never registered for it in the first place.
+    environment['TAG_QUESTION_OWNER']='chat' if allow_business_questions else 'none'
     if os.environ.get('TAG_CACHE'):environment['TAG_CACHE']=os.environ['TAG_CACHE']
     if role=='worker':
         if not suffix or not product_id:raise ValueError('worker runtime 缺少任务或商品身份')
@@ -166,6 +170,9 @@ def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_M
     global_config=Path(os.environ.get('APPDATA',str(Path.home()/'.config')))/'reasonix'/'config.toml'
     if global_config.exists():other_plugins=[p['name'] for p in tomllib.loads(global_config.read_text(encoding='utf-8-sig')).get('plugins',[]) if p.get('name')!='product_workbench']
     names=['read_worksheet','read_product_source','read_tasks','propose_changes','read_tagging_rules','route_tagging_skill','read_fields','query_scope','read_profile','research_knowledge','read_knowledge','ask_business_question']
+    # Withholding the capability is not enough on its own: a question the model asked anyway would
+    # still be an unanswerable one, so it is denied as well as removed from the allow list.
+    if not allow_business_questions:names=[name for name in names if name!='ask_business_question']
     from .capabilities import visual_tagging_enabled
     if visual_tagging_enabled():names.extend(['inspect_representative_images','view_chat_image'])
     allowed=['mcp_connect__product_workbench']+['mcp__product_workbench__'+n for n in names]
@@ -173,10 +180,12 @@ def runtime_dir(dataset_id, suffix='chat', product_id=None,vision_model=VISION_M
     # deny, so every non-workbench surface must be denied explicitly.  This is a
     # hard data-boundary control, not merely a prompt preference.
     denied=['bash','write','edit','read_file','ls','glob','grep','history','read_session','memory','docs','web','task','parallel_tasks','fleet','install','skills','run_skill','read_only_skill','read_skill']+['mcp_connect__'+n for n in other_plugins]
+    if not allow_business_questions:denied=denied+['mcp__product_workbench__ask_business_question']
     plugin=plugin.replace('auto_start = true','auto_start = true\ntier = "eager"')
     # Own the MCP call bound explicitly instead of inheriting the vendor default, and cap
     # the question bridge so a user answer can never turn into a five-minute silent wait.
-    plugin+='call_timeout_seconds = '+str(MCP_CALL_TIMEOUT_SECONDS)+'\ntool_timeout_seconds = { "ask_business_question" = 30 }\n'
+    plugin+='call_timeout_seconds = '+str(MCP_CALL_TIMEOUT_SECONDS)+'\n'
+    if allow_business_questions:plugin+='tool_timeout_seconds = { "ask_business_question" = 30 }\n'
     (path/'reasonix.toml').write_text('''[agent]
 system_prompt_file = "PRODUCT_ANALYST_AGENT.md"
 planner_model = ""

@@ -30,7 +30,10 @@ def backend_factory(dataset_id,model):
     anything about what a backend is made of.
     """
     def build():
-        cwd=harness.runtime_dir(dataset_id,'agent')
+        # An agent session has no workbench conversation to resume, so the persisted business
+        # question — whose answer resumes the asking conversation — is withheld from it. Its own
+        # clarifications travel as an interaction on the session instead.
+        cwd=harness.runtime_dir(dataset_id,'agent',allow_business_questions=False)
         return ReasonixAdapter(ReasonixLaunchConfig(executable=harness.executable(),model=model,
             cwd=str(cwd),env=environment(dataset_id,None,{}),runtime_key='agent:'+dataset_id))
     return build
