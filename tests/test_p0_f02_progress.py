@@ -1,13 +1,11 @@
 """P0 F02: slow turns must show honest progress, and questions must not block the turn."""
 import threading
 import time
-from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
-from backend import business_questions,conversation,draft
+from backend import business_questions,draft
 from backend.conversation_presentation import build
 from backend.db import Session,ChatQuestion,Message,WorkbenchMeta,require,uid
-from backend.harness import HarnessError,instruction_hash
 
 
 def test_presentation_exposes_progress_for_running_turns():
@@ -26,26 +24,13 @@ def test_presentation_without_events_has_no_progress():
     assert build('当前判断',status='completed')['progress'] is None
 
 
-class ToolClient:
-    closed=False
-    proc=SimpleNamespace(poll=lambda:None)
-    def __init__(self,on_event=None):self.on_event=on_event
-    def prompt(self,text):
-        self.on_event({'type':'tool','title':'正在读取工作台信息','status':'pending','toolCallId':'call-1','at':'2026-09-13T10:17:05+00:00'})
-        raise HarnessError('turn_stalled','长时间没有进展，本轮已中止。',{})
-
-
-def test_tool_events_rebuild_presentation_and_expose_progress(dataset,monkeypatch):
-    did=dataset['id'];ident=uid()
-    client=ToolClient();client.instruction_hash=instruction_hash()
-    monkeypatch.setitem(conversation.clients,did,client)
-    with Session.begin() as s:s.add(Message(id=ident,dataset_id=did,role='assistant',text='',status='running'))
-    conversation.run(did,ident,'turn-progress','读一下工作表','test/model')
-    with Session() as s:message=s.get(Message,ident)
-    assert message.status=='failed' and message.error_code=='turn_stalled'
-    assert message.presentation['activity']
-    assert message.presentation['progress']['tool_calls']==1
-    assert '长时间没有进展' in message.presentation['summary']
+def test_tool_events_rebuild_presentation_and_expose_progress():
+    events=[{'type':'tool','title':'正在读取工作台信息','status':'pending','toolCallId':'call-1',
+             'at':'2026-09-13T10:17:05+00:00'}]
+    presentation=build('',status='failed',events=events,started_at='2026-09-13T10:17:01+00:00')
+    assert presentation['activity']
+    assert presentation['progress']['tool_calls']==1
+    assert presentation['progress']['current_tool']=='正在读取工作台信息'
 
 
 def start_turn(did):
@@ -78,90 +63,3 @@ def test_ask_refuses_to_stack_questions_on_one_turn(dataset):
 class ImmediateThread:
     def __init__(self,target=None,args=(),daemon=None,**kwargs):self.target=target;self.args=args
     def start(self):self.target(*self.args)
-
-
-def test_answer_queues_exactly_one_followup_turn(dataset,monkeypatch):
-    did=dataset['id'];start_turn(did)
-    asked=business_questions.ask(did,'主色按什么口径？',['底色主导','整套视觉'])
-    resumed=[]
-    monkeypatch.setattr(conversation,'_resume_queued',lambda did,key:resumed.append((did,key)))
-    monkeypatch.setattr(conversation.threading,'Thread',ImmediateThread)
-    answered=business_questions.answer(did,asked['question_id'],['1'])
-    assert answered['status']=='answered' and answered['selected_label']=='底色主导'
-    with Session() as s:
-        queued=s.get(WorkbenchMeta,'chat-followup:'+did)
-        assert queued and '底色主导' in queued.data['text']
-    assert resumed==[(did,'chat-followup:'+did)]
-
-
-def test_answering_after_the_turn_ended_still_resumes(dataset,monkeypatch):
-    did=dataset['id']
-    with Session.begin() as s:
-        message=Message(dataset_id=did,turn_id='turn-closed',role='assistant',text='',status='completed');s.add(message);s.flush()
-        qid=uid()
-        s.add(ChatQuestion(id=qid,dataset_id=did,turn_id='turn-closed',message_id=message.id,
-            prompt='尺寸段如何划分？',options=[{'option_id':'1','label':'固定边界'},{'option_id':'2','label':'按批次等分'}],status='pending'))
-        s.add(WorkbenchMeta(id='business-question:'+qid,dataset_id=did,kind='business_question',data={'multiple':False,'answer':None}))
-    resumed=[]
-    monkeypatch.setattr(conversation,'_resume_queued',lambda did,key:resumed.append(key))
-    monkeypatch.setattr(conversation.threading,'Thread',ImmediateThread)
-    answered=business_questions.answer(did,qid,['2'])
-    assert answered['status']=='answered' and answered['selected_label']=='按批次等分'
-    with Session() as s:assert s.get(WorkbenchMeta,'chat-followup:'+did)
-    assert resumed==['chat-followup:'+did]
-
-
-def test_followup_targets_the_questions_own_conversation(dataset,monkeypatch):
-    did=dataset['id'];recycled=uid();live=uid();turn=uid();qid=uid()
-    with Session.begin() as s:
-        s.add(WorkbenchMeta(id='chat-migrated:'+did,dataset_id=did,kind='chat_migration',data={'default_id':recycled}))
-        s.add(WorkbenchMeta(id=recycled,dataset_id=did,kind='chat_thread',data={'name':'泳衣测试','deleted':True,'legacy':True}))
-        s.add(WorkbenchMeta(id=live,dataset_id=did,kind='chat_thread',data={'name':'新对话','deleted':False,'legacy':False,'model':'deepseek/deepseek-v4-flash'}))
-        s.add(WorkbenchMeta(id='chat-turn:'+turn,dataset_id=did,kind='chat_turn',data={'turn_id':turn,'conversation_id':live}))
-        message=Message(dataset_id=did,turn_id=turn,role='assistant',text='',status='completed');s.add(message);s.flush()
-        s.add(ChatQuestion(id=qid,dataset_id=did,turn_id=turn,message_id=message.id,prompt='范围怎么定？',
-            options=[{'option_id':'1','label':'只补空值'},{'option_id':'2','label':'全部重标'}],status='pending'))
-        s.add(WorkbenchMeta(id='business-question:'+qid,dataset_id=did,kind='business_question',data={'multiple':False,'answer':None}))
-    monkeypatch.setattr(conversation,'_resume_queued',lambda did,key:None)
-    monkeypatch.setattr(conversation.threading,'Thread',ImmediateThread)
-    business_questions.answer(did,qid,['1'])
-    with Session() as s:queued=s.get(WorkbenchMeta,'chat-followup:'+did)
-    assert queued.data['conversation_id']==live
-    assert queued.data['model']=='deepseek/deepseek-v4-flash'
-
-
-def test_resume_keeps_the_answer_when_it_cannot_start(dataset,monkeypatch):
-    did=dataset['id'];key='chat-followup:'+did
-    with Session.begin() as s:s.add(WorkbenchMeta(id=key,dataset_id=did,kind='chat_followup',data={'text':'回答','conversation_id':'gone'}))
-    def explode(*args,**kwargs):raise ValueError('对话不存在或已移入回收站')
-    monkeypatch.setattr(conversation,'start',explode)
-    conversation._resume_queued(did,key)
-    with Session() as s:assert s.get(WorkbenchMeta,key) is not None
-
-
-def test_finished_turn_delivers_a_queued_followup(dataset,monkeypatch):
-    did=dataset['id'];ident=uid()
-    client=ToolClient();client.instruction_hash=instruction_hash()
-    monkeypatch.setitem(conversation.clients,did,client)
-    with Session.begin() as s:
-        s.add(Message(id=ident,dataset_id=did,role='assistant',text='',status='running'))
-        s.add(WorkbenchMeta(id='chat-followup:'+did,dataset_id=did,kind='chat_followup',data={'text':'回答','conversation_id':'any'}))
-    drained=[]
-    monkeypatch.setattr(conversation,'_resume_queued',lambda did,key:drained.append(key))
-    class Immediate:
-        def __init__(self,target=None,args=(),daemon=None,**kwargs):self.target=target;self.args=args
-        def start(self):self.target(*self.args)
-    monkeypatch.setattr(conversation.threading,'Thread',Immediate)
-    conversation.run(did,ident,'turn-drain','读一下工作表','test/model')
-    assert drained==['chat-followup:'+did]
-
-
-def test_resume_reroutes_a_recycled_conversation(dataset,monkeypatch):
-    did=dataset['id'];live=uid();key='chat-followup:'+did
-    with Session.begin() as s:
-        s.add(WorkbenchMeta(id=live,dataset_id=did,kind='chat_thread',data={'name':'新对话','deleted':False,'legacy':False}))
-        s.add(WorkbenchMeta(id=key,dataset_id=did,kind='chat_followup',data={'text':'回答','conversation_id':'recycled-gone'}))
-    started={}
-    monkeypatch.setattr(conversation,'start',lambda did,**payload:started.update(payload) or {'message_id':'m','turn_id':'t'})
-    conversation._resume_queued(did,key)
-    assert started['conversation_id']==live

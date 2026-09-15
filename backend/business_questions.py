@@ -23,42 +23,11 @@ def ask(did,prompt,options=None,multiple=False):
         s.add(WorkbenchMeta(id='business-question:'+q.id,dataset_id=did,kind='business_question',data={'multiple':bool(multiple),'answer':None}))
         result={**obj(q),'business':True,'multiple':bool(multiple)};draft.emit(s,did,'question',result)
         labels=[x['label'] for x in result['options']]
-    # The answer arrives through the persisted web card and resumes the conversation as a
-    # new turn. Waiting for it inside the MCP call is what caused the 11-minute silence.
+    # The question is persisted and announced; the call returns instead of waiting, because waiting
+    # inside an MCP call is what caused an eleven-minute silence. Nothing resumes from the answer
+    # any more: the conversation that could ask this kind of question no longer exists.
     return {'status':'pending','question_id':result['id'],'prompt':prompt.strip(),'options':labels,'multiple':bool(multiple),'approval':False,
-        'instruction':'问题已显示在工作台；用户回答后系统会自动从下一步继续。不要重复提问，也不要使用原生 ask 再问同一问题。'}
-
-
-def _answer_sentence(question,payload):
-    parts=[]
-    if payload['labels']:parts.append('选择了：'+'、'.join(payload['labels']))
-    if payload['text']:parts.append('补充说明：'+payload['text'])
-    if payload['skipped']:parts.append('跳过此问题，请按你的判断继续')
-    return '针对上一轮的问题“'+str(question.prompt or '')[:200]+'”，'+('；'.join(parts) or '不作回答')+'。'
-
-
-def _resolve_thread(s,did,question):
-    """A business question outlives its turn, so prefer the turn's own conversation.
-    The migration default can be recycled, and resuming into it would drop the answer."""
-    from .chat_threads import live_thread
-    turn=s.get(WorkbenchMeta,'chat-turn:'+str(question.turn_id or ''))
-    active=s.get(WorkbenchMeta,'active-chat:'+did)
-    preferred=((turn.data or {}).get('conversation_id') if turn else None) or ((active.data or {}).get('conversation_id') if active else None)
-    return live_thread(s,did,preferred)
-
-
-def _queue_followup(s,did,question,payload):
-    """Return the follow-up key to resume, or None when one is already queued."""
-    key='chat-followup:'+did;text=_answer_sentence(question,payload)
-    existing=s.get(WorkbenchMeta,key)
-    if existing:
-        data=dict(existing.data);data['text']=(str(data.get('text') or '')+'\n'+text)[:20000];existing.data=data;return None
-    thread=_resolve_thread(s,did,question);data=dict(thread.data or {})
-    payload_out={'text':text,'conversation_id':thread.id}
-    for field in ('model','vision_model','text_credential_id','vision_credential_id'):
-        if data.get(field):payload_out[field]=data[field]
-    s.add(WorkbenchMeta(id=key,dataset_id=did,kind='chat_followup',data=payload_out))
-    return key
+        'instruction':'问题已显示在工作台；不要重复提问，也不要使用原生 ask 再问同一问题。'}
 
 
 def answer(did,qid,option_ids=None,text='',skip=False):
@@ -80,10 +49,6 @@ def answer(did,qid,option_ids=None,text='',skip=False):
         q.selected_label='；'.join(payload['labels']+[text.strip()]).strip('；')
         q.selected_option_id=json.dumps(selected)
         result={**obj(q),'business':True,'multiple':meta.data['multiple']};draft.emit(s,did,'question',result)
-        # A business question outlives the turn that asked it: the answer becomes the next
-        # turn instead of depending on a still-open ACP request.
-        queued=_queue_followup(s,did,q,payload)
-    if queued:
-        from . import conversation
-        conversation.threading.Thread(target=conversation._resume_queued,args=(did,queued),daemon=True).start()
+    # The answer is recorded as history. There is no conversation left to resume: the runtime
+    # that could ask a question of this kind has been retired.
     return result

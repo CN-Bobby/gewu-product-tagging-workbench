@@ -280,8 +280,8 @@ def _local_input(name, value, label):
 
 
 def save(body):
-    from . import conversation,batch
-    if conversation.busy or batch.active:raise ValueError('请先暂停对话和批处理，再修改模型配置')
+    from . import batch
+    if batch.active:raise ValueError('请先暂停批处理，再修改模型配置')
     name=body.get('name','');base=body.get('base_url','').rstrip('/')
     if not re.fullmatch(r'[a-zA-Z0-9_-]{1,60}',name):raise ValueError('服务名称仅使用英文、数字、下划线或短横线')
     url=urlparse(base)
@@ -322,13 +322,12 @@ def save(body):
         user=subprocess.check_output(['whoami'],text=True,creationflags=subprocess.CREATE_NO_WINDOW).strip()
         result=subprocess.run(['icacls',str(secrets),'/inheritance:r','/grant:r',user+':F'],capture_output=True,creationflags=subprocess.CREATE_NO_WINDOW)
         if result.returncode:raise ValueError('授权文件访问权限设置失败')
-    conversation.close()
     return read()
 
 
 def credential_action(provider_name,credential_id,action):
-    from . import conversation,batch
-    if conversation.busy or batch.active:raise ValueError('请先暂停对话和批处理，再修改 Key')
+    from . import batch
+    if batch.active:raise ValueError('请先暂停批处理，再修改 Key')
     home=provider_home();path=home/'config.toml'
     if not path.exists():raise ValueError('模型配置不存在')
     config=tomllib.loads(path.read_text(encoding='utf-8-sig'));config,_=_canonical_config(config)
@@ -351,4 +350,4 @@ def credential_action(provider_name,credential_id,action):
     else:raise ValueError('未知 Key 操作')
     _write_config(path,config)
     (home/'.env').write_text('\n'.join(k+'='+json.dumps(v) for k,v in keys.items() if isinstance(v,str)),encoding='utf-8')
-    conversation.close();return read()
+    return read()

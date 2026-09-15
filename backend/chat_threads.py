@@ -1,4 +1,5 @@
 """Dataset-owned conversations stored using the existing versioned metadata table."""
+import re
 import shutil
 from pathlib import Path
 from sqlalchemy import select
@@ -80,13 +81,16 @@ def update(did,cid,body):
 
 def destroy(did,cid):
     """Permanently delete one recycled conversation without touching shared results."""
-    session_ids=[];attachment_paths=[];preserved_attachments=0
+    attachment_paths=[];preserved_attachments=0
     with draft.WRITE_LOCK,Session.begin() as s:
         item=require(s,WorkbenchMeta,cid)
         if item.dataset_id!=did or item.kind!='chat_thread':raise ValueError('对话不属于此表格')
         if not item.data.get('deleted'):raise ValueError('请先把对话移入回收站，再彻底删除')
         active=s.get(WorkbenchMeta,'active-chat:'+did)
         if active and active.data.get('conversation_id')==cid:raise ValueError('此对话仍在回复，不能删除')
+        # Cleanup-only read of the retired runtime binding: it is never resumed, created or
+        # updated here, but an old conversation's native session files are recorded nowhere else,
+        # so destroying the conversation is the only place that can still remove them.
         runtimes=list(s.scalars(select(AgentRuntimeSession).where(AgentRuntimeSession.dataset_id==did,AgentRuntimeSession.conversation_id==cid)))
         session_ids=[x.native_session_id for x in runtimes if x.native_session_id]
         for runtime in runtimes:s.delete(runtime)
@@ -112,6 +116,15 @@ def destroy(did,cid):
         s.delete(item)
         audit(s,did,'chat_conversation_destroyed',{'conversation_id':cid,'turn_count':len(turn_ids),'deleted_unbound_attachments':len(attachment_paths)//2,'preserved_bound_attachments':preserved_attachments})
     image_root=(STORAGE/'chat-images'/did/cid).resolve()
+    for session_id in session_ids:
+        if session_id and re.fullmatch(r'[a-zA-Z0-9_-]+',str(session_id)):
+            session_root=(STORAGE/'datasets'/did/'reasonix'/'sessions').resolve()
+            if session_root.is_dir():
+                for path in session_root.glob(str(session_id)+'.*'):
+                    resolved=path.resolve()
+                    if resolved.parent==session_root:
+                        if resolved.is_dir():shutil.rmtree(resolved)
+                        elif resolved.is_file():resolved.unlink()
     for value in attachment_paths:
         if not value:continue
         path=Path(value).resolve()
@@ -120,15 +133,6 @@ def destroy(did,cid):
     runtime=(STORAGE/'harness'/did/('chat-'+cid)).resolve()
     harness_root=(STORAGE/'harness'/did).resolve()
     if runtime.parent==harness_root and runtime.is_dir():shutil.rmtree(runtime)
-    for session_id in session_ids:
-        if session_id and __import__('re').fullmatch(r'[a-zA-Z0-9_-]+',str(session_id)):
-            session_root=(STORAGE/'datasets'/did/'reasonix'/'sessions').resolve()
-            if session_root.is_dir():
-                for path in session_root.glob(str(session_id)+'.*'):
-                    resolved=path.resolve()
-                    if resolved.parent==session_root:
-                        if resolved.is_dir():shutil.rmtree(resolved)
-                        elif resolved.is_file():resolved.unlink()
     return {'deleted':True,'conversation_id':cid}
 
 

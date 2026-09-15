@@ -203,7 +203,7 @@ def instruction_hash():
     return hashlib.sha256((system_prompt()+tagging_rules.freeze()['sha256']).encode()).hexdigest()
 
 class ACP:
-    def __init__(self,dataset_id,model=DEFAULT_MODEL,run_id=None,product_id=None,on_event=None,session_id=None,conversation_id=None,vision_model=None,credential_id=None,vision_credential_id=None,role='coordinator'):
+    def __init__(self,dataset_id,model=DEFAULT_MODEL,run_id=None,product_id=None,on_event=None,session_id=None,conversation_id=None,vision_model=None,credential_id=None,vision_credential_id=None,role='coordinator',allow_business_questions=True):
         from .model_settings import normalize_reference
         model=normalize_reference(model)
         self.model=model;self.vision_model=normalize_reference(vision_model) if vision_model else None
@@ -221,7 +221,7 @@ class ACP:
         if role=='worker' and (not run_id or not product_id):raise ValueError('worker runtime 缺少任务或商品身份')
         if role=='coordinator' and (run_id or product_id):raise ValueError('coordinator runtime 不能携带任务或商品身份')
         suffix=run_id or ('chat-'+conversation_id if conversation_id else 'chat')
-        cwd=runtime_dir(dataset_id,suffix,product_id,model if run_id else (vision_model or VISION_MODEL),conversation_id,vision_credential_id,role=role)
+        cwd=runtime_dir(dataset_id,suffix,product_id,model if run_id else (vision_model or VISION_MODEL),conversation_id,vision_credential_id,role=role,allow_business_questions=allow_business_questions)
         from .runtime_isolation import environment,mark_resumed
         providers={model.partition('/')[0]:credential_id} if credential_id else {}
         if vision_model and vision_credential_id:providers[vision_model.partition('/')[0]]=vision_credential_id

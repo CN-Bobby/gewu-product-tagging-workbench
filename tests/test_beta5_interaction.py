@@ -8,31 +8,10 @@ def test_tool_lifecycle_has_one_current_state_per_call():
     assert result['activity']==[{'title':'读取表格','status':'completed'}, {'title':'读取表格','status':'failed'}]
 
 
-def test_unsupported_question_becomes_plain_question(dataset,monkeypatch):
-    from backend import conversation
-    from backend.db import Session,Message,uid
-    from backend.harness import HarnessError,instruction_hash
-    from types import SimpleNamespace
-    did=dataset['id'];ident=uid()
-    class Client:
-        closed=False
-        proc=SimpleNamespace(poll=lambda:None)
-        fallback_question={'prompt':'要观察哪些方面？','options':[{'Label':'颜色'},{'label':'结构'}]}
-        def prompt(self,text):raise HarnessError('unsupported_question')
-    client=Client();client.instruction_hash=instruction_hash()
-    monkeypatch.setitem(conversation.clients,did,client)
-    with Session.begin() as s:s.add(Message(id=ident,dataset_id=did,role='assistant',text='',status='running'))
-    conversation.run(did,ident,'turn-fallback','看图片','test/model')
-    with Session() as s:
-        message=s.get(Message,ident)
-        assert message.status=='completed' and message.error_code is None
-        assert '颜色' in message.text and '结构' in message.text
-        assert '直接输入回答' in message.text
-
-
 def test_managed_question_accepts_multiple_and_text_once(dataset,monkeypatch):
-    from backend import business_questions as questions,conversation
-    from backend.db import Session,Message,WorkbenchMeta,ChatQuestion,uid
+    """The answer is recorded once, and nothing resumes: there is no conversation left to."""
+    from backend import business_questions as questions
+    from backend.db import Session,Message,WorkbenchMeta,uid
     did=dataset['id'];mid=uid();turn=uid()
     with Session.begin() as s:
         s.add(Message(id=mid,dataset_id=did,role='assistant',text='',status='running'))
@@ -40,20 +19,11 @@ def test_managed_question_accepts_multiple_and_text_once(dataset,monkeypatch):
     asked=questions.ask(did,'选哪些特征？',['颜色','结构'],True)
     assert asked['status']=='pending' and asked['multiple'] is True and asked['approval'] is False
     assert asked['options']==['颜色','结构']
-    resumed=[]
-    monkeypatch.setattr(conversation,'_resume_queued',lambda did,key:resumed.append(key))
-    class Immediate:
-        def __init__(self,target=None,args=(),daemon=None,**kw):self.target=target;self.args=args
-        def start(self):self.target(*self.args)
-    monkeypatch.setattr(conversation.threading,'Thread',Immediate)
     first=questions.answer(did,asked['question_id'],['2','1'],'只看主体')
     assert first['status']=='answered' and first['selected_label']=='颜色；结构；只看主体'
     second=questions.answer(did,asked['question_id'],['1','2'],'只看主体')
     assert second['id']==first['id']
-    with Session() as s:
-        queued=s.get(WorkbenchMeta,'chat-followup:'+did)
-        assert queued and '颜色' in queued.data['text'] and '只看主体' in queued.data['text']
-    assert resumed==['chat-followup:'+did]
+    with Session() as s:assert s.get(WorkbenchMeta,'chat-followup:'+did) is None
 
 
 def test_conversation_images_have_stable_numbers_and_bind_explicitly(dataset):

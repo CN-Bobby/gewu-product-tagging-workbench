@@ -11,7 +11,7 @@ from sqlalchemy import select
 from .db import *
 from . import importer, service, jobs, harness
 from .exporter import export_run
-from . import draft,batch,conversation,draft_export,text_facts
+from . import draft,batch,draft_export,text_facts
 from . import field_catalog,worksheet_query,task_control
 from . import knowledge,templates,storage_management,model_settings,capabilities
 from .build_info import VERSION, build_info
@@ -27,7 +27,6 @@ async def lifespan(app):
     for rid in list(jobs.active):jobs.stop_run(rid)
     for did in list(jobs.chats):jobs.stop_chat(did)
     for jid in list(batch.active):batch.stop(jid)
-    conversation.close()
 
 app=FastAPI(title='商品特征工程工作台',version=VERSION,lifespan=lifespan)
 
@@ -148,16 +147,6 @@ def source_label_status(did:str,column_id:str,body:dict):
 @app.get('/api/drafts/{did}/profile')
 def data_profile(did:str):return worksheet_query.profile(did)
 
-@app.get('/api/drafts/{did}/runtime')
-def dataset_runtime(did:str):
-    with Session() as s:
-        require(s,Dataset,did);saved=s.scalar(select(ChatSession).where(ChatSession.dataset_id==did))
-        client=conversation.clients.get(did)
-        return {'dataset_id':did,'session_id':saved.session_id if saved else None,
-                'process_id':client.proc.pid if client and client.proc.poll() is None else None,
-                'work_directory':str(STORAGE/'harness'/did/'chat'),
-                'state_directory':str(STORAGE/'datasets'/did/'reasonix')}
-
 @app.post('/api/drafts/{did}/profile/observe')
 def data_observe(did:str,body:dict):
     capabilities.require_visual_tagging()
@@ -265,9 +254,6 @@ def asset(asset_id:str):
         if not a.path:raise ValueError('外部图片尚未缓存')
         return FileResponse(a.path)
 
-@app.post('/api/datasets/{dataset_id}/chat')
-def chat(dataset_id:str,body:dict):return conversation.start(dataset_id,body.get('text',''),body.get('model') or model_settings.defaults()[0],body.get('proposal_id'),body.get('vision_model'),body.get('conversation_id'),body.get('attachment_ids') or [],body.get('text_credential_id'),body.get('vision_credential_id'))
-
 @app.get('/api/datasets/{did}/conversations')
 def conversations_list(did:str):
     from .chat_threads import listing
@@ -307,17 +293,6 @@ def conversation_attachment(did:str,cid:str,aid:str,thumbnail:bool=False):
 def conversation_attachment_bind(did:str,cid:str,aid:str,body:dict):
     from .chat_images import bind
     return bind(did,cid,aid,body.get('product_id',''))
-
-@app.post('/api/datasets/{dataset_id}/chat/stop')
-def stop_chat(dataset_id:str):return conversation.stop(dataset_id)
-
-@app.post('/api/datasets/{dataset_id}/chat/questions/{question_id}/answer')
-def answer_chat_question(dataset_id:str,question_id:str,body:dict):
-    with Session() as s:managed=s.get(WorkbenchMeta,'business-question:'+question_id) is not None
-    if managed:
-        from .business_questions import answer
-        return answer(dataset_id,question_id,body.get('option_ids') or ([body['option_id']] if body.get('option_id') else []),body.get('text',''),body.get('skip',False))
-    return conversation.answer(dataset_id,question_id,body.get('option_id',''))
 
 @app.post('/api/datasets/{dataset_id}/schemas')
 def propose(dataset_id:str,body:dict):return service.propose(dataset_id,body.get('goal',''),body.get('definitions',[]))

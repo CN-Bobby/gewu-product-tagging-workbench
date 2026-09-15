@@ -79,8 +79,8 @@ npm run build
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-`scripts/draft_acceptance.py`、`scripts/chat_acceptance.py`、`scripts/benchmark_same_model.py` 是真实模型验收脚本，会消耗已有模型额度，使用独立的 `storage/draft-acceptance`，不写用户正式库。验收结论和限制见 `docs/改造验收.md`。
+`scripts/draft_acceptance.py`、`scripts/benchmark_same_model.py` 是真实模型验收脚本，会消耗已有模型额度，使用独立的 `storage/draft-acceptance`，不写用户正式库。验收结论和限制见 `docs/改造验收.md`。
 
 主要 API：`GET /api/drafts/{id}`、`GET .../sheet?version=...`、`POST .../proposals`、`POST .../proposals/{pid}/confirm`、`PATCH .../cells/{product}/{column}`、`POST .../versions`、`GET .../compare`、`POST .../export`、`GET .../events`；任务使用 `/api/jobs/{id}/stop|resume|cancel`。服务仅监听本机，拒绝跨站写请求。MCP 使用相同草稿业务服务，并将读取工具声明为只读。
 
-Skill 接入新增 `GET .../text-records`、`POST .../text-records/extract`、只读 MCP `read_tagging_rules(topic)`；变更提案增加 `expand`，定义增加 `judgment`，属性列值只接受 true/false/null。核心规则注入数据集 Reasonix 指令，参考按需读取；冻结规则内容直接传给后台模型。验收脚本 `scripts/skill_acceptance.py` 使用每次独立目录；报告见 `docs/Skill接入验收.md`。
+Skill 接入新增 `GET .../text-records`、`POST .../text-records/extract`、只读 MCP `read_tagging_rules(topic)`；变更提案增加 `expand`，定义增加 `judgment`，属性列值只接受 true/false/null。核心规则注入数据集 Reasonix 指令，参考按需读取；冻结规则内容直接传给后台模型。Skill 验收改为在「Agent 会话」里直接进行；历史报告见 `docs/Skill接入验收.md`。

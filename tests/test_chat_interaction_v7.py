@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 from backend.db import Session,Message,ChatQuestion,WorkbenchMeta,BatchJob,require,uid
-from backend import conversation,draft,jobs
+from backend import draft,jobs
 from backend.harness import ACP,HarnessError,_redact_text
 from backend.conversation_presentation import build
 
@@ -92,30 +92,6 @@ class BridgeClient:
     proc=SimpleNamespace(poll=lambda:None)
     def __init__(self):self.answers=[]
     def answer_question(self,qid,option_id):self.answers.append((qid,option_id))
-
-def test_answer_question_continues_bridge_without_confirming_or_creating_jobs(dataset):
-    did=dataset['id'];mid=uid();qid=uid();client=BridgeClient();conversation.clients[did]=client
-    try:
-        with Session.begin() as session:
-            session.add(Message(id=mid,dataset_id=did,turn_id='turn-one',role='assistant',text='请选择',status='running'));session.flush()
-            session.add(ChatQuestion(id=qid,dataset_id=did,turn_id='turn-one',message_id=mid,prompt='选一个',options=[{'option_id':'one:1','label':'甲'},{'option_id':'one:2','label':'乙'}]))
-        result=conversation.answer(did,qid,'one:2')
-        assert result['status']=='answered' and result['selected_label']=='乙'
-        assert client.answers==[(qid,'one:2')]
-        with Session() as session:assert session.scalar(select(BatchJob.id)) is None
-    finally:conversation.clients.pop(did,None)
-
-def test_restart_interrupts_pending_questions_and_active_turn(dataset):
-    did=dataset['id'];mid=uid();qid=uid()
-    with Session.begin() as session:
-        session.add(Message(id=mid,dataset_id=did,turn_id='turn-two',role='assistant',text='',status='running'));session.flush()
-        session.add(ChatQuestion(id=qid,dataset_id=did,turn_id='turn-two',message_id=mid,prompt='选一个',options=[]))
-        session.add(WorkbenchMeta(id='active-chat:'+did,dataset_id=did,kind='active_chat_turn',data={'turn_id':'turn-two'}))
-    jobs.recover()
-    with Session() as session:
-        assert require(session,Message,mid).status=='interrupted'
-        assert require(session,ChatQuestion,qid).status=='interrupted'
-        assert session.get(WorkbenchMeta,'active-chat:'+did) is None
 
 def test_proposal_group_deduplicates_merges_and_supersedes(dataset):
     did=dataset['id'];a=add_column(did,'a');b=add_column(did,'b');pids=[row['id'] for row in draft.sheet(did)['rows'][:2]]

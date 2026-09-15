@@ -41,4 +41,4 @@
 
 正式库升级前一致备份为 `storage/backups/before-skill-v3-*.db`，具体路径与完整性结果见 `storage/skill-acceptance/deployment.json`。迁移版本3仅增加结构；升级前后商品10行、标签8列、单元格80个、正式版本0个的完整行哈希一致。没有向正式库写入验收标签或自动重新打标，没有删除Reasonix历史。
 
-运行自动测试：`.venv\Scripts\python.exe -m pytest -q`。真实模型验收：`.venv\Scripts\python.exe scripts/skill_acceptance.py`，会调用已有授权模型，写入新隔离目录。Skill基线/加载复测报告位于 `storage/skill-acceptance/skills-baseline.json` 与 `skills-loaded.json`；浏览器证据摘要为 `ui-report.json`。回滚流程沿用 README 中的停机、备份恢复步骤。
+运行自动测试：`.venv\Scripts\python.exe -m pytest -q`。真实模型验收：旧 chat 验收脚本已随旧 chat runtime 退役删除（见 README 的重构进度），Skill 内容改为在「Agent 会话」中直接验证，需调用已有授权模型并写入隔离目录。Skill基线/加载复测报告位于 `storage/skill-acceptance/skills-baseline.json` 与 `skills-loaded.json`；浏览器证据摘要为 `ui-report.json`。回滚流程沿用 README 中的停机、备份恢复步骤。

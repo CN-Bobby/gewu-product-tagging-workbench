@@ -20,7 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from backend import agent_application,business_questions,chat_threads,conversation,draft,harness
+from backend import agent_application,business_questions,chat_threads,draft,harness
 from backend.agent import events as agent_store
 from backend.app import app
 from backend.db import Message,Session,WorkbenchMeta,require,uid
@@ -34,16 +34,6 @@ AGENT_MODULES=['agent/backend.py','agent/bridge.py','agent/events.py','agent/pro
 @pytest.fixture
 def client():
     with TestClient(app) as test_client:yield test_client
-
-
-@pytest.fixture
-def resume_calls(monkeypatch):
-    """The legacy continuation is the only thing that may resume a legacy conversation."""
-    calls=[]
-    def spy(did,key):
-        calls.append({'dataset_id':did,'key':key})
-    monkeypatch.setattr(conversation,'_resume_queued',spy)
-    return calls
 
 
 def wait_for(produce,timeout=10):
@@ -102,27 +92,25 @@ def agent_interaction(client,session_id,text='需要确认口径'):
 
 # --- T1: legacy still resumes legacy, exactly once -------------------------
 
-def test_a_legacy_question_still_resumes_its_own_conversation(dataset,resume_calls):
+def test_a_legacy_question_records_its_answer_and_resumes_nothing(dataset):
+    """The answer is history now: the conversation that could have resumed is retired."""
     did=dataset['id'];owner=seed_legacy_turn(did)
     asked=business_questions.ask(did,'主色按什么口径？',['底色主导','整套视觉'])
     assert asked['status']=='pending'
     result=business_questions.answer(did,asked['question_id'],option_ids=['1'])
     assert result['status']=='answered' and result['selected_label']=='底色主导'
-    assert wait_for(lambda:resume_calls or None),'legacy 问题没有恢复原对话'
-    assert len(resume_calls)==1 and resume_calls[0]['dataset_id']==did
     with Session() as s:
-        follow=s.get(WorkbenchMeta,resume_calls[0]['key'])
-        assert follow.data['conversation_id']==owner['conversation_id']
-        assert '底色主导' in follow.data['text']
-    # answering the same way again is idempotent: no second resume
-    business_questions.answer(did,asked['question_id'],option_ids=['1'])
-    time.sleep(0.1)
-    assert len(resume_calls)==1
+        assert s.get(WorkbenchMeta,'chat-followup:'+did) is None
+        assert require(s,WorkbenchMeta,'active-chat:'+did).data['turn_id']==owner['turn_id']
+    # answering the same way again is idempotent
+    again=business_questions.answer(did,asked['question_id'],option_ids=['1'])
+    assert again['id']==result['id']
+    with Session() as s:assert s.get(WorkbenchMeta,'chat-followup:'+did) is None
 
 
 # --- T2: an agent answer never reaches the legacy orchestrator -------------
 
-def test_answering_an_agent_interaction_never_resumes_a_legacy_conversation(client,dataset,monkeypatch,resume_calls):
+def test_answering_an_agent_interaction_never_resumes_a_legacy_conversation(client,dataset,monkeypatch):
     """Same dataset, both chains alive: the legacy chat has a turn in flight and the agent panel has
     a session. Answering the agent's question must leave the legacy side completely untouched."""
     did=dataset['id']
@@ -134,7 +122,6 @@ def test_answering_an_agent_interaction_never_resumes_a_legacy_conversation(clie
                          json={'option_id':'a'})
     assert answered.status_code==200 and answered.json()['accepted'] is True
     time.sleep(0.2)
-    assert resume_calls==[],'agent 回答触发了 legacy 续跑'
     with Session() as s:
         assert s.get(WorkbenchMeta,'chat-followup:'+did) is None
         active=require(s,WorkbenchMeta,'active-chat:'+did)
@@ -145,22 +132,7 @@ def test_answering_an_agent_interaction_never_resumes_a_legacy_conversation(clie
 
 # --- T3: two owners on one dataset stay apart ------------------------------
 
-def test_a_question_resumes_the_conversation_that_asked_it(dataset,resume_calls):
-    """Two live legacy conversations: the answer must resume the asker, never the other one."""
-    did=dataset['id']
-    owner=seed_legacy_turn(did,'提问者')
-    other=chat_threads.create(did,'旁观者')
-    asked=business_questions.ask(did,'按哪个口径？',['甲','乙'])
-    business_questions.answer(did,asked['question_id'],option_ids=['2'])
-    assert wait_for(lambda:resume_calls or None)
-    with Session() as s:
-        follow=s.get(WorkbenchMeta,resume_calls[0]['key'])
-        assert follow.data['conversation_id']==owner['conversation_id']
-        assert follow.data['conversation_id']!=other['id']
-        assert '乙' in follow.data['text']
-
-
-def test_the_agent_session_owns_only_its_own_interaction(client,dataset,monkeypatch,resume_calls):
+def test_the_agent_session_owns_only_its_own_interaction(client,dataset,monkeypatch):
     did=dataset['id']
     owner=seed_legacy_turn(did)
     install_agent_backend(monkeypatch,'ask_interaction')
@@ -168,7 +140,6 @@ def test_the_agent_session_owns_only_its_own_interaction(client,dataset,monkeypa
     interaction_id=agent_interaction(client,session_id)
     client.post('/api/agent/sessions/%s/questions/%s/cancel'%(session_id,interaction_id))
     time.sleep(0.2)
-    assert resume_calls==[]
     with Session() as s:
         assert s.get(WorkbenchMeta,'chat-followup:'+did) is None
         assert require(s,WorkbenchMeta,'active-chat:'+did).data['turn_id']==owner['turn_id']
@@ -179,7 +150,7 @@ def test_the_agent_session_owns_only_its_own_interaction(client,dataset,monkeypa
 
 # --- T4: wrong owner / stale / repeated answers stay structured errors ----
 
-def test_an_agent_interaction_cannot_be_answered_through_the_legacy_route(client,dataset,monkeypatch,resume_calls):
+def test_an_agent_interaction_cannot_be_answered_through_the_legacy_route(client,dataset,monkeypatch):
     did=dataset['id']
     seed_legacy_turn(did)
     install_agent_backend(monkeypatch,'ask_interaction')
@@ -188,12 +159,10 @@ def test_an_agent_interaction_cannot_be_answered_through_the_legacy_route(client
     response=client.post('/api/datasets/%s/chat/questions/%s/answer'%(did,interaction_id),
                          json={'option_id':'a'})
     assert response.status_code>=400,'legacy 路由不应接受 agent interaction'
-    time.sleep(0.2)
-    assert resume_calls==[]
     with Session() as s:assert s.get(WorkbenchMeta,'chat-followup:'+did) is None
 
 
-def test_a_stale_agent_interaction_is_refused_and_queues_nothing(client,dataset,monkeypatch,resume_calls):
+def test_a_stale_agent_interaction_is_refused_and_queues_nothing(client,dataset,monkeypatch):
     did=dataset['id']
     seed_legacy_turn(did)
     install_agent_backend(monkeypatch,'normal')
@@ -201,8 +170,6 @@ def test_a_stale_agent_interaction_is_refused_and_queues_nothing(client,dataset,
     response=client.post('/api/agent/sessions/%s/questions/no-such-interaction/answer'%session_id,
                          json={'option_id':'a'})
     assert response.status_code==400
-    time.sleep(0.1)
-    assert resume_calls==[]
     with Session() as s:assert s.get(WorkbenchMeta,'chat-followup:'+did) is None
 
 
@@ -306,3 +273,10 @@ def _mcp_tool_names(question_owner):
                 return sorted(tool.name for tool in result.tools)
 
     return asyncio.run(collect())
+
+
+# --- the retired controller stays retired --------------------------------
+
+def test_the_legacy_conversation_controller_is_gone():
+    import importlib.util
+    assert importlib.util.find_spec('backend.conversation') is None

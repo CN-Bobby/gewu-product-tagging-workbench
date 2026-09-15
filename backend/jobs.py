@@ -34,7 +34,7 @@ def _execute(run_id):
                 if s.scalar(select(Tag).where(Tag.run_id==run_id,Tag.product_id==pid)):continue
             client=None
             try:
-                client=ACP(dataset_id,model,run_id,pid,role='worker')
+                client=ACP(dataset_id,model,run_id,pid,role='worker',allow_business_questions=False)
                 active[run_id]['client']=client
                 if active[run_id]['stop']:break
                 client.prompt('执行单商品打标。先 get_products 读取本商品，再用 view_product_image 检查图片，最后 record_product_tags 保存完整结果。不要只在回复里给结果。严格采用已确认的标签定义：\n'+json.dumps(schema['definitions'],ensure_ascii=False))
@@ -91,7 +91,7 @@ def _chat(dataset_id,ident,text,model):
             if e['type']=='text':m.text=(m.text or '')+e['text']
             else:m.events=(m.events+[e])[-100:]
     try:
-        client=ACP(dataset_id,model,on_event=event,role='coordinator')
+        client=ACP(dataset_id,model,on_event=event,role='coordinator',allow_business_questions=False)
         chats[dataset_id]['client']=client
         if chats[dataset_id]['stop']:raise RuntimeError('回复已停止')
         # Replay bounded visible history; business context lives in MCP/database, not hidden reasoning.

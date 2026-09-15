@@ -1,7 +1,7 @@
 import threading,copy
 from sqlalchemy import select
 from backend.db import *
-from backend import draft,batch,conversation,service
+from backend import draft,batch,service
 from test_draft import add,job,run
 
 def test_legacy_migration_keeps_evidence_and_distinct_columns(dataset):
@@ -35,8 +35,8 @@ def test_model_dependency_marks_stale_and_retains_late_candidate(dataset):
 def test_bound_user_confirmation_only(dataset,monkeypatch):
     did=dataset['id'];p=draft.propose(did,'测试人工指令',[{'kind':'add','definition':{'key':'test','name':'测试列','type':'FACT','source':'text','definition':'测试判断定义内容','options':[]}}])
     import pytest
-    with pytest.raises(ValueError):conversation.start(did,'确认执行')
-    result=conversation.start(did,'确认执行',proposal_id=p['id']);assert result['confirmed']
+    with pytest.raises(ValueError):draft.confirm(did,'no-such-proposal')
+    draft.confirm(did,p['id'])
     assert len(draft.sheet(did)['columns'])==1
 
 def test_visual_cache_fingerprint_and_requirements(dataset,monkeypatch):

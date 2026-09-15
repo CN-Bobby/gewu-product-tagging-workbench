@@ -5,7 +5,7 @@ ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 os.environ['TAG_STORAGE']=str(ROOT/'storage'/'draft-acceptance')
 from sqlalchemy import select
 from backend.db import *
-from backend import draft,batch,importer,draft_export,conversation
+from backend import draft,batch,importer,draft_export
 
 def report(x):print(json.dumps(x,ensure_ascii=False),flush=True)
 def add(did,d):
