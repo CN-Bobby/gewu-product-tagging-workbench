@@ -19,3 +19,8 @@
 .agent-status[data-status=failed],.agent-status[data-status=unavailable]{background:#fbeee7;color:#95462f}
 .agent-panel .composer textarea:disabled{background:#f1f3ee}
 .agent-panel .question-card{margin:8px 16px}
+
+/* The legacy panel is a viewer now: it keeps the history and the thread controls and says so,
+   instead of offering a composer that would start an old Agent turn. */
+.compatibility-note{display:flex;flex-direction:column;gap:5px;margin:14px 16px;padding:11px 12px;border:1px solid #d8dfd2;border-radius:7px;background:#f4f6f1;color:#6d7c68;font-size:11px;line-height:1.6}
+.compatibility-note strong{color:#4f6350}
