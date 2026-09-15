@@ -15,6 +15,7 @@ from . import draft,batch,conversation,draft_export,text_facts
 from . import field_catalog,worksheet_query,task_control
 from . import knowledge,templates,storage_management,model_settings,capabilities
 from .build_info import VERSION, build_info
+from .agent_http import router as agent_router
 
 @asynccontextmanager
 async def lifespan(app):
@@ -412,6 +413,8 @@ async def agent_events(session_id:str,request:Request,after_sequence:str|None=No
     cursor=agent_stream.resolve_cursor(after_sequence,request.headers.get('last-event-id'))
     return StreamingResponse(agent_stream.event_stream(session_id,cursor,disconnected=request.is_disconnected),
         media_type='text/event-stream',headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})
+
+app.include_router(agent_router)
 
 @app.get('/api/drafts/{did}/events')
 async def draft_events(did:str,request:Request,after:int=0):
