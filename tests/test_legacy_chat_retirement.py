@@ -2,8 +2,8 @@
 
 Three things must hold at once and they pull in opposite directions: the HTTP surface that could
 start a legacy Agent turn is gone, the conversation history it produced is still readable, and the
-batch pipeline that shares the same ACP layer still works. Each is asserted here from the running
-application rather than from a module's absence.
+batch pipeline that shares the same runtime layer still works. Each is asserted here from the
+running application rather than from a module's absence.
 """
 import importlib.util
 import json
@@ -90,16 +90,20 @@ def test_history_loads_with_its_messages_questions_and_presentation(client,datas
     assert [q['prompt'] for q in payload['questions']]==['历史问题']
 
 
-# --- the batch pipeline that shares ACP is untouched -----------------------
+# --- the batch pipeline that shares the runtime layer is untouched ---------
 
-def test_the_batch_pipeline_still_uses_acp():
-    """The tagging pipeline is a separate production chain and must survive this retirement."""
-    assert 'ACP' in vars(jobs),'jobs must still build runtimes through harness.ACP'
+def test_the_batch_pipeline_is_still_a_separate_chain_of_its_own():
+    """The tagging pipeline is a separate production chain and must survive this retirement.
+
+    M5-5 moved its runtimes onto the backend contract; what must not change is that it still builds
+    its own worker and text-facts runtimes and never reaches a conversation controller.
+    """
+    assert 'ACP' not in vars(jobs),'the batch chain must not build runtimes through harness.ACP'
     root=Path(__file__).resolve().parents[1]/'backend'
     text=(root/'jobs.py').read_text(encoding='utf-8')
     # the worker runtime is how a product is actually tagged; losing this call loses tagging
-    assert re.search(r"client=ACP\(dataset_id,model,run_id,pid,role='worker'",text),'worker runtime'
-    assert re.search(r"client=ACP\(dataset_id,model,on_event=event,role='coordinator'",text),'text-facts runtime'
+    assert re.search(r"client=_backend\(dataset_id,model,run_id,pid,role='worker'",text),'worker runtime'
+    assert re.search(r"client=_backend\(dataset_id,model,'chat',role='coordinator'",text),'text-facts runtime'
     for source in ('jobs.py','batch.py','text_facts.py'):
         body=(root/source).read_text(encoding='utf-8')
         assert not re.search(r'conversation\.|import .*conversation',body),source

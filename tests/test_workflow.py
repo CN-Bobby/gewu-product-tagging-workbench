@@ -114,20 +114,24 @@ def test_float_images_and_sparse_rows():
     assert len(parsed['rows'][1]['images'])==1 and parsed['rows'][1]['fields']['price']==0
 
 def test_retry_keeps_successes(dataset,monkeypatch):
-    from backend import jobs
+    from backend import jobs,runtime_isolation
+    from backend.agent import reasonix
+    from backend.agent.backend import TurnError
     sc=schema(dataset);r=service.create_run(dataset['id'],sc['id'],'sample','test')
     first=r['product_ids'][0]
     service.record_tags(r['id'],first,[{'key':'color','raw_value':None,'normalized_value':None,'confidence':None,'source':'unknown','evidence':'测试：缺少输入','asset_ids':[]}])
-    called=[]
+    launched=[]
     class Fake:
-        def __init__(self,ds,model,rid,pid,role=None,allow_business_questions=None):
-            assert role=='worker'
-            assert allow_business_questions is False   # a worker is not the question owner
-            self.pid=pid;called.append(pid)
-        def prompt(self,text):raise RuntimeError('controlled network failure')
-        def close(self):pass
-    monkeypatch.setattr(jobs,'ACP',Fake)
+        def __init__(self,config):
+            self.config=config;launched.append(Path(config.cwd).joinpath('reasonix.toml').read_text(encoding='utf-8'))
+        def bind(self,sink):self.sink=sink
+        def start(self):pass
+        def send(self,text):raise TurnError('controlled network failure')
+        def stop(self):pass
+    monkeypatch.setattr(reasonix,'ReasonixAdapter',Fake)
+    monkeypatch.setattr(runtime_isolation,'environment',lambda *a,**k:{})
     jobs.active[r['id']]={'stop':False,'client':None};jobs._execute(r['id'])
-    assert first not in called and len(called)==9
+    assert len(launched)==9
+    assert ('"TAG_PRODUCT_ID" = "%s"'%first) not in ''.join(launched)   # already-saved work is not redone
     assert len(service.run_results(r['id']))==1
     with Session() as s:assert require(s,Run,r['id']).status=='partial'
