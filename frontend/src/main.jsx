@@ -10,9 +10,11 @@ import {UploadDialog,TemplateDialog} from './projectTools';
 import {ProviderSettings,StorageDialog} from './settingsTools';
 import {SourceLabelDialog} from './sourceLabelTools';
 import {AgentPanel} from './agentPanel';
+import {DEFAULT_PANEL,PANEL} from './agentState';
+import {applyDraftEvent} from './workbenchEvents';
 const LABEL={cancelled:'已取消',cancelling:'正在取消',pending:'待处理',ready:'已完成',unknown:'未知',failed:'失败',stale:'需要重算',review:'待确认',running:'执行中',queued:'排队中',pausing:'正在暂停',paused:'已暂停',completed:'已完成',resolved:'已收尾',partial:'部分失败',interrupted:'已中断'};
 async function api(path,body,method='POST'){let r=await fetch(path,body===undefined?{}:{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok)throw Error((await r.json()).detail||'请求失败');return r.json()}
-const merge=(xs,x)=>xs.some(a=>a.id===x.id)?xs.map(a=>a.id===x.id?{...a,...x}:a):[...xs,x],pretty=x=>x==null?'—':typeof x==='boolean'?(x?'✓':'❌'):typeof x==='object'?JSON.stringify(x,null,2):String(x),toggle=(xs,x)=>xs.includes(x)?xs.filter(a=>a!==x):[...xs,x];
+const pretty=x=>x==null?'—':typeof x==='boolean'?(x?'✓':'❌'):typeof x==='object'?JSON.stringify(x,null,2):String(x),toggle=(xs,x)=>xs.includes(x)?xs.filter(a=>a!==x):[...xs,x];
 const columnName=(c,all)=>c.definition.name+(all.filter(x=>x.definition.name===c.definition.name).length>1?'（'+(c.origin?.schema_version?'原规则'+c.origin.schema_version:'草稿列'+(all.findIndex(x=>x.id===c.id)+1))+'）':'');
 function QuestionCard({question,onAnswer,answering}){
  const [selected,setSelected]=useState([]),[reply,setReply]=useState('');
@@ -50,7 +52,7 @@ function App(){
  const [filters,setFilters]=useState([]),[filterColumn,setFilterColumn]=useState(null),[imageProduct,setImageProduct]=useState(null),[focus,setFocus]=useState(false),[jobsOpen,setJobsOpen]=useState(false),[rowHeight,setRowHeight]=useState(80),[executeColumns,setExecuteColumns]=useState([]),[prefsLoaded,setPrefsLoaded]=useState('');
  const chatEnd=useRef(),file=useRef(),drag=useRef(false),editing=useRef(false),versionRequest=useRef(0),draftView=useRef(null),detailClick=useRef(null);
  const [toolsPanel,setToolsPanel]=useState(null),[showHistory,setShowHistory]=useState(false),[answering,setAnswering]=useState(''),[confirming,setConfirming]=useState('');
- const [agentMode,setAgentMode]=useState(false);
+ const [agentMode,setAgentMode]=useState(DEFAULT_PANEL===PANEL.AGENT);
  const [conversations,setConversations]=useState([]),[currentConversation,setCurrentConversation]=useState(''),[recycleConversation,setRecycleConversation]=useState('');
  const [pendingFiles,setPendingFiles]=useState([]),chatFile=useRef();
  const confirmKeys=useRef(new Map());
@@ -58,12 +60,8 @@ function App(){
  useEffect(()=>{handle(async()=>{let[ds,settings,health]=await Promise.all([api('/api/datasets'),api('/api/settings/models'),api('/api/health')]);setCapabilities(health.capabilities||{visual_tagging:false,online_updates:false});setBuildInfo(health);setDatasets(ds);if(ds.length)setDid(ds[0].id);setModelSettings(settings);if(settings.configured){setTextModel(settings.defaults[0]);setVisionModel(settings.defaults[1]);const tp=settings.providers.find(p=>p.name===settings.defaults[0].split('/')[0]),vp=settings.providers.find(p=>p.name===settings.defaults[1].split('/')[0]);setTextCredential(tp?.primary_credential_id||'');setVisionCredential(vp?.primary_credential_id||'')}else setModal('settings')})},[]);
  useEffect(()=>{if(!did)return;let cancel=false,events;versionRequest.current++;draftView.current=null;clearTimeout(detailClick.current);setData(null);setSelected([]);setVersion('');setFrozen(null);setRaw([]);setRange(null);setDetail(null);setBound('');setQuery('');setSort(null);setModal(null);setEdit(null);setImageProduct(null);setFilterColumn(null);setToolsPanel(null);setShowHistory(false);setScope('all');setText('');setPendingFiles([]);setNotice('');setError('');setPrefsLoaded('');setTemplateOpen(false);
   handle(async()=>{let[d,threads]=await Promise.all([api('/api/drafts/'+did),api(`/api/datasets/${did}/conversations`)]);if(cancel)return;setData(d);setConversations(threads);const first=threads.find(x=>!x.deleted);setCurrentConversation(first?.id||'');setText(first?.draft||'');if(first?.model)setTextModel(first.model);if(first?.vision_model)setVisionModel(first.vision_model);if(first?.text_credential_id)setTextCredential(first.text_credential_id);if(first?.vision_credential_id)setVisionCredential(first.vision_credential_id);let pref={};try{pref=JSON.parse(localStorage.getItem('worksheet:'+did)||'{}')}catch{};setVisible(pref.visible||d.columns.map(c=>c.id));setRaw(pref.raw||d.dataset.headers.filter(h=>!['图片','ASIN'].includes(h)).slice(0,6));setFilters(pref.filters||[]);setRowHeight(pref.rowHeight||80);setWidths(pref.widths||{});setPrefsLoaded(did);setExecuteColumns([]);events=new EventSource(`/api/drafts/${did}/events?after=${d.cursor}`);events.onopen=()=>setConnection('实时连接');events.onerror=()=>setConnection('正在重连');
-   events.onmessage=e=>{let ev=JSON.parse(e.data),p=ev.payload;if(cancel)return;if(ev.kind==='reload'){api('/api/drafts/'+did).then(d=>{if(!cancel)setData(d)});return}if(ev.kind==='column')setVisible(v=>v.includes(p.id)?v:[...v,p.id]);setData(old=>{if(!old)return old;
-    if(ev.kind==='text_record')return {...old,rows:old.rows.map(r=>r.id===p.product_id?{...r,text_record:p}:r)};
-    if(ev.kind==='cell')return {...old,rows:old.rows.map(r=>r.id===p.product_id?{...r,cells:{...r.cells,[p.column_id]:p}}:r)};
-    if(ev.kind==='chat_chunk')return {...old,messages:old.messages.map(m=>m.id===p.id?{...m,text:m.text+p.text}:m)};
-    if(ev.kind==='message_presentation')return {...old,messages:old.messages.map(m=>m.id===p.id?{...m,presentation:p.presentation,error_code:p.error_code||m.error_code}:m)};
-    let key={column:'columns',proposal:'proposals',proposal_group:'proposals',job:'jobs',version:'versions',message:'messages',question:'questions'}[ev.kind];return key?{...old,[key]:merge(old[key]||[],p)}:old;});};});return()=>{cancel=true;events?.close()}
+   events.onmessage=e=>{let ev=JSON.parse(e.data),p=ev.payload;if(cancel)return;if(ev.kind==='reload'){api('/api/drafts/'+did).then(d=>{if(!cancel)setData(d)});return}if(ev.kind==='column')setVisible(v=>v.includes(p.id)?v:[...v,p.id]);setData(old=>applyDraftEvent(old,ev.kind,p));};
+   });return()=>{cancel=true;events?.close()}
  },[did]);
  useEffect(()=>{chatEnd.current?.scrollIntoView({behavior:'smooth',block:'end'})},[data?.messages,data?.questions]);
  useEffect(()=>{if(!did||!currentConversation)return;const timer=setTimeout(()=>{api(`/api/datasets/${did}/conversations/${currentConversation}`,{draft:text,model:textModel,vision_model:visionModel,text_credential_id:textCredential||null,vision_credential_id:visionCredential||null}).then(updated=>setConversations(xs=>xs.map(x=>x.id===updated.id?updated:x))).catch(e=>setError(e.message))},500);return()=>clearTimeout(timer)},[did,currentConversation,text,textModel,visionModel,textCredential,visionCredential]);

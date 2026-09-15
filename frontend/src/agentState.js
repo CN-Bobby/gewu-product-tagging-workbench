@@ -10,6 +10,9 @@
 export const SESSION_STATUS={IDLE:'idle',CREATING:'creating',CREATED:'created',STARTING:'starting',ACTIVE:'active',STOPPING:'stopping',STOPPED:'stopped',FAILED:'failed',UNAVAILABLE:'unavailable'};
 export const TURN_STATUS={IDLE:'idle',SENDING:'sending',CANCELLING:'cancelling'};
 
+export const PANEL={AGENT:'agent',LEGACY:'legacy'};
+export const DEFAULT_PANEL=PANEL.AGENT;
+
 export const initialAgentState={
   sessionStatus:SESSION_STATUS.IDLE,
   turnStatus:TURN_STATUS.IDLE,
