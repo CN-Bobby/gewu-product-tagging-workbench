@@ -31,7 +31,7 @@ KNOWN_MODES={'normal','hang','silent','exit','noise','crash_after_prompt','noisy
              'prompt_missing_stop','prompt_null_stop','prompt_numeric_stop','prompt_cancelled_once',
              'ask_client','ask_client_cancelled','permission_client','malformed_client','ask_client_once',
              'cancel_aware','cancel_aware_no_stop','cancel_aware_tool','cancel_aware_once',
-             'ignore_cancel','hang_once','unsolicited_update'}
+             'ignore_cancel','hang_once','unsolicited_update','prompt_fail_once'}
 _MODE_ARG=sys.argv[1] if len(sys.argv)>1 else None
 MODE=_MODE_ARG if _MODE_ARG in KNOWN_MODES else (os.environ.get('STUB_MODE') or 'normal')
 LOG=os.environ.get('STUB_LOG')
@@ -360,6 +360,13 @@ def main():
                 if PROMPT_COUNT['n']==1:continue
                 emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
                 continue
+            if MODE=='prompt_fail_once':
+                # One failed turn, then a healthy one: proves a non-fatal TurnError leaves the
+                # session usable without needing two sessions.
+                PROMPT_COUNT['n']+=1
+                if PROMPT_COUNT['n']==1:
+                    emit({'jsonrpc':'2.0','id':ident,'error':{'code':-32000,'message':'stub prompt failure'}})
+                    continue
             if MODE=='cancel_aware_tool':
                 # A cancelled turn whose tool call the host reported failed: two separate facts.
                 emit(chunk('半'))

@@ -204,7 +204,9 @@ def test_21_to_24_the_bridge_stays_inside_its_boundary():
     imports=re.findall(r'^\s*(?:from|import)\s+.*$',source,re.M)
     for name in ('runtime','harness','conversation','draft','business_questions','presentation','mcp_server','db'):
         assert not [line for line in imports if name in line],name
-    for token in ('reasonix','ACP','conversation','draft','presentation','business_question','Runtime(','subprocess'):
+    for token in ('reasonix','Reasonix','ACP','conversation','draft','presentation','business_question',
+                  'Runtime(','subprocess','jsonrpc','session/prompt','session/cancel','session/close',
+                  'toolCallId','rawInput','mcp-tool:'):
         assert token not in source,token
 
 
