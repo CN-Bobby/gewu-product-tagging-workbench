@@ -26,6 +26,7 @@ STUB=str(Path(__file__).resolve().parent/'fixtures'/'stub_acp_cli.py')
 # The wire ids the deterministic peer asks with, per tests/fixtures/stub_acp_cli.py.
 WIRE_QUESTION_ID=900
 WIRE_PERMISSION_ID=901
+QUESTION_TOOL='mcp__product_workbench__ask_business_question'
 
 
 def open_run(ds):
@@ -252,11 +253,10 @@ def test_T8_no_background_runtime_can_see_the_business_question_tool(dataset,bac
     did=dataset['id'];ident=start_turn(did)
     jobs.chats[did]={'client':None,'stop':False}
     jobs._chat(did,ident,'你好','test/model')
-    name='mcp__product_workbench__ask_business_question'
     for adapter in built:
-        assert tool_env(adapter,'TAG_QUESTION_OWNER')=='none'
-        assert name not in toml_list(adapter,'allow')
-        assert name in toml_list(adapter,'deny')
+        assert 'ask_business_question' not in runtime_toml(adapter)
+        assert 'TAG_QUESTION_OWNER' not in runtime_toml(adapter)
+        assert QUESTION_TOOL not in toml_list(adapter,'allow')
 
 
 def test_T9_background_jobs_open_no_agent_session_or_event_log(dataset,backends,monkeypatch):

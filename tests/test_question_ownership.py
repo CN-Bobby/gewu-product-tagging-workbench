@@ -1,26 +1,22 @@
-"""M5-1: a persisted business question belongs to the runtime that asked it.
+"""M5-6B: the persisted business-question capability no longer exists in any runtime.
 
-Answering one resumes the asking conversation, so a runtime with no such conversation must not be
-able to create one. The two chains are kept apart by capability rather than by advice: the agent
-runtime never registers the tool, and the clarification path it does have — an interaction on its
-own session — can only reach its own session.
-
-The point of these tests is the boundary, not the mechanism: legacy still resumes legacy, an agent
-answer never touches the legacy orchestrator, and no configuration drift can hand the tool back.
+A persisted question used to belong to the runtime that asked it, and only that runtime could
+register the tool. The capability itself is gone: the agent clarifies through an interaction on its
+own session, background work does not ask at all, and no generated configuration offers the tool to
+anyone. What remains is the boundary these tests defend — an agent answer must never reach the
+retired legacy orchestration, and no configuration drift may hand the capability back.
 """
 import json
 import os
 import re
 import sys
-import threading
 import time
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
 
-from backend import agent_application,business_questions,chat_threads,draft,harness
+from backend import agent_application,chat_threads,harness
 from backend.agent import events as agent_store
 from backend.app import app
 from backend.db import Message,Session,WorkbenchMeta,require,uid
@@ -29,6 +25,7 @@ from fake_backend import FakeBackend
 ROOT=Path(__file__).resolve().parents[1]
 AGENT_MODULES=['agent/backend.py','agent/bridge.py','agent/events.py','agent/protocol.py','agent/reasonix.py',
                'agent/runtime.py','agent/stream.py','agent_application.py','agent_http.py']
+QUESTION_TOOL='mcp__product_workbench__ask_business_question'
 
 
 @pytest.fixture
@@ -46,7 +43,7 @@ def wait_for(produce,timeout=10):
 
 
 def seed_legacy_turn(did,name='问题归属测试'):
-    """A legacy chat turn in flight: the owner marker a business question is attached to."""
+    """A legacy chat turn in flight: the owner marker a business question used to attach to."""
     thread=chat_threads.create(did,name)
     turn=uid();message_id=uid()
     with Session.begin() as s:
@@ -88,24 +85,6 @@ def agent_interaction(client,session_id,text='需要确认口径'):
                                if row['event_type']=='question_requested'])
     assert announced,'agent 会话没有产生 question_requested'
     return announced[0]['interaction_id']
-
-
-# --- T1: legacy still resumes legacy, exactly once -------------------------
-
-def test_a_legacy_question_records_its_answer_and_resumes_nothing(dataset):
-    """The answer is history now: the conversation that could have resumed is retired."""
-    did=dataset['id'];owner=seed_legacy_turn(did)
-    asked=business_questions.ask(did,'主色按什么口径？',['底色主导','整套视觉'])
-    assert asked['status']=='pending'
-    result=business_questions.answer(did,asked['question_id'],option_ids=['1'])
-    assert result['status']=='answered' and result['selected_label']=='底色主导'
-    with Session() as s:
-        assert s.get(WorkbenchMeta,'chat-followup:'+did) is None
-        assert require(s,WorkbenchMeta,'active-chat:'+did).data['turn_id']==owner['turn_id']
-    # answering the same way again is idempotent
-    again=business_questions.answer(did,asked['question_id'],option_ids=['1'])
-    assert again['id']==result['id']
-    with Session() as s:assert s.get(WorkbenchMeta,'chat-followup:'+did) is None
 
 
 # --- T2: an agent answer never reaches the legacy orchestrator -------------
@@ -173,22 +152,32 @@ def test_a_stale_agent_interaction_is_refused_and_queues_nothing(client,dataset,
     with Session() as s:assert s.get(WorkbenchMeta,'chat-followup:'+did) is None
 
 
-# --- T5: the capability boundary itself ------------------------------------
+# --- T5: the capability is absent, not merely withheld --------------------
 
-def test_the_agent_runtime_config_withholds_the_business_question(tmp_path):
-    """Withheld in the generated project config, not merely discouraged in a prompt."""
-    legacy=_runtime_toml('legacy-config-dataset',suffix='chat')
-    agent=_runtime_toml('agent-config-dataset',suffix='agent',allow_business_questions=False)
-    question='mcp__product_workbench__ask_business_question'
-    assert question in _allow(legacy) and question not in _deny(legacy)
-    assert _owner_env(legacy)=='chat'
-    assert question not in _allow(agent)
-    assert question in _deny(agent)
-    assert _owner_env(agent)=='none'
-    # the rest of the coordinator surface is untouched for both
-    for name in ('read_worksheet','read_tagging_rules','route_tagging_skill'):
-        assert 'mcp__product_workbench__'+name in _allow(legacy)
-        assert 'mcp__product_workbench__'+name in _allow(agent)
+def test_no_generated_runtime_configuration_mentions_the_question_tool():
+    """Absent from everything a runtime is actually handed: the project config and its instructions.
+
+    The instructions are generated per runtime, so this protects the production surface the peer
+    reads — not the historical documents that still describe the retired capability.
+    """
+    for dataset_id,suffix,role in (('question-config-a','chat','coordinator'),
+                                   ('question-config-b','run-x','worker'),
+                                   ('question-config-c','agent','coordinator')):
+        product='product-x' if role=='worker' else None
+        path=harness.runtime_dir(dataset_id,suffix,product,role=role)
+        toml=(path/'reasonix.toml').read_text(encoding='utf-8')
+        instructions=(path/'PRODUCT_ANALYST_AGENT.md').read_text(encoding='utf-8')
+        assert QUESTION_TOOL not in toml,(dataset_id,role)
+        assert 'ask_business_question' not in toml,(dataset_id,role)
+        assert 'TAG_QUESTION_OWNER' not in toml,(dataset_id,role)
+        assert 'ask_business_question' not in instructions,(dataset_id,role)
+        # the rest of the surface is intact rather than accidentally emptied
+        for name in ('read_worksheet','read_tagging_rules','route_tagging_skill'):
+            assert 'mcp__product_workbench__'+name in _allow(toml),(dataset_id,role)
+        assert QUESTION_TOOL not in _allow(toml) and QUESTION_TOOL not in _deny(toml),(dataset_id,role)
+    # the coordinator is told which interaction it may use instead, so the instruction is not blank
+    coordinator=harness.runtime_dir('question-config-d','chat',role='coordinator')
+    assert '原生 ask' in (coordinator/'PRODUCT_ANALYST_AGENT.md').read_text(encoding='utf-8')
 
 
 def test_the_application_builds_its_agent_runtime_without_the_question_tool(monkeypatch):
@@ -208,21 +197,42 @@ def test_the_application_builds_its_agent_runtime_without_the_question_tool(monk
     monkeypatch.setattr(agent_application,'environment',lambda *args,**kwargs:{})
     agent_application.backend_factory('wiring-dataset','provider/model')()
     assert built['dataset_id']=='wiring-dataset'
-    assert built['kwargs'].get('allow_business_questions') is False
+    assert 'allow_business_questions' not in built['kwargs']
     toml=(built['path']/'reasonix.toml').read_text(encoding='utf-8')
-    question='mcp__product_workbench__ask_business_question'
-    assert question not in _allow(toml) and question in _deny(toml)
-    assert _owner_env(toml)=='none'
+    assert QUESTION_TOOL not in toml and 'ask_business_question' not in toml
+
+
+def test_no_runtime_configuration_generator_can_reintroduce_the_tool():
+    """The switch itself is gone: nothing accepts a request for the capability any more.
+
+    The system prompt still names the old tool in prose; rewriting prompt text is outside this
+    slice, so this asserts the switch and the generated lists instead of a whole-file text match.
+    """
+    source=(ROOT/'backend'/'harness.py').read_text(encoding='utf-8')
+    assert 'allow_business_questions' not in source
+    assert 'TAG_QUESTION_OWNER' not in source
+    toml=_runtime_toml('guard-dataset','chat',role='coordinator')
+    assert QUESTION_TOOL not in _allow(toml)
+    assert QUESTION_TOOL not in _deny(toml)
 
 
 def test_the_agent_runtime_is_not_handed_the_business_question_tool():
-    """The registration itself: two real MCP servers, one question tool.
-    Deliberately not a config-text assertion — this starts the server that the runtime starts."""
-    assert 'ask_business_question' in _mcp_tool_names('chat')
-    assert 'ask_business_question' not in _mcp_tool_names('none')
-    # and the agent's remaining surface is intact rather than accidentally emptied
-    agent_tools=_mcp_tool_names('none')
-    assert {'read_worksheet','read_tagging_rules','route_tagging_skill'}<=set(agent_tools)
+    """The registration itself: a real MCP server, started exactly as a runtime starts it.
+
+    Deliberately not a config-text assertion — this starts the server the runtime starts, and a
+    server that registered the tool would say so here.
+    """
+    tools=_mcp_tool_names()
+    assert 'ask_business_question' not in tools
+    # and the remaining surface is intact rather than accidentally emptied
+    assert {'read_worksheet','read_tagging_rules','route_tagging_skill'}<=set(tools)
+
+
+def test_the_business_question_capability_is_gone_from_the_backend():
+    """The execution path itself: no module claims the capability any more."""
+    import importlib.util
+    assert importlib.util.find_spec('backend.business_questions') is None
+    assert 'business_questions' not in (ROOT/'backend'/'mcp_server.py').read_text(encoding='utf-8')
 
 
 def test_the_agent_chain_has_no_import_path_to_the_legacy_orchestrator():
@@ -233,14 +243,12 @@ def test_the_agent_chain_has_no_import_path_to_the_legacy_orchestrator():
         assert not [line for line in imports if 'business_questions' in line],name
         assert not [line for line in imports if re.search(r'(^|[ .])conversation($|[ .,])',line)],name
         assert '_resume_queued' not in source,name
-    application=(ROOT/'backend'/'agent_application.py').read_text(encoding='utf-8')
-    assert 'allow_business_questions=False' in application
 
 
 # --- helpers ---------------------------------------------------------------
 
-def _runtime_toml(dataset_id,**kwargs):
-    path=harness.runtime_dir(dataset_id,**kwargs)
+def _runtime_toml(dataset_id,suffix,product_id=None,**kwargs):
+    path=harness.runtime_dir(dataset_id,suffix,product_id,**kwargs)
     return (path/'reasonix.toml').read_text(encoding='utf-8')
 
 
@@ -252,18 +260,14 @@ def _deny(toml):
     return json.loads(re.search(r'^deny = (.*)$',toml,re.M).group(1))
 
 
-def _owner_env(toml):
-    return re.search(r'"TAG_QUESTION_OWNER" = "([a-z]+)"',toml).group(1)
-
-
-def _mcp_tool_names(question_owner):
+def _mcp_tool_names():
     """Ask a real MCP server, started exactly as the runtime starts it, what it offers."""
     import asyncio
     from mcp import ClientSession,StdioServerParameters
     from mcp.client.stdio import stdio_client
 
     async def collect():
-        env=dict(os.environ,TAG_DATASET_ID='ownership-probe',TAG_QUESTION_OWNER=question_owner)
+        env=dict(os.environ,TAG_DATASET_ID='ownership-probe')
         params=StdioServerParameters(command=sys.executable,args=['-m','backend.mcp_server'],
                                       env=env,cwd=str(ROOT))
         async with stdio_client(params) as (read,write):

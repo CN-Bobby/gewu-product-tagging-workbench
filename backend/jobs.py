@@ -36,7 +36,7 @@ def _backend(dataset_id,model,suffix,product_id=None,role='coordinator',sink=Non
     from .agent.reasonix import ReasonixAdapter,ReasonixLaunchConfig
     from .model_settings import normalize_reference
     from .runtime_isolation import environment
-    cwd=runtime_dir(dataset_id,suffix,product_id,model if product_id else VISION_MODEL,role=role,allow_business_questions=False)
+    cwd=runtime_dir(dataset_id,suffix,product_id,model if product_id else VISION_MODEL,role=role)
     holder=[]
     def emit(event):
         _refuse_interaction(holder,event)

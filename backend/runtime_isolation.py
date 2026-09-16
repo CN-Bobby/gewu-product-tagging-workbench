@@ -82,12 +82,3 @@ def environment(dataset_id, session_id=None, credential_ids=None):
                               capture_output=True,creationflags=subprocess.CREATE_NO_WINDOW)
         if result.returncode:raise ValueError('无法限制数据集授权文件访问权限')
     return env
-
-
-def mark_resumed(dataset_id,session_id):
-    manifest=STORAGE/'datasets'/dataset_id/'reasonix'/'migration.json'
-    if manifest.exists():
-        data=json.loads(manifest.read_text(encoding='utf-8'))
-        if data['session_id']!=session_id:raise ValueError('迁移会话ID发生变化')
-        data.update(status='acp_resume_verified',verified_at=now())
-        manifest.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')

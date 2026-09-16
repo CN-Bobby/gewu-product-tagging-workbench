@@ -38,8 +38,7 @@ def test_session_copy_backed_up_and_original_preserved(tmp_path,monkeypatch):
     assert (target/'sessions/existing.jsonl').read_text()=='original transcript'
     assert not (target/'sessions/existing.jsonl.lock').exists()
     report=json.loads((target/'migration.json').read_text());assert Path(report['backup']).is_dir()
-    runtime_isolation.mark_resumed('legacy_copy','existing')
-    assert json.loads((target/'migration.json').read_text())['status']=='acp_resume_verified'
+    assert report['status']=='copied_pending_acp_resume'
     assert (sessions/'existing.jsonl').read_text()=='original transcript'
 
 

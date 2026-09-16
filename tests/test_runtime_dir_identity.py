@@ -27,12 +27,11 @@ def test_a_worker_runtime_without_a_product_is_refused(dataset):
     with pytest.raises(ValueError):runtime_dir(dataset['id'],'run-broken',role='worker')
 
 
-def test_generated_config_bounds_the_question_bridge_and_denies_run_skill(dataset):
+def test_generated_config_bounds_mcp_calls_and_denies_run_skill(dataset):
     did=dataset['id']
     path=runtime_dir(did,'chat-explicit',role='coordinator')
     config=(path/'reasonix.toml').read_text(encoding='utf-8')
     assert 'call_timeout_seconds = 300' in config
-    assert '"ask_business_question" = 30' in config
     assert 'run_skill' in config
     prompt=(path/'PRODUCT_ANALYST_AGENT.md').read_text(encoding='utf-8')
     assert 'mcp__product_workbench__route_tagging_skill' in prompt

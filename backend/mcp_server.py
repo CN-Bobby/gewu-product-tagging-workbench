@@ -12,11 +12,6 @@ from .db import *
 mcp=FastMCP('product_workbench')
 DATASET=os.environ['TAG_DATASET_ID']
 RUN=os.environ.get('TAG_RUN_ID')
-# Which runtime owns a persisted business question. Answering one resumes the conversation that
-# asked it, so only a runtime that has such a conversation may register the tool at all; anything
-# else would collect an answer it could never deliver. Absent means the chat owner, so an existing
-# deployment or a manual run keeps the original surface.
-QUESTION_OWNER=os.environ.get('TAG_QUESTION_OWNER','chat')
 PRODUCT=os.environ.get('TAG_PRODUCT_ID')
 CONVERSATION=os.environ.get('TAG_CONVERSATION_ID')
 
@@ -88,15 +83,6 @@ if not RUN:
     # Coordinator exposes proposals and reads only; no confirmation or cell-write tool.
     mcp=FastMCP('product_workbench')
     from . import draft
-
-    # Registered only for the runtime that owns persisted business questions. Every other
-    # coordinator tool stays available to whoever is coordinating.
-    if QUESTION_OWNER=='chat':
-        @mcp.tool()
-        def ask_business_question(question:str,options:list[str]|None=None,multiple:bool=False) -> dict:
-            """Ask one necessary business question and return immediately. The persisted web card collects the user's single/multiple/text answer or skip, and the conversation resumes from the next step. Never approves changes or runs jobs. At most three questions per turn."""
-            from .business_questions import ask
-            return ask(DATASET,question,options,multiple)
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True,destructiveHint=False,openWorldHint=False))
     def read_tagging_rules(topic:str='core') -> dict:

@@ -22,24 +22,6 @@ def test_presentation_does_not_repeat_owned_heading():
     assert presentation['discussion']=='本批需要先确定三个色系边界。'
 
 
-def test_managed_question_accepts_multiple_and_text_once(dataset,monkeypatch):
-    """The answer is recorded once, and nothing resumes: there is no conversation left to."""
-    from backend import business_questions as questions
-    from backend.db import Session,Message,WorkbenchMeta,uid
-    did=dataset['id'];mid=uid();turn=uid()
-    with Session.begin() as s:
-        s.add(Message(id=mid,dataset_id=did,role='assistant',text='',status='running'))
-        s.add(WorkbenchMeta(id='active-chat:'+did,dataset_id=did,kind='active_chat_turn',data={'turn_id':turn,'message_id':mid}))
-    asked=questions.ask(did,'选哪些特征？',['颜色','结构'],True)
-    assert asked['status']=='pending' and asked['multiple'] is True and asked['approval'] is False
-    assert asked['options']==['颜色','结构']
-    first=questions.answer(did,asked['question_id'],['2','1'],'只看主体')
-    assert first['status']=='answered' and first['selected_label']=='颜色；结构；只看主体'
-    second=questions.answer(did,asked['question_id'],['1','2'],'只看主体')
-    assert second['id']==first['id']
-    with Session() as s:assert s.get(WorkbenchMeta,'chat-followup:'+did) is None
-
-
 def test_conversation_images_have_stable_numbers_and_bind_explicitly(dataset):
     from backend import chat_threads,chat_images,draft
     from backend.db import Session,Asset

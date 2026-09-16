@@ -108,44 +108,39 @@ def test_the_batch_pipeline_is_still_a_separate_chain_of_its_own():
         body=(root/source).read_text(encoding='utf-8')
         assert not re.search(r'conversation\.|import .*conversation',body),source
 
-def test_batch_runtimes_declare_that_they_are_not_the_question_owner():
-    """Every production runtime that builds a runtime dir says so explicitly, so no runtime relies on
-    the compatibility default and inherits a capability it could never deliver on."""
+def test_no_runtime_can_be_handed_the_retired_question_capability():
+    """The switch is gone rather than defaulted: no backend module can ask for the capability at all."""
     root=Path(__file__).resolve().parents[1]/'backend'
     for path in sorted(root.glob('*.py')):
-        if path.name in ('harness.py','agent_application.py'):continue      # the definitions
         source=path.read_text(encoding='utf-8')
-        for match in re.finditer(r'(?:runtime_dir|ACP)\(',source):
-            tail=source[match.end():source.index(')',match.end())]
-            assert 'allow_business_questions=False' in tail,'%s: %s'%(path.name,match.group(0))
-    # and the two chains that do build one agree with the config generator
-    assert 'allow_business_questions=False' in (root/'agent_application.py').read_text(encoding='utf-8')
-    assert 'allow_business_questions=False' in (root/'jobs.py').read_text(encoding='utf-8')
+        assert 'allow_business_questions' not in source,path.name
+        assert 'TAG_QUESTION_OWNER' not in source,path.name
 
 
-def test_the_legacy_question_tool_is_withheld_from_every_production_runtime(dataset):
-    """Two real MCP servers, started the way the production runtimes start them."""
-    assert 'ask_business_question' not in _mcp_tools('none')
+def test_the_retired_question_tool_is_absent_from_every_production_runtime(dataset):
+    """A real MCP server started the way a production runtime starts it, plus the generated config."""
+    assert 'ask_business_question' not in _mcp_tools()
     for suffix,product,role in (('run-x','product-x','worker'),('chat',None,'coordinator')):
         config=_runtime_config(dataset['id'],suffix,product,role=role)
+        assert 'ask_business_question' not in config,(suffix,role)
+        assert 'TAG_QUESTION_OWNER' not in config,(suffix,role)
         allow=json.loads(re.search(r'^allow = (.*)$',config,re.M).group(1))
         assert 'mcp__product_workbench__ask_business_question' not in allow,(suffix,role)
-        assert 'TAG_QUESTION_OWNER" = "none' in config,(suffix,role)
 
 
 def _runtime_config(dataset_id,suffix,product_id=None,role='coordinator'):
-    path=harness.runtime_dir(dataset_id,suffix,product_id,role=role,allow_business_questions=False)
+    path=harness.runtime_dir(dataset_id,suffix,product_id,role=role)
     return (path/'reasonix.toml').read_text(encoding='utf-8')
 
 
-def _mcp_tools(question_owner):
+def _mcp_tools():
     import asyncio,os,sys
     from mcp import ClientSession,StdioServerParameters
     from mcp.client.stdio import stdio_client
     root=Path(__file__).resolve().parents[1]
 
     async def collect():
-        env=dict(os.environ,TAG_DATASET_ID='retirement-probe',TAG_QUESTION_OWNER=question_owner)
+        env=dict(os.environ,TAG_DATASET_ID='retirement-probe')
         params=StdioServerParameters(command=sys.executable,args=['-m','backend.mcp_server'],env=env,cwd=str(root))
         async with stdio_client(params) as (read,write):
             async with ClientSession(read,write) as session:
