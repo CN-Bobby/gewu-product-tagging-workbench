@@ -15,7 +15,7 @@ from . import agent_application
 from .agent.backend import CancelledError,RuntimeUnavailable,TurnError
 from .agent.bridge import (AgentBridgeError,BackendStartError,BackendStopError,InvalidSessionState,
     SessionBusy,SessionNotFound)
-from .agent_application import ApplicationStopping
+from .agent_application import ApplicationStopping,RuntimeConfigInUse
 
 router=APIRouter(prefix='/api/agent')
 
@@ -27,6 +27,7 @@ _ERROR_MAP={
     SessionBusy:(409,'session_busy'),
     InvalidSessionState:(409,'session_state'),
     ApplicationStopping:(503,'application_stopping'),
+    RuntimeConfigInUse:(409,'runtime_config_in_use'),
     TurnError:(502,'turn_error'),
     CancelledError:(409,'cancelled'),
     RuntimeUnavailable:(503,'runtime_unavailable'),

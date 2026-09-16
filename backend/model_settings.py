@@ -15,6 +15,35 @@ import httpx
 from .runtime_isolation import provider_home,_toml
 
 
+class SettingsInUse(ValueError):
+    """A settings mutation was refused because a runtime could still be relying on the configuration.
+
+    V1 is a single conservative lock rather than a per-field policy: while any workload of this
+    process is live, nothing that a launch resolves may change. Removing or repointing a key under a
+    running runtime is what silently moves it onto a different credential, and that is the failure
+    this refuses to allow. ``ValueError`` stays as the base so callers that only know a refused
+    configuration keep working.
+    """
+    code='settings_in_use'
+
+
+def assert_settings_mutable():
+    """Refuse a settings mutation while this process owns a live runtime or a batch job.
+
+    Read-only: it asks each owner whether it has active work, and builds or changes nothing. The
+    imports are local because each of those modules reaches back into this one while starting up.
+    """
+    from . import batch
+    from .agent_application import has_active_sessions
+    from .jobs import has_active_reasonix_work
+    active=[]
+    if batch.active:active.append('批处理')
+    if has_active_reasonix_work():active.append('后台打标任务')
+    if has_active_sessions():active.append('Agent 会话')
+    if active:
+        raise SettingsInUse('有正在运行的'+ '、'.join(active) +'，请先停止后再修改模型配置')
+
+
 def local_model_name(provider_name, value):
     """Return a provider-local model id from a pasted or local value."""
     if not isinstance(value, str):
@@ -280,8 +309,7 @@ def _local_input(name, value, label):
 
 
 def save(body):
-    from . import batch
-    if batch.active:raise ValueError('请先暂停批处理，再修改模型配置')
+    assert_settings_mutable()
     name=body.get('name','');base=body.get('base_url','').rstrip('/')
     if not re.fullmatch(r'[a-zA-Z0-9_-]{1,60}',name):raise ValueError('服务名称仅使用英文、数字、下划线或短横线')
     url=urlparse(base)
@@ -326,8 +354,7 @@ def save(body):
 
 
 def credential_action(provider_name,credential_id,action):
-    from . import batch
-    if batch.active:raise ValueError('请先暂停批处理，再修改 Key')
+    assert_settings_mutable()
     home=provider_home();path=home/'config.toml'
     if not path.exists():raise ValueError('模型配置不存在')
     config=tomllib.loads(path.read_text(encoding='utf-8-sig'));config,_=_canonical_config(config)

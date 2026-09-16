@@ -48,6 +48,7 @@ def capture(monkeypatch):
         def status(self):return {'alive':True}
     monkeypatch.setattr(reasonix,'ReasonixAdapter',Recorder)
     monkeypatch.setattr(runtime_isolation,'environment',lambda *a,**k:{})
+    monkeypatch.setattr(runtime_isolation,'credential_selection',lambda *a,**k:('test','cred-1'))
     return built,state
 
 
@@ -125,13 +126,15 @@ def client():
 
 
 def install(monkeypatch,error):
-    def factory(dataset_id,model):
+    def factory(dataset_id,model,credentials=None):
         def build():
             return FakeBackend(mode='normal')
         return build
     monkeypatch.setattr(agent_application,'backend_factory',factory)
+    monkeypatch.setattr(agent_application,'credential_selection',lambda *a,**k:('test','cred-1'))
     monkeypatch.setattr(agent_application,'_BRIDGES',{})
     monkeypatch.setattr(agent_application,'_SESSIONS',{})
+    monkeypatch.setattr(agent_application,'_IDENTITIES',{})
     monkeypatch.setattr(FakeBackend,'send',lambda self,text:(_ for _ in ()).throw(error))
 
 

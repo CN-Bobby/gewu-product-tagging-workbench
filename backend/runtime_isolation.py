@@ -23,6 +23,68 @@ def _toml(value):
     return json.dumps(value, ensure_ascii=False)
 
 
+class CredentialUnavailable(ValueError):
+    """No usable credential for the provider a launch must use.
+
+    Raised before a runtime exists, so an unusable key can never surface later as a provider
+    authentication failure. It keeps ``ValueError`` as its base because that is what a refused
+    configuration already meant to every existing caller.
+    """
+    code='credential_unavailable'
+
+
+def _declared_credentials(provider):
+    """The credentials the provider declares, or ``None`` when it declares none at all.
+
+    The distinction is the schema's own: a provider that never declared a credential list needs no
+    key, while an empty list means every key of that provider was removed. That is why an explicitly
+    empty list is a failure and an absent list is not.
+    """
+    declared=provider.get('credentials')
+    return None if declared is None else [x for x in declared if isinstance(x,dict)]
+
+
+def _effective_credential(provider,credential_id=None):
+    """The credential one launch must use, or a failure naming why it cannot be used.
+
+    An explicit choice that is missing, disabled or from another provider is refused instead of
+    falling back to whatever is primary now: a silent fallback would bill a different key than the
+    caller asked for.
+    """
+    name=provider.get('name')
+    declared=_declared_credentials(provider)
+    if declared is None and not provider.get('api_key_env'):return None
+    credentials=declared or []
+    if credential_id:
+        chosen=next((x for x in credentials if x.get('id')==credential_id),None)
+        if chosen is None:raise CredentialUnavailable(f'服务 {name} 中不存在所选 Key：{credential_id}')
+    else:
+        chosen=next((x for x in credentials if x.get('id')==provider.get('primary_credential_id')),None)
+    if chosen is None:raise CredentialUnavailable(f'服务 {name} 没有可用的授权，请在模型设置中重新配置')
+    if not chosen.get('enabled',True):raise CredentialUnavailable(f'服务 {name} 的所选 Key 已停用')
+    return chosen
+
+
+def credential_selection(model_ref,credential_id=None):
+    """Resolve and validate the ``(provider, credential_id)`` one launch must use.
+
+    Called once at a creation boundary so the runtime keeps the configuration it was created with.
+    Resolving here — instead of letting ``environment()`` take "whatever is primary" — is what makes
+    the frozen model, provider and credential a single snapshot rather than three separate guesses.
+    """
+    if not isinstance(model_ref,str) or not model_ref.strip():
+        raise CredentialUnavailable('模型引用为空，请在模型设置中选择模型')
+    path=provider_home()/'config.toml'
+    if not path.is_file():raise CredentialUnavailable('请先在网页模型设置中配置服务与授权')
+    from .model_settings import _canonical_config,normalize_reference
+    config,_=_canonical_config(tomllib.loads(path.read_text(encoding='utf-8-sig')))
+    name=normalize_reference(model_ref).partition('/')[0]
+    provider=next((p for p in config.get('providers',[]) if p.get('name')==name),None)
+    if provider is None:raise CredentialUnavailable('模型服务不存在：'+name)
+    chosen=_effective_credential(provider,credential_id)
+    return name,(chosen or {}).get('id')
+
+
 def environment(dataset_id, session_id=None, credential_ids=None):
     if not re.fullmatch(r'[a-zA-Z0-9_-]+', dataset_id):raise ValueError('数据集目录标识无效')
     source=provider_home()
@@ -39,13 +101,14 @@ def environment(dataset_id, session_id=None, credential_ids=None):
     # Only provider definitions are shared; never import global plugins, memory or permissions.
     providers=config.get('providers',[])
     credential_ids=credential_ids or {}
+    # Every provider that declares a credential is checked here, whether or not one was selected:
+    # a launch may never resolve an unusable key, and it may never quietly change which key it uses.
     for provider in providers:
         selected_id=credential_ids.get(provider.get('name'))
+        chosen=_effective_credential(provider,selected_id)
+        if chosen is None:continue
         if selected_id:
-            selected=next((x for x in provider.get('credentials',[]) if x.get('id')==selected_id),None)
-            if not selected:raise ValueError(f'服务 {provider.get("name")} 中不存在所选 Key')
-            if not selected.get('enabled',True):raise ValueError(f'服务 {provider.get("name")} 的所选 Key 已停用')
-            provider['api_key_env']=selected['api_key_env'];provider['primary_credential_id']=selected_id
+            provider['api_key_env']=chosen['api_key_env'];provider['primary_credential_id']=selected_id
     allowed={k:v for k,v in config.items() if k in ('providers','default_model','model')}
     (home/'config.toml').write_text('\n'.join(k+' = '+_toml(v) for k,v in allowed.items()),encoding='utf-8')
     if session_id and not (home/'sessions'/f'{session_id}.acp.json').is_file():

@@ -130,6 +130,7 @@ def test_retry_keeps_successes(dataset,monkeypatch):
         def stop(self):pass
     monkeypatch.setattr(reasonix,'ReasonixAdapter',Fake)
     monkeypatch.setattr(runtime_isolation,'environment',lambda *a,**k:{})
+    monkeypatch.setattr(runtime_isolation,'credential_selection',lambda *a,**k:('test','cred-1'))
     jobs.active[r['id']]={'stop':False,'client':None};jobs._execute(r['id'])
     assert len(launched)==9
     assert ('"TAG_PRODUCT_ID" = "%s"'%first) not in ''.join(launched)   # already-saved work is not redone

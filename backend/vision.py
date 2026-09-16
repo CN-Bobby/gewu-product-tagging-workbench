@@ -38,9 +38,10 @@ def provider_config(model_ref,credential_id=None):
     if not model:raise ValueError('模型引用缺少具体模型名称')
     if provider.get('kind','openai')!='openai':raise ValueError('视觉工具当前支持 Reasonix 的 OpenAI 兼容 provider；请配置对应视觉端点')
     credential_id=credential_id or os.environ.get('TAG_VISION_CREDENTIAL_ID')
-    credentials=provider.get('credentials') or []
-    selected=next((x for x in credentials if x.get('id')==credential_id),None) if credential_id else next((x for x in credentials if x.get('id')==provider.get('primary_credential_id')),None)
-    if selected and not selected.get('enabled',True):raise ValueError('所选 Key 已停用')
+    # The same rule a launch uses, so a dangling or disabled explicit choice fails here too instead
+    # of quietly falling back to whatever key is primary now.
+    from .runtime_isolation import _effective_credential
+    selected=_effective_credential(provider,credential_id)
     key_name=(selected or {}).get('api_key_env') or provider.get('api_key_env')
     # Match Reasonix v1.25.1: provider secrets live in its global .env, never copy them.
     key=(os.environ.get(key_name) or dotenv_values(home/'.env').get(key_name)) if key_name else None

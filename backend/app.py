@@ -17,6 +17,8 @@ from . import knowledge,templates,storage_management,model_settings,capabilities
 from .build_info import VERSION, build_info
 from .agent_http import router as agent_router
 from . import agent_application
+from .model_settings import SettingsInUse
+from .runtime_isolation import CredentialUnavailable
 
 @asynccontextmanager
 async def lifespan(app):
@@ -45,6 +47,17 @@ async def localhost(request:Request,call_next):
 
 @app.exception_handler(ValueError)
 async def value_error(request,e):return JSONResponse({'detail':str(e)},status_code=400)
+
+# Both of these are ValueErrors raised by the settings layer, so they are registered explicitly to
+# carry a machine-readable code. A refusal is a conflict, not a malformed request: the request was
+# well formed, the moment was not.
+@app.exception_handler(SettingsInUse)
+async def settings_in_use(request,e):
+    return JSONResponse({'detail':{'code':'settings_in_use','message':str(e)}},status_code=409)
+
+@app.exception_handler(CredentialUnavailable)
+async def credential_unavailable(request,e):
+    return JSONResponse({'detail':{'code':'credential_unavailable','message':str(e)}},status_code=400)
 
 @app.exception_handler(ValidationError)
 async def validation_error(request,e):return JSONResponse({'detail':str(e)},status_code=422)

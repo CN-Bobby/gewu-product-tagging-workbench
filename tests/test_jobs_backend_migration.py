@@ -106,6 +106,7 @@ def backends(monkeypatch):
         def status(self):return {'provider':'reasonix','model':self.config.model,'alive':True}
     monkeypatch.setattr(reasonix,'ReasonixAdapter',FakeAdapter)
     monkeypatch.setattr(runtime_isolation,'environment',lambda *a,**k:{})
+    monkeypatch.setattr(runtime_isolation,'credential_selection',lambda *a,**k:('test','cred-1'))
     return built,state
 
 
@@ -323,6 +324,7 @@ def peer(tmp_path,monkeypatch):
     monkeypatch.setattr(jobs,'executable',lambda:sys.executable)
     monkeypatch.setattr(runtime_isolation,'environment',
         lambda did,session_id=None,credential_ids=None:dict(os.environ,STUB_MODE=state['mode'],STUB_LOG=str(log)))
+    monkeypatch.setattr(runtime_isolation,'credential_selection',lambda *a,**k:('test','cred-1'))
     monkeypatch.setattr(reasonix,'PROMPT_TIMEOUT_SECONDS',6.0)
     return state,log
 

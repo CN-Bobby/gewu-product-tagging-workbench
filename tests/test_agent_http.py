@@ -59,18 +59,29 @@ def peer_methods(request_log):
             request_log.read_text(encoding='utf-8').splitlines() if line.strip()]
 
 
+def install_seams(monkeypatch,factory):
+    """Replace the application's composition seams and clear its registries.
+
+    ``credential_selection`` is stubbed because these tests are about the HTTP command channel: which
+    key a launch resolves belongs to tests/test_model_credential_lifecycle.py, and no launch here
+    reaches a provider.
+    """
+    monkeypatch.setattr(agent_application,'backend_factory',factory)
+    monkeypatch.setattr(agent_application,'credential_selection',
+                        lambda model,credential_id=None:('deepseek','cred-test'))
+    for name in ('_BRIDGES','_SESSIONS','_IDENTITIES'):monkeypatch.setattr(agent_application,name,{})
+
+
 def install(monkeypatch,mode='normal',**kwargs):
     """Replace the one seam: a bridge that drives a deterministic double, everything else real."""
     created=[]
-    def factory(dataset_id,model):
+    def factory(dataset_id,model,credentials=None):
         def build():
             backend=FakeBackend(mode=mode,**kwargs)
             created.append(backend)
             return backend
         return build
-    monkeypatch.setattr(agent_application,'backend_factory',factory)
-    monkeypatch.setattr(agent_application,'_BRIDGES',{})
-    monkeypatch.setattr(agent_application,'_SESSIONS',{})
+    install_seams(monkeypatch,factory)
     return created
 
 
@@ -242,7 +253,7 @@ def test_message_and_cancel_racing_stay_bounded(client,monkeypatch):
 def test_message_and_stop_racing_stay_bounded(client,monkeypatch,workspace,adapters):
     """A real teardown under a real turn, driven only through HTTP: both requests are bounded and
     the session still ends stopped rather than failed."""
-    def factory(dataset_id,model):
+    def factory(dataset_id,model,credentials=None):
         from backend.agent import reasonix
         def build():
             adapter=reasonix.ReasonixAdapter(reasonix.ReasonixLaunchConfig(
@@ -252,9 +263,7 @@ def test_message_and_stop_racing_stay_bounded(client,monkeypatch,workspace,adapt
             adapters.append(adapter)
             return adapter
         return build
-    monkeypatch.setattr(agent_application,'backend_factory',factory)
-    monkeypatch.setattr(agent_application,'_BRIDGES',{})
-    monkeypatch.setattr(agent_application,'_SESSIONS',{})
+    install_seams(monkeypatch,factory)
     session_id=new_session(client)
     message=start_message(client,session_id,'很久的一轮')
     request_log=workspace/'requests.jsonl'
@@ -380,11 +389,9 @@ def test_a_response_never_carries_the_runtimes_own_error_text(client,monkeypatch
         def send(self,text):
             raise TurnError('回合执行失败',detail='session/prompt 超时 '+internal)
 
-    def factory(dataset_id,model):
+    def factory(dataset_id,model,credentials=None):
         return lambda:LeakyBackend()
-    monkeypatch.setattr(agent_application,'backend_factory',factory)
-    monkeypatch.setattr(agent_application,'_BRIDGES',{})
-    monkeypatch.setattr(agent_application,'_SESSIONS',{})
+    install_seams(monkeypatch,factory)
     session_id=new_session(client)
     response=client.post('/api/agent/sessions/%s/messages'%session_id,json={'text':'x'})
     assert response.status_code==502
@@ -423,15 +430,13 @@ def sessions(client,count,dataset=DATASET):
 def mixed_backends(monkeypatch,modes):
     """A factory whose backends behave differently, for the failure-isolation case."""
     created=[]
-    def factory(dataset_id,model):
+    def factory(dataset_id,model,credentials=None):
         def build():
             backend=FakeBackend(mode=modes[len(created)] if len(created)<len(modes) else 'normal')
             created.append(backend)
             return backend
         return build
-    monkeypatch.setattr(agent_application,'backend_factory',factory)
-    monkeypatch.setattr(agent_application,'_BRIDGES',{})
-    monkeypatch.setattr(agent_application,'_SESSIONS',{})
+    install_seams(monkeypatch,factory)
     return created
 
 
@@ -497,7 +502,7 @@ def test_T6_the_app_lifespan_closes_live_agent_sessions(monkeypatch):
 def test_T7_a_graceful_shutdown_closes_a_real_backend_over_the_stub_peer(monkeypatch,workspace,adapters):
     """The application path, end to end: lifespan exit → adapter.stop() → session/close → process out."""
     request_log=workspace/'requests.jsonl'
-    def factory(dataset_id,model):
+    def factory(dataset_id,model,credentials=None):
         from backend.agent import reasonix
         def build():
             adapter=reasonix.ReasonixAdapter(reasonix.ReasonixLaunchConfig(
@@ -506,9 +511,7 @@ def test_T7_a_graceful_shutdown_closes_a_real_backend_over_the_stub_peer(monkeyp
             adapters.append(adapter)
             return adapter
         return build
-    monkeypatch.setattr(agent_application,'backend_factory',factory)
-    monkeypatch.setattr(agent_application,'_BRIDGES',{})
-    monkeypatch.setattr(agent_application,'_SESSIONS',{})
+    install_seams(monkeypatch,factory)
     with TestClient(app) as own_client:
         new_session(own_client)
         assert adapters[-1].diagnostics()['runtime']['job']['assigned'] is True

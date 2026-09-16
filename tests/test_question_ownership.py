@@ -58,15 +58,19 @@ def seed_legacy_turn(did,name='问题归属测试'):
 def install_agent_backend(monkeypatch,mode='ask_interaction'):
     """Drive the whole agent HTTP surface with a deterministic double, everything else real."""
     created=[]
-    def factory(dataset_id,model):
+    def factory(dataset_id,model,credentials=None):
         def build():
             backend=FakeBackend(mode=mode)
             created.append(backend)
             return backend
         return build
     monkeypatch.setattr(agent_application,'backend_factory',factory)
+    # Which key a launch resolves is not what these tests are about: they pin interaction ownership.
+    monkeypatch.setattr(agent_application,'credential_selection',
+                        lambda model,credential_id=None:('deepseek','cred-test'))
     monkeypatch.setattr(agent_application,'_BRIDGES',{})
     monkeypatch.setattr(agent_application,'_SESSIONS',{})
+    monkeypatch.setattr(agent_application,'_IDENTITIES',{})
     return created
 
 

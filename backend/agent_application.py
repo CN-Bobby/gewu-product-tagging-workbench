@@ -16,9 +16,9 @@ import time
 
 from . import harness
 from .agent import events as store
-from .agent.bridge import AgentBridge,AgentBridgeError,SessionNotFound
+from .agent.bridge import (AgentBridge,AgentBridgeError,STATUS_FAILED,STATUS_STOPPED,SessionNotFound)
 from .agent.reasonix import ExecutionBudget,ReasonixAdapter,ReasonixLaunchConfig
-from .runtime_isolation import environment
+from .runtime_isolation import credential_selection,environment
 
 # One app lifetime closes every session it owns before the process ends. Each close is already
 # bounded inside the backend (close timeout, then terminate, then kill), so this budget only has to
@@ -34,6 +34,10 @@ UI_EXECUTION_BUDGET=ExecutionBudget(first_activity_timeout=120,idle_timeout=180,
 _LOCK=threading.Lock()
 _BRIDGES={}
 _SESSIONS={}
+# The runtime identity each session was created with: (model, provider, credential). Held here
+# because a bridge is shared by every session with the same identity, so the bridge itself cannot
+# answer "what did *this* session freeze".
+_IDENTITIES={}
 _SHUTTING_DOWN=False
 
 
@@ -41,29 +45,83 @@ class ApplicationStopping(AgentBridgeError):
     """The application is on its way out and no longer accepts new agent sessions."""
 
 
-def backend_factory(dataset_id,model):
+class RuntimeConfigInUse(AgentBridgeError):
+    """The dataset already has a live session frozen to a different runtime configuration.
+
+    Every session of one dataset shares one Reasonix home, so a second session on a different
+    provider or model would rewrite the configuration the first one is still running on. Refusing is
+    the honest answer: the alternative is a live session whose recovery reads someone else's model.
+    """
+
+
+def runtime_identity(model,provider,credential_id):
+    """The frozen runtime configuration of one session, as one comparable value."""
+    return (model,provider,credential_id or '')
+
+
+def active_sessions():
+    """Sessions this process owns that have not reached a terminal state.
+
+    Read-only and cheap: it reports the durable state of sessions the process still holds, and it
+    never builds a runtime, writes a row or changes a session. A session that exists only as a
+    durable row is not live here, because nothing in this process can launch or recover it.
+    """
+    with _LOCK:items=list(_SESSIONS.items())
+    live=[]
+    for session_id,bridge in items:
+        row=store.get_session(session_id)
+        if row is None or row['status'] in (STATUS_STOPPED,STATUS_FAILED):continue
+        live.append({'session_id':session_id,'dataset_id':row['dataset_id'],'model':row['model'],
+                     'identity':_IDENTITIES.get(session_id),'bridge':bridge})
+    return live
+
+
+def has_active_sessions():
+    """Whether any agent session of this process is still live. The settings lock asks this."""
+    return bool(active_sessions())
+
+
+def _assert_runtime_config_free(dataset_id,identity):
+    for session in active_sessions():
+        if session['dataset_id']!=dataset_id:continue
+        if session['identity']==identity:continue
+        raise RuntimeConfigInUse('该表格已有使用其它模型配置的活动会话，请先停止后再创建新的会话')
+
+
+def backend_factory(dataset_id,model,credentials=None):
     """The real backend factory for one dataset.
 
     A single seam on purpose: replacing this is how a test drives the whole HTTP surface, the real
     bridge and the real event store against its own backend, without the HTTP layer learning
     anything about what a backend is made of.
+
+    ``credentials`` is the selection the session froze at creation, not a lookup: the runtime is
+    launched with the key its session was created with, for its whole life including recovery.
     """
+    selection=dict(credentials or {})
     def build():
         # An agent session clarifies through an interaction on its own session, so it is built with
         # no surface of its own for the retired persisted-question capability.
         cwd=harness.runtime_dir(dataset_id,'agent')
         return ReasonixAdapter(ReasonixLaunchConfig(executable=harness.executable(),model=model,
-            cwd=str(cwd),env=environment(dataset_id,None,{}),runtime_key='agent:'+dataset_id,
+            cwd=str(cwd),env=environment(dataset_id,None,selection),runtime_key='agent:'+dataset_id,
             budget=UI_EXECUTION_BUDGET))
     return build
 
 
-def _bridge(dataset_id,model):
-    key=(dataset_id,model)
+def _bridge(dataset_id,identity):
+    """The bridge for one frozen runtime configuration.
+
+    Keyed by the configuration and not just the dataset: a bridge owns the backend factory, so
+    reusing one across two different credentials would hand a new session the previous session's key.
+    """
+    model,provider,credential_id=identity
+    key=(dataset_id,model,credential_id)
     with _LOCK:
         bridge=_BRIDGES.get(key)
         if bridge is None:
-            bridge=AgentBridge(backend_factory(dataset_id,model),dataset_id=dataset_id)
+            credentials={provider:credential_id} if credential_id else {}
+            bridge=AgentBridge(backend_factory(dataset_id,model,credentials),dataset_id=dataset_id)
             _BRIDGES[key]=bridge
         return bridge
 
@@ -78,7 +136,7 @@ def start():
     global _SHUTTING_DOWN
     with _LOCK:
         _SHUTTING_DOWN=False
-        _BRIDGES.clear();_SESSIONS.clear()
+        _BRIDGES.clear();_SESSIONS.clear();_IDENTITIES.clear()
 
 
 def shutdown(timeout=SHUTDOWN_TIMEOUT_SECONDS):
@@ -95,7 +153,7 @@ def shutdown(timeout=SHUTDOWN_TIMEOUT_SECONDS):
         sessions=list(_SESSIONS.items())
         # Cleared before closing, so a second call is a no-op and nothing can be re-registered in
         # the middle of a close.
-        _SESSIONS.clear();_BRIDGES.clear()
+        _SESSIONS.clear();_BRIDGES.clear();_IDENTITIES.clear()
     stopped=[];failures=[]
     # Every close is put in flight before any of them is waited on. Waiting as we go would let one
     # session that never returns consume the whole budget, so the sessions behind it would never
@@ -128,9 +186,17 @@ def create(dataset_id,model=None):
     with _LOCK:
         if _SHUTTING_DOWN:raise ApplicationStopping('应用正在关闭，无法创建新的 Agent 会话')
     model=model or harness.DEFAULT_MODEL
-    bridge=_bridge(dataset_id,model)
+    # Model, provider and credential are resolved together, once, before the session row exists.
+    # From here on the session carries this configuration: a later settings change cannot move a live
+    # session onto another key, and a recovery resumes with the key the session was created with.
+    provider,credential_id=credential_selection(model)
+    identity=runtime_identity(model,provider,credential_id)
+    _assert_runtime_config_free(dataset_id,identity)
+    bridge=_bridge(dataset_id,identity)
     session=bridge.create_session(provider='reasonix',model=model)
-    with _LOCK:_SESSIONS[session['id']]=bridge
+    with _LOCK:
+        _SESSIONS[session['id']]=bridge
+        _IDENTITIES[session['id']]=identity
     return session
 
 
