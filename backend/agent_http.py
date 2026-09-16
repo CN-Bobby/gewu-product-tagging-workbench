@@ -15,6 +15,7 @@ from . import agent_application
 from .agent.backend import CancelledError,RuntimeUnavailable,TurnError
 from .agent.bridge import (AgentBridgeError,BackendStartError,BackendStopError,InvalidSessionState,
     SessionBusy,SessionNotFound)
+from .agent_application import ApplicationStopping
 
 router=APIRouter(prefix='/api/agent')
 
@@ -25,6 +26,7 @@ _ERROR_MAP={
     SessionNotFound:(404,'session_not_found'),
     SessionBusy:(409,'session_busy'),
     InvalidSessionState:(409,'session_state'),
+    ApplicationStopping:(503,'application_stopping'),
     TurnError:(502,'turn_error'),
     CancelledError:(409,'cancelled'),
     RuntimeUnavailable:(503,'runtime_unavailable'),
@@ -51,7 +53,7 @@ def _call(operation):
 
 @router.post('/sessions')
 def create_session(body:dict):
-    return agent_application.create(body.get('dataset_id'),body.get('model'))
+    return _call(lambda:agent_application.create(body.get('dataset_id'),body.get('model')))
 
 
 @router.post('/sessions/{session_id}/start')

@@ -8,18 +8,31 @@ and no wider one.
 
 Sessions are tracked here because a bridge owns the backends: an operation on a session has to
 reach the bridge that created it, and nothing outside this module needs to know which one that is.
+That registry is also what makes shutdown possible: the application owns which runtimes are live,
+so closing them on the way out belongs here and not in the runtime or the HTTP layer.
 """
 import threading
+import time
 
 from . import harness
 from .agent import events as store
-from .agent.bridge import AgentBridge,SessionNotFound
+from .agent.bridge import AgentBridge,AgentBridgeError,SessionNotFound
 from .agent.reasonix import ReasonixAdapter,ReasonixLaunchConfig
 from .runtime_isolation import environment
+
+# One app lifetime closes every session it owns before the process ends. Each close is already
+# bounded inside the backend (close timeout, then terminate, then kill), so this budget only has to
+# cover the number of sessions, not an unbounded wait on any one of them.
+SHUTDOWN_TIMEOUT_SECONDS=15.0
 
 _LOCK=threading.Lock()
 _BRIDGES={}
 _SESSIONS={}
+_SHUTTING_DOWN=False
+
+
+class ApplicationStopping(AgentBridgeError):
+    """The application is on its way out and no longer accepts new agent sessions."""
 
 
 def backend_factory(dataset_id,model):
@@ -48,9 +61,65 @@ def _bridge(dataset_id,model):
         return bridge
 
 
+def start():
+    """Arm the surface for one application lifetime.
+
+    A lifetime begins with nothing registered and the gate open. Re-entering the lifespan in the
+    same process (a reload, or a test that starts the app again) must not inherit the previous
+    lifetime's sessions or its closed gate.
+    """
+    global _SHUTTING_DOWN
+    with _LOCK:
+        _SHUTTING_DOWN=False
+        _BRIDGES.clear();_SESSIONS.clear()
+
+
+def shutdown(timeout=SHUTDOWN_TIMEOUT_SECONDS):
+    """Close every live agent session this process owns, then refuse new ones.
+
+    Called first on application shutdown, before the background jobs: an agent session is the
+    interactive surface, and closing it stops a turn from starting work while the rest of the
+    application is already going away. One session that will not close must not hold up the others,
+    and the runtime's job object stays the last resort for a process that ignores the close.
+    """
+    global _SHUTTING_DOWN
+    with _LOCK:
+        _SHUTTING_DOWN=True
+        sessions=list(_SESSIONS.items())
+        # Cleared before closing, so a second call is a no-op and nothing can be re-registered in
+        # the middle of a close.
+        _SESSIONS.clear();_BRIDGES.clear()
+    stopped=[];failures=[]
+    # Every close is put in flight before any of them is waited on. Waiting as we go would let one
+    # session that never returns consume the whole budget, so the sessions behind it would never
+    # even be asked to stop; this way the budget is only spent on waiting, never on starting.
+    closing=[]
+    for session_id,bridge in sessions:
+        outcome={}
+        def close(session_id=session_id,bridge=bridge,outcome=outcome):
+            try:bridge.stop(session_id);outcome['stopped']=True
+            except Exception as error:
+                outcome['error']='%s: %s'%(type(error).__name__,str(error)[:200])
+        worker=threading.Thread(target=close,name='agent-shutdown',daemon=True)
+        worker.start()
+        closing.append((session_id,worker,outcome))
+    deadline=time.monotonic()+max(0.0,float(timeout))
+    for session_id,worker,outcome in closing:
+        worker.join(max(0.0,deadline-time.monotonic()))
+        if worker.is_alive():
+            failures.append({'session_id':session_id,'error':'session did not close in time'})
+        elif outcome.get('stopped'):
+            stopped.append(session_id)
+        else:
+            failures.append({'session_id':session_id,'error':outcome.get('error') or 'close produced no outcome'})
+    return {'stopped':stopped,'failures':failures}
+
+
 def create(dataset_id,model=None):
     if not isinstance(dataset_id,str) or not dataset_id.strip():
         raise ValueError('创建 agent 会话需要 dataset_id')
+    with _LOCK:
+        if _SHUTTING_DOWN:raise ApplicationStopping('应用正在关闭，无法创建新的 Agent 会话')
     model=model or harness.DEFAULT_MODEL
     bridge=_bridge(dataset_id,model)
     session=bridge.create_session(provider='reasonix',model=model)

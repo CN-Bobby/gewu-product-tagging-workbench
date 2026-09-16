@@ -16,14 +16,19 @@ from . import field_catalog,worksheet_query,task_control
 from . import knowledge,templates,storage_management,model_settings,capabilities
 from .build_info import VERSION, build_info
 from .agent_http import router as agent_router
+from . import agent_application
 
 @asynccontextmanager
 async def lifespan(app):
     app.state.stopping=False
+    agent_application.start()
     init_db();jobs.recover();batch.recover()
     with Session() as s:ids=list(s.scalars(select(Dataset.id)))
     for did in ids:draft.migrate(did)
     yield
+    # Interactive sessions first: closing them stops a turn from starting work while the rest of
+    # the application is already going away. Each close is a normal stop, not a forced teardown.
+    agent_application.shutdown()
     for rid in list(jobs.active):jobs.stop_run(rid)
     for did in list(jobs.chats):jobs.stop_chat(did)
     for jid in list(batch.active):batch.stop(jid)

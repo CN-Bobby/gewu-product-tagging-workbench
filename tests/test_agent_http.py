@@ -392,3 +392,147 @@ def test_a_response_never_carries_the_runtimes_own_error_text(client,monkeypatch
     for leaked in ('session/prompt',internal,'Reasonix','超时'):
         assert leaked not in raw,leaked
     assert response.json()['detail']['code']=='turn_error'
+
+
+# --- application shutdown ------------------------------------------------------------------
+#
+# A live agent session owns a runtime, and the application owns the sessions. Closing them on the
+# way out belongs to this layer: the runtime only knows how to close one process, and the job
+# object is the last resort for an abnormal exit, not the way a normal shutdown is supposed to end.
+
+@pytest.fixture(autouse=True)
+def gate_open():
+    """One lifetime per test: the gate a previous test closed must not leak into the next one."""
+    agent_application._SHUTTING_DOWN=False
+    yield
+    agent_application._SHUTTING_DOWN=False
+
+
+def sessions(client,count,dataset=DATASET):
+    """Start `count` sessions on one dataset, so one bridge owns several live backends."""
+    started=[]
+    for _ in range(count):
+        created=client.post('/api/agent/sessions',json={'dataset_id':dataset,'model':MODEL})
+        assert created.status_code==200,created.text
+        session_id=created.json()['id']
+        assert client.post('/api/agent/sessions/%s/start'%session_id).status_code==200
+        started.append(session_id)
+    return started
+
+
+def mixed_backends(monkeypatch,modes):
+    """A factory whose backends behave differently, for the failure-isolation case."""
+    created=[]
+    def factory(dataset_id,model):
+        def build():
+            backend=FakeBackend(mode=modes[len(created)] if len(created)<len(modes) else 'normal')
+            created.append(backend)
+            return backend
+        return build
+    monkeypatch.setattr(agent_application,'backend_factory',factory)
+    monkeypatch.setattr(agent_application,'_BRIDGES',{})
+    monkeypatch.setattr(agent_application,'_SESSIONS',{})
+    return created
+
+
+def test_T1_shutdown_stops_a_live_session_once_and_empties_the_registry(client,monkeypatch):
+    created=install(monkeypatch)
+    session_id=new_session(client)
+    report=agent_application.shutdown()
+    assert report['stopped']==[session_id] and report['failures']==[]
+    assert created[0].stop_calls==1
+    assert agent_application._SESSIONS=={} and agent_application._BRIDGES=={}
+
+
+def test_T2_shutdown_covers_every_live_session(client,monkeypatch):
+    created=install(monkeypatch)
+    started=sessions(client,3)
+    report=agent_application.shutdown()
+    assert sorted(report['stopped'])==sorted(started) and report['failures']==[]
+    assert len(created)==3
+    assert [backend.stop_calls for backend in created]==[1,1,1]
+
+
+def test_T3_one_session_that_will_not_close_does_not_stop_the_others(client,monkeypatch):
+    created=mixed_backends(monkeypatch,['normal','fail_stop','normal'])
+    started=sessions(client,3)
+    report=agent_application.shutdown()
+    assert len(report['stopped'])==2 and len(report['failures'])==1
+    failed=report['failures'][0]
+    assert failed['session_id']==started[1] and 'fake stop failure' in failed['error']
+    assert [backend.stop_calls for backend in created]==[1,0,1]
+    assert agent_application._SESSIONS=={}
+
+
+def test_T4_shutdown_is_idempotent(client,monkeypatch):
+    created=install(monkeypatch)
+    new_session(client)
+    first=agent_application.shutdown()
+    second=agent_application.shutdown()
+    assert first['stopped'] and second=={'stopped':[],'failures':[]}
+    assert created[0].stop_calls==1
+    assert agent_application._SESSIONS=={} and agent_application._BRIDGES=={}
+
+
+def test_T5_no_new_session_can_be_created_once_shutdown_began(client,monkeypatch):
+    created=install(monkeypatch)
+    new_session(client)
+    agent_application.shutdown()
+    with pytest.raises(agent_application.ApplicationStopping):
+        agent_application.create(DATASET,MODEL)
+    refused=client.post('/api/agent/sessions',json={'dataset_id':DATASET,'model':MODEL})
+    assert refused.status_code==503 and refused.json()['detail']['code']=='application_stopping'
+    assert len(created)==1,'a refused session must not build a backend'
+
+
+def test_T6_the_app_lifespan_closes_live_agent_sessions(monkeypatch):
+    created=install(monkeypatch)
+    with TestClient(app) as own_client:
+        new_session(own_client)
+        assert created[0].started and created[0].stop_calls==0
+    assert created[0].stop_calls==1
+    assert agent_application._SESSIONS=={}
+
+
+def test_T7_a_graceful_shutdown_closes_a_real_backend_over_the_stub_peer(monkeypatch,workspace,adapters):
+    """The application path, end to end: lifespan exit → adapter.stop() → session/close → process out."""
+    request_log=workspace/'requests.jsonl'
+    def factory(dataset_id,model):
+        from backend.agent import reasonix
+        def build():
+            adapter=reasonix.ReasonixAdapter(reasonix.ReasonixLaunchConfig(
+                executable=sys.executable,model=MODEL,cwd=str(workspace),
+                env=dict(os.environ,STUB_MODE='normal',STUB_LOG=str(request_log)),runtime_key='m61b'))
+            adapters.append(adapter)
+            return adapter
+        return build
+    monkeypatch.setattr(agent_application,'backend_factory',factory)
+    monkeypatch.setattr(agent_application,'_BRIDGES',{})
+    monkeypatch.setattr(agent_application,'_SESSIONS',{})
+    with TestClient(app) as own_client:
+        new_session(own_client)
+        assert adapters[-1].diagnostics()['runtime']['job']['assigned'] is True
+        assert adapters[-1].status()['alive'] is True
+    assert 'session/close' in peer_methods(request_log)
+    assert adapters[-1].status()['alive'] is False
+    assert adapters[-1].status()['pid'] is None
+
+
+def test_T8_a_hung_session_does_not_starve_the_sessions_behind_it(client,monkeypatch):
+    """The budget may only be spent waiting, never starting: otherwise a close that never returns
+    would consume it and the sessions behind it would never be asked to stop at all."""
+    created=mixed_backends(monkeypatch,['hang_stop','normal','normal'])
+    started=sessions(client,3)
+    began=time.monotonic()
+    report=agent_application.shutdown(timeout=2.0)
+    elapsed=time.monotonic()-began
+    try:
+        assert created[0].stop_entered.wait(2),'the hung session was never asked to stop'
+        assert [backend.stop_calls for backend in created]==[1,1,1],'every session must be asked'
+        assert sorted(report['stopped'])==sorted(started[1:])
+        assert [item['session_id'] for item in report['failures']]==[started[0]]
+        assert 'in time' in report['failures'][0]['error']
+        assert elapsed<5.0,'shutdown must stay bounded'
+        assert agent_application._SESSIONS=={} and agent_application._BRIDGES=={}
+    finally:
+        created[0].stop_release.set()

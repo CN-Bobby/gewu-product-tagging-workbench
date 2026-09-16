@@ -19,6 +19,8 @@ class FakeBackend:
         self.cancelled=False
         self.entered=threading.Event()
         self.release=threading.Event()
+        self.stop_entered=threading.Event()
+        self.stop_release=threading.Event()
         self.on_delta=None
         self._sink=None
         self.interactions={}
@@ -110,6 +112,11 @@ class FakeBackend:
 
     def stop(self):
         if self.mode=='fail_stop':raise RuntimeError('fake stop failure')
+        if self.mode=='hang_stop':
+            # A close that never returns, so a caller can prove it still reached the sessions behind
+            # this one. The wait is released by the test so no thread is left behind.
+            self.stop_calls+=1;self.stop_entered.set();self.stop_release.wait(30)
+            return
         self.stop_calls+=1
 
     def status(self):
