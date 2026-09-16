@@ -15,6 +15,7 @@ same two values through STUB_MODE and STUB_LOG instead.
 """
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -31,7 +32,7 @@ KNOWN_MODES={'normal','hang','silent','exit','noise','crash_after_prompt','noisy
              'prompt_missing_stop','prompt_null_stop','prompt_numeric_stop','prompt_cancelled_once',
              'ask_client','ask_client_cancelled','permission_client','malformed_client','ask_client_once',
              'cancel_aware','cancel_aware_no_stop','cancel_aware_tool','cancel_aware_once',
-             'ignore_cancel','hang_once','unsolicited_update','prompt_fail_once'}
+             'ignore_cancel','hang_once','unsolicited_update','prompt_fail_once','spawn_child'}
 _MODE_ARG=sys.argv[1] if len(sys.argv)>1 else None
 MODE=_MODE_ARG if _MODE_ARG in KNOWN_MODES else (os.environ.get('STUB_MODE') or 'normal')
 LOG=os.environ.get('STUB_LOG')
@@ -320,6 +321,12 @@ def main():
                 emit({'jsonrpc':'2.0','id':ident,'error':{'code':-32000,'message':'stub session failure'}})
             else:
                 emit({'jsonrpc':'2.0','id':ident,'result':{'sessionId':(message.get('params') or {}).get('sessionId') or 'stub-session'}})
+                if MODE=='spawn_child':
+                    # A descendant created after the owner associated this peer: only inheritance
+                    # can cover it, because nothing here is ever identified by name.
+                    child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(600)'],
+                                           creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                    sys.stderr.write('child-pid=%d\n'%child.pid);sys.stderr.flush()
                 if MODE=='unsolicited_update':
                     # One update nobody asked for, sent right after the handshake. It exists so a
                     # test can break the client's read path with no request in flight.

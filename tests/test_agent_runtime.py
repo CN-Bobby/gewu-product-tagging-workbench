@@ -3,21 +3,95 @@
 Covers the 14-point checklist items 7-14 offline and deterministically; the real Reasonix CLI
 is exercised separately by scripts/agent_m1_smoke.py so the suite stays network-free.
 """
+import ctypes
 import json
+import os
+import re
+import subprocess
 import sys
 import tempfile
 import threading
 import time
+from ctypes import wintypes
 from pathlib import Path
 import pytest
-from backend.agent.runtime import Runtime
+from backend.agent.runtime import ProcessJob,Runtime
 
 STUB=str(Path(__file__).resolve().parent/'fixtures'/'stub_acp_cli.py')
+WINDOWS=os.name=='nt'
+# A venv ``python.exe`` is a launcher that starts the base interpreter as its own child, so a test
+# that spawns ``sys.executable`` would be watching the launcher while the peer runs in a process the
+# OS created around it. These tests need the pid they associate to be the process that matters.
+PEER_PYTHON=getattr(sys,'_base_executable',None) or sys.executable
+SYNCHRONIZE=0x00100000;PROCESS_QUERY_LIMITED_INFORMATION=0x1000;STILL_ACTIVE=259
+_kernel32=ctypes.WinDLL('kernel32',use_last_error=True) if WINDOWS else None
+_leaked=[]
 
 
-def build(mode='normal'):
+def alive(pid):
+    """Independent OS answer, so a test never has to trust this layer's own bookkeeping."""
+    handle=_kernel32.OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION,False,int(pid))
+    if not handle:return False
+    try:
+        code=wintypes.DWORD()
+        if not _kernel32.GetExitCodeProcess(handle,ctypes.byref(code)):return False
+        return code.value==STILL_ACTIVE
+    finally:_kernel32.CloseHandle(handle)
+
+
+def in_job(pid):
+    """Whether the OS reports this process inside the job it was given."""
+    handle=_kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,False,int(pid))
+    if not handle:return False
+    try:
+        result=wintypes.BOOL()
+        if not _kernel32.IsProcessInJob(handle,None,ctypes.byref(result)):return False
+        return bool(result)
+    finally:_kernel32.CloseHandle(handle)
+
+
+def children_of(pid):
+    out=subprocess.run(['wmic','process','where','ParentProcessId=%d'%int(pid),'get','ProcessId,Name'],
+                       capture_output=True,text=True,encoding='utf-8',errors='replace').stdout
+    rows=[]
+    for line in out.splitlines()[1:]:
+        parts=line.split()
+        if len(parts)==2 and parts[1].isdigit():rows.append((int(parts[1]),parts[0]))
+    return rows
+
+
+def exits_within(pid,seconds):
+    deadline=time.time()+seconds
+    while time.time()<deadline:
+        if not alive(pid):return True
+        time.sleep(.05)
+    return not alive(pid)
+
+
+def hard_kill(pid):
+    """Exact pid only: nothing in this suite ever kills by image name."""
+    subprocess.run(['taskkill','/F','/PID',str(int(pid))],capture_output=True,text=True)
+
+
+def sleeper():
+    """A child that never reads stdin, so only OS-level ownership can end it."""
+    process=subprocess.Popen([PEER_PYTHON,'-c','import time;time.sleep(600)'],
+                             creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    _leaked.append(process.pid)
+    return process
+
+
+@pytest.fixture(autouse=True)
+def no_surviving_children():
+    yield
+    for pid in list(_leaked):
+        if alive(pid):hard_kill(pid)
+        _leaked.remove(pid)
+
+
+def build(mode='normal',python=None):
     events=[];diagnostics=[];lifecycle=[]
-    runtime=Runtime(sys.executable,[STUB,mode],on_event=events.append,
+    runtime=Runtime(python or PEER_PYTHON,[STUB,mode],on_event=events.append,
         on_diagnostic=lambda kind,line:diagnostics.append((kind,line)),on_lifecycle=lifecycle.append)
     return runtime,events,diagnostics,lifecycle
 
@@ -293,3 +367,110 @@ def test_the_answered_request_carries_the_original_id():
         assert runtime.alive and runtime.reader_alive
     finally:
         runtime.stop()
+
+
+# --- M6-1A: the runtime owns its process tree -----------------------------------------------
+#
+# The peer normally notices a dead parent by itself, because its stdin pipe closes and the read
+# returns EOF. That is the peer's behaviour, not something this layer guarantees; these tests fix
+# the guarantee in the layer that spawns the process.
+
+@pytest.mark.skipif(not WINDOWS,reason='Windows job objects')
+def test_T1_closing_the_last_job_handle_ends_a_process_that_never_reads_stdin():
+    """KILL_ON_JOB_CLOSE, with the same child shape left outside the job as a control."""
+    owned=sleeper()
+    control=sleeper()
+    job=ProcessJob()
+    assert job.create() is True
+    assert job.assign(owned.pid) is True
+    assert alive(owned.pid) and alive(control.pid)
+    try:
+        job.release()
+        assert exits_within(owned.pid,10),'a job member must not outlive the last handle'
+        assert alive(control.pid),'the control proves it was the job, not the child shape'
+    finally:
+        job.release()
+        for process in (owned,control):
+            if alive(process.pid):hard_kill(process.pid)
+            process.wait(timeout=5)
+
+
+@pytest.mark.skipif(not WINDOWS,reason='Windows job objects')
+def test_T2_a_started_runtime_reports_and_actually_holds_the_job(spawn):
+    runtime,events,diagnostics,lifecycle=spawn()
+    job=runtime.diagnostics()['job']
+    assert job=={'supported':True,'created':True,'assigned':True,'error':None}
+    # not the helper's word for it: the OS is asked about the process that was actually spawned
+    assert in_job(runtime.proc.pid) is True
+    assert 'job_unavailable' not in [event['type'] for event in lifecycle]
+
+
+@pytest.mark.skipif(not WINDOWS,reason='Windows job objects')
+def test_T3_the_whole_tree_is_covered_without_naming_any_of_it(spawn):
+    """A descendant the peer starts after association dies with the job, not by being identified."""
+    runtime,events,diagnostics,lifecycle=spawn('spawn_child')
+    # The association window: the peer exists and is associated, and nothing has been written to it
+    # yet. It owns nothing at this point except the console host the OS gives every console process,
+    # which is not a workbench process and is not this layer's to manage.
+    assert [name for _,name in children_of(runtime.proc.pid)] in ([],['conhost.exe']), \
+        'no descendant may exist before the first request'
+    runtime.request('initialize',{'protocolVersion':1,'clientCapabilities':{},'clientInfo':{'name':'x','version':'1'}},timeout=10)
+    runtime.request('session/new',{'cwd':'.','mcpServers':[]},timeout=10)
+    assert wait_until(lambda:[line for kind,line in diagnostics if 'child-pid=' in line])
+    child_pid=int(re.search(r'child-pid=(\d+)',
+                            [line for kind,line in diagnostics if 'child-pid=' in line][0]).group(1))
+    _leaked.append(child_pid)
+    assert alive(child_pid) and in_job(child_pid) is True
+    runtime.stop()
+    assert exits_within(child_pid,10)
+    assert not alive(runtime.proc.pid)
+
+
+@pytest.mark.skipif(not WINDOWS,reason='Windows job objects')
+def test_T4_a_host_that_refuses_the_association_degrades_instead_of_failing(monkeypatch):
+    """Hardening is optional; the agent session is not. The reason stays observable."""
+    monkeypatch.setattr(ProcessJob,'assign',lambda self,pid:(
+        setattr(self,'assign_attempted',True),self._fail('AssignProcessToJobObject failed (5)'))[1])
+    runtime,events,diagnostics,lifecycle=build()
+    try:
+        runtime.start()
+        assert runtime.alive
+        assert runtime.request('initialize',{'protocolVersion':1,'clientCapabilities':{},'clientInfo':{'name':'x','version':'1'}},timeout=10)['protocolVersion']==1
+        job=runtime.diagnostics()['job']
+        assert job['created'] is True and job['assigned'] is False
+        assert 'AssignProcessToJobObject failed' in job['error']
+        assert 'job_unavailable' in [event['type'] for event in lifecycle]
+        assert runtime._job.handle is None,'the created handle must not be left open'
+    finally:
+        runtime.stop()
+
+
+def test_T4b_a_host_without_jobs_says_so_and_keeps_working(monkeypatch):
+    monkeypatch.setattr('backend.agent.runtime.os.name','posix')
+    runtime,events,diagnostics,lifecycle=build()
+    try:
+        runtime.start()
+        assert runtime.request('initialize',{'protocolVersion':1,'clientCapabilities':{},'clientInfo':{'name':'x','version':'1'}},timeout=10)['protocolVersion']==1
+        assert runtime.diagnostics()['job']=={'supported':False,'created':False,'assigned':False,'error':None}
+        assert 'job_unavailable' not in [event['type'] for event in lifecycle]
+    finally:
+        runtime.stop()
+
+
+@pytest.mark.skipif(not WINDOWS,reason='Windows job objects')
+def test_T5_stopping_releases_the_job_and_stays_idempotent(spawn):
+    runtime,events,diagnostics,lifecycle=spawn()
+    assert runtime.diagnostics()['job']['assigned'] is True
+    runtime.stop();runtime.stop()
+    assert runtime._job.handle is None
+    assert [event['type'] for event in lifecycle].count('process_stopped')==1
+
+
+@pytest.mark.skipif(not WINDOWS,reason='Windows job objects')
+def test_T6_a_spawn_failure_leaves_no_job_handle_and_no_reader(monkeypatch):
+    def boom(*args,**kwargs):raise OSError('spawn refused')
+    monkeypatch.setattr('backend.agent.runtime.subprocess.Popen',boom)
+    runtime,events,diagnostics,lifecycle=build()
+    with pytest.raises(OSError):runtime.start()
+    assert runtime._job.handle is None,'a failed start must not leak the job handle'
+    assert runtime.proc is None and runtime.reader_alive is False

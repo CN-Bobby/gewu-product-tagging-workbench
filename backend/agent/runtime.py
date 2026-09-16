@@ -9,6 +9,7 @@ The peer speaks UTF-8, newline-delimited JSON. Decoding is explicit so a Windows
 page can never decide how ACP frames are read, and universal newlines keep CRLF peers working.
 """
 import concurrent.futures
+import os
 import subprocess
 import threading
 import time
@@ -41,6 +42,112 @@ class RingBuffer:
     def __len__(self):return len(self.items)
 
 
+# --- process ownership ----------------------------------------------------
+#
+# This layer owns the OS lifecycle of the tree it spawns. The peer is launched with its stdio bound
+# to this process, so it commonly notices the parent's death by itself when reading stdin returns
+# EOF — but that is the peer's behaviour, not a guarantee made here. On Windows an anonymous job
+# object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE turns it into one: the handle lives in this
+# process, and when the last handle closes — a normal stop, a crashed or hard-killed workbench, a
+# logoff — the OS terminates every process still associated with the job. Membership is inherited by
+# descendants created after association, so the peer's own children are covered without this code
+# ever naming them.
+#
+# One anonymous job per runtime: it can only ever contain processes this runtime spawned, so a
+# manual Reasonix, another workbench or another project's instance is out of reach by construction.
+# Nothing here enumerates or kills by image name.
+
+if os.name=='nt':
+    import ctypes
+    from ctypes import wintypes
+
+    _KERNEL32=ctypes.WinDLL('kernel32',use_last_error=True)
+    _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE=0x00002000
+    _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION=9
+    _PROCESS_SET_QUOTA=0x0100
+    _PROCESS_TERMINATE=0x0001
+
+    class _IO_COUNTERS(ctypes.Structure):
+        _fields_=[('ReadOperationCount',ctypes.c_ulonglong),('WriteOperationCount',ctypes.c_ulonglong),
+                  ('OtherOperationCount',ctypes.c_ulonglong),('ReadTransferCount',ctypes.c_ulonglong),
+                  ('WriteTransferCount',ctypes.c_ulonglong),('OtherTransferCount',ctypes.c_ulonglong)]
+
+    class _JOB_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_=[('PerProcessUserTimeLimit',ctypes.c_int64),('PerJobUserTimeLimit',ctypes.c_int64),
+                  ('LimitFlags',wintypes.DWORD),('MinimumWorkingSetSize',ctypes.c_size_t),
+                  ('MaximumWorkingSetSize',ctypes.c_size_t),('ActiveProcessLimit',wintypes.DWORD),
+                  ('Affinity',ctypes.c_size_t),('PriorityClass',wintypes.DWORD),
+                  ('SchedulingClass',wintypes.DWORD)]
+
+    class _JOB_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_=[('BasicLimitInformation',_JOB_BASIC_LIMIT_INFORMATION),('IoInfo',_IO_COUNTERS),
+                  ('ProcessMemoryLimit',ctypes.c_size_t),('JobMemoryLimit',ctypes.c_size_t),
+                  ('PeakProcessMemoryUsed',ctypes.c_size_t),('PeakJobMemoryUsed',ctypes.c_size_t)]
+
+
+class ProcessJob:
+    """One anonymous job object owned by one runtime: the OS-level owner of its process tree.
+
+    Every failure is reported and never raised. Owning the peer's lifecycle is hardening; a host
+    whose job policy refuses association must not be the reason the workbench cannot run an agent,
+    so the runtime keeps running on stdio alone and says in diagnostics why it is unprotected.
+    """
+
+    def __init__(self):
+        self.supported=os.name=='nt'
+        self.handle=None
+        self.created=False
+        self.assign_attempted=False
+        self.assigned=False
+        self.error=None
+
+    def _fail(self,message):
+        self.error=str(message)[:DETAIL_LIMIT]
+        return False
+
+    def create(self):
+        """Create the job and require it to terminate its members when the last handle closes."""
+        if not self.supported:return False
+        handle=_KERNEL32.CreateJobObjectW(None,None)
+        if not handle:return self._fail('CreateJobObjectW failed (%d)'%ctypes.get_last_error())
+        limits=_JOB_EXTENDED_LIMIT_INFORMATION()
+        limits.BasicLimitInformation.LimitFlags=_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not _KERNEL32.SetInformationJobObject(handle,_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                                                 ctypes.byref(limits),ctypes.sizeof(limits)):
+            code=ctypes.get_last_error();_KERNEL32.CloseHandle(handle)
+            return self._fail('SetInformationJobObject failed (%d)'%code)
+        self.handle=handle;self.created=True
+        return True
+
+    def assign(self,pid):
+        """Associate one process with the job. Called as early as the spawn allows, before any I/O.
+
+        An outer job on this host can still make the assignment fail (nested membership depends on
+        the hierarchy the host established), which is exactly why the return value is read and the
+        error kept instead of being assumed.
+        """
+        if not self.supported or self.handle is None:return False
+        self.assign_attempted=True
+        process=_KERNEL32.OpenProcess(_PROCESS_SET_QUOTA|_PROCESS_TERMINATE,False,int(pid))
+        if not process:return self._fail('OpenProcess failed (%d)'%ctypes.get_last_error())
+        try:
+            if not _KERNEL32.AssignProcessToJobObject(self.handle,process):
+                return self._fail('AssignProcessToJobObject failed (%d)'%ctypes.get_last_error())
+        finally:_KERNEL32.CloseHandle(process)
+        self.assigned=True
+        return True
+
+    def release(self):
+        """Close the handle. Idempotent: closing the last one is what ends any remaining member."""
+        if self.handle is None:return
+        handle,self.handle=self.handle,None
+        _KERNEL32.CloseHandle(handle)
+
+    def info(self):
+        """Narrow observability. No handle, no pid, and nothing inferred beyond what was observed."""
+        return {'supported':self.supported,'created':self.created,'assigned':self.assigned,'error':self.error}
+
+
 class Runtime:
     def __init__(self,executable,args,cwd=None,env=None,on_event=None,on_diagnostic=None,on_lifecycle=None):
         self.executable=executable;self.args=list(args);self.cwd=cwd;self.env=env
@@ -49,6 +156,7 @@ class Runtime:
         self.on_lifecycle=on_lifecycle or (lambda event:None)
         self.pending={};self.counter=0;self.lock=threading.Lock()
         self.closed=False;self.proc=None;self._reader=None;self._stderr_reader=None
+        self._job=None
         self.started_at=None;self.stopped_at=None;self.last_activity_at=None
         self._exit_noted=False
         self._stderr_ring=RingBuffer(STDERR_RING_CAPACITY)
@@ -96,13 +204,27 @@ class Runtime:
 
     def start(self):
         self._emit('process_starting')
-        # ACP stdio is UTF-8, newline-delimited JSON. text=True gives universal newlines so a
-        # CRLF peer keeps working, and encoding is pinned here instead of being inherited from
-        # the Windows console code page.
-        self.proc=subprocess.Popen([self.executable,*self.args],cwd=self.cwd,env=self.env,
-            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
-            text=True,encoding='utf-8',errors='replace',bufsize=1,
-            creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        # Own the child's OS lifecycle before it exists, so association can happen the moment the
+        # spawn returns. ACP stdio is UTF-8, newline-delimited JSON. text=True gives universal
+        # newlines so a CRLF peer keeps working, and encoding is pinned here instead of being
+        # inherited from the Windows console code page.
+        self._job=ProcessJob();self._job.create()
+        try:
+            self.proc=subprocess.Popen([self.executable,*self.args],cwd=self.cwd,env=self.env,
+                stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                text=True,encoding='utf-8',errors='replace',bufsize=1,
+                creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        except BaseException:
+            self._job.release()
+            raise
+        # Nothing is written to the peer before this attempt: it is the earliest point the OS lets
+        # us claim the child, and association is inherited by whatever the peer spawns afterwards.
+        self._job.assign(self.proc.pid)
+        if self._job.supported and not self._job.assigned:
+            # Hardening is unavailable on this host, not the session: say why it is unprotected and
+            # keep running on stdio alone rather than failing an agent that would otherwise work.
+            self._emit('job_unavailable',detail=self._job.error)
+            self._job.release()
         self.started_at=timestamp();self.last_activity_at=self.started_at
         self._reader=threading.Thread(target=self._read_stdout,name='reasonix-acp-stdout',daemon=True)
         self._reader.start()
@@ -124,6 +246,9 @@ class Runtime:
         self._close_streams()
         if not self.stopped_at:self.stopped_at=timestamp()
         self._emit('process_stopped',returncode=self.returncode)
+        # Last, and only after the teardown above has run: closing the last job handle is what makes
+        # the OS end anything of this runtime's tree that outlived it.
+        if self._job:self._job.release()
 
     def kill(self):
         if self.alive:self.proc.kill()
@@ -178,7 +303,8 @@ class Runtime:
 
     def diagnostics(self):
         """Recent structured diagnostics: stderr lines, protocol errors and lifecycle events."""
-        return {'stderr':self._stderr_ring.tail(),'protocol':self._protocol_ring.tail(),'lifecycle':self._lifecycle_ring.tail()}
+        return {'stderr':self._stderr_ring.tail(),'protocol':self._protocol_ring.tail(),
+                'lifecycle':self._lifecycle_ring.tail(),'job':self._job.info() if self._job else None}
 
     def protocol_errors(self):return self._protocol_ring.tail()
 
