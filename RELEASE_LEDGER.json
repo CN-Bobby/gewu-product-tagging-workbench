@@ -59,14 +59,25 @@
     },
     {
       "version": "0.5.0-beta.6",
-      "status": "pending_acceptance",
+      "status": "superseded",
       "artifact_kind": "internal_candidate",
       "commit": "2f7bf2b59975ba2cc5693ec346868d470774fe61",
       "tag": null,
-      "superseded_by": null,
+      "superseded_by": "0.5.0-beta.7",
       "candidate_installer": "格物工作台-0.5.0-beta.6-candidate.2f7bf2b59975-安装程序.exe",
       "candidate_sha256": "4a5524d07bcd941085c1676d2630139912ebca6a2f73591e50f75cd37167a8a0",
-      "note": "标签标准反推、已标与未标混合抽样、已接入原列的标准修订、模型验证独立状态，以及网页对话/原生会话/后台任务三层隔离候选；包内冷启动与本机beta.5覆盖升级通过，真实模型语义和干净Windows仍待用户验收。"
+      "note": "标签标准反推、已标与未标混合抽样、已接入原列的标准修订、模型验证独立状态，以及网页对话/原生会话/后台任务三层隔离候选；包内冷启动与本机beta.5覆盖升级通过，真实模型语义和干净Windows仍待用户验收。 仍安装在生产机上运行，但从未提升为正式发布；同一产品线的候选线已由 0.5.0-beta.7 接替。"
+    },
+    {
+      "version": "0.5.0-beta.7",
+      "status": "pending_acceptance",
+      "artifact_kind": "internal_candidate",
+      "commit": null,
+      "tag": null,
+      "superseded_by": null,
+      "candidate_installer": null,
+      "candidate_sha256": null,
+      "note": "Agent 运行时切换与交付硬化候选：Reasonix 后端契约唯一化、旧执行路径退役、Job Object 进程归属、优雅关闭、四层语义执行预算与三套按角色策略、取消/超时回收并 resume 同一原生会话、迟到事件隔离、模型与凭据快照安全、Agent 面板默认化。同一份源码已完成 Real Acceptance Phase A/B 与候选全新安装/升级/回退验证；候选产物哈希在紧随其后的提交中记录。"
     }
   ]
 }

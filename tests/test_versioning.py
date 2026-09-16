@@ -49,8 +49,14 @@ def test_release_ledger_and_single_install_identity():
     ledger=json.loads((root/'RELEASE_LEDGER.json').read_text(encoding='utf-8'))
     current=next(item for item in ledger['versions'] if item['version']==VERSION)
     assert current['status']==version['release_status']=='pending_acceptance'
+    # Exactly one predecessor supersedes into this version, and it is the previous prerelease of the
+    # same line: the assertion follows the version sequence instead of naming a literal, so bumping
+    # the version does not require editing this test.
     previous=next(item for item in ledger['versions'] if item.get('superseded_by')==VERSION)
-    assert previous['version']=='0.5.0-beta.5' and previous['status']=='superseded'
+    assert previous['status']=='superseded'
+    line,_,number=VERSION.partition('-beta.')
+    assert number.isdigit() and int(number)>1
+    assert previous['version']=='%s-beta.%d' % (line,int(number)-1)
     source=(root/'scripts'/'build_windows.py').read_text(encoding='utf-8')
     assert 'InstallDirRegKey HKCU "Software\\\\GeWuWorkbench" "InstallLocation"' in source
     assert 'Uninstall\\\\GeWuWorkbench' in source

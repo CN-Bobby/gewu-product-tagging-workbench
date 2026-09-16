@@ -1,8 +1,26 @@
 # 交付台账
 
-当前开发目标：0.5.0-beta.6（标签标准反推、会话运行时隔离、模型能力独立验证），已在版本台账中取代beta.5。候选已冻结到 `2f7bf2b59975ba2cc5693ec346868d470774fe61`，完成包内冷启动和本机 beta.5 覆盖升级；最近实际发布的历史客户试用包仍为0.5.0-beta.3。beta.6完成真实语义、人工回退和干净Windows验收前保持 `pending_acceptance`，不创建正式发布标签。
+当前开发目标：0.5.0-beta.7（Agent 运行时切换与交付硬化），已在版本台账中取代beta.6。候选绑定本次 release-prep 提交，候选产物哈希在紧随其后的提交写入 `RELEASE_LEDGER.json`，验收记录见 `docs/ACCEPTANCE-0.5.0-beta.7.md`。beta.6 仍是当前生产机上运行、从未提升为正式发布的旧候选。最近实际发布的历史客户试用包仍为 0.5.0-beta.3。完成最终真实语义确认与生产切换前保持 `pending_acceptance`，不创建正式发布标签。
 
 GitHub Release：https://github.com/CN-Bobby/gewu-product-tagging-workbench/releases/tag/v0.5.0-beta.3。构建时的 `ACCEPTANCE-RESULTS.json` 保留当时的待外部验收快照；随后用户已确认另一台 Windows 完成安装验证。
+
+## 0.5.0-beta.7 交付范围与门禁
+
+Agent 运行时切换与硬化：生产链路唯一化为 Agent 后端契约；旧执行路径与已退役能力删除（仅保留历史数据读取面）；Job Object 进程归属与优雅关闭；四层语义执行预算与三套按角色策略；取消/超时回收并对同一原生会话 resume；迟到事件隔离；模型与凭据快照安全；Agent 面板默认化。详细条目见 `CHANGELOG.md`。
+
+|编号|范围|状态|证据/剩余工作|
+|---|---|---|---|
+|E01|Agent 运行时为唯一执行链|已验收|`tests/test_agent_bridge*.py`、`tests/test_agent_http.py`、`tests/test_jobs_backend_migration.py`；退役路径生产构造调用为 0（见 `PROJECT_HANDOFF.md` §5.4）|
+|E02|进程归属与优雅关闭|已验收|`tests/test_agent_runtime.py`（Job Object）、`tests/test_agent_http.py`（关闭不饿死后续会话）；隔离实例正常关闭后 owned `reasonix.exe` 消失、端口释放、无 orphan|
+|E03|语义执行预算与超时投影|已验收|`tests/test_execution_budget.py`、`tests/test_budget_policy.py`；三套数值与 HTTP `detail.reason` 已核对；真实取消回合后同会话恢复在 Phase A 通过|
+|E04|模型/凭据快照安全|已验收|`tests/test_model_credential_lifecycle.py`；真实实例上 active 会话期间设置变更 409 且配置文件未变|
+|E05|真实模型最小验收（Phase A/B）|已通过|隔离实例：两轮上下文、只读工具、显式取消+同会话恢复、原生提问、重启持久化、最小真实草稿执行（1 文本列 + 1 视觉列）、批处理期间设置锁；计量 3 文本 prompt / 1 vision / 0 工具|
+|E06|候选全新安装 / 升级 / 回退|已通过|隔离目录全新安装、beta.6→beta.7 数据副本升级（含 schema 7→8 迁移）、备份恢复回退；正式数据未被写入|
+|E07|真实语义与生产切换|待用户确认|需在正式数据上由用户完成语义确认与生产环境切换；在此之前不创建 tag/Release|
+
+**Non-blocking known limitations（本轮不修复）**：全新安装未配置模型服务时无法启动 Agent 会话（先保存设置即可）；删除凭据后数据集目录可能残留旧密钥直到下一次启动重写；跨进程重启不保留凭据身份；Agent 面板未传模型时使用内置默认模型而非设置项默认值。这些已记录为不阻塞交付项，见 `PROJECT_HANDOFF.md` §11。
+
+### 既有门禁（A–D，前序里程碑）
 
 |编号|范围|状态|证据/剩余工作|
 |---|---|---|---|
