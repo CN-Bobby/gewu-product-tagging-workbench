@@ -53,7 +53,8 @@ def short_turn_timeout(monkeypatch):
 def make(workspace,request_log,mode='normal',opened=None):
     adapter=reasonix.ReasonixAdapter(reasonix.ReasonixLaunchConfig(
         executable=sys.executable,model=MODEL,cwd=str(workspace),
-        env=dict(os.environ,STUB_MODE=mode,STUB_LOG=str(request_log)),runtime_key=RUNTIME_KEY))
+        env=dict(os.environ,STUB_MODE=mode,STUB_LOG=str(request_log),
+                 STUB_ONCE_FILE=str(workspace/'session-once.json')),runtime_key=RUNTIME_KEY))
     if opened is not None:opened.append(adapter)
     return adapter
 
@@ -101,12 +102,13 @@ def test_cancelling_an_active_turn_abandons_it(workspace,request_log,adapters):
     worker.join(timeout=15)
     assert isinstance(outcome.get('error'),CancelledError)
     assert outcome['error'].fatal is False
-    assert adapter.status()['alive'] is True and adapter.diagnostics()['reader_alive'] is True
-    # the turn was abandoned, not the session
-    assert adapter.status()['ready'] is True
+    # The turn was abandoned, not the session: the interrupted turn's runtime is finished — it may
+    # still deliver that turn's frames — and the session identity is kept for the next send to resume.
+    assert adapter.status()['alive'] is False
     assert adapter.status()['remote_session_id']=='stub-session'
-    methods=sent_methods(request_log)
-    assert 'session/cancel' in methods and 'session/close' not in methods
+    assert wait_until(lambda:'session/cancel' in sent_methods(request_log))
+    # the runtime is finished as part of the interrupted turn's unwind, not left for the next send
+    assert wait_until(lambda:'session/close' in sent_methods(request_log))
 
 
 def test_the_session_still_works_after_a_cancel(workspace,request_log,adapters):
@@ -213,8 +215,8 @@ def test_a_prompt_timeout_abandons_the_turn_without_killing_the_session(workspac
     assert not isinstance(failure.value,RuntimeUnavailable)
     assert time.perf_counter()-started<20
     assert wait_until(lambda:'session/cancel' in sent_methods(request_log))  # abandoned first
-    assert adapter.status()['alive'] is True and adapter.status()['ready'] is True
-    # the session is healthy, so the next turn must work
+    assert adapter.status()['alive'] is False and adapter.status()['remote_session_id']=='stub-session'
+    # the session is healthy, so the next turn must work — on a fresh runtime resumed to it
     events=[]
     adapter.bind(events.append)
     adapter.send('再来一次')
@@ -250,7 +252,8 @@ def test_a_missing_stop_reason_after_a_local_cancel_is_a_cancellation(workspace,
     adapter.cancel()
     worker.join(timeout=15)
     assert isinstance(outcome.get('error'),CancelledError)
-    assert adapter.status()['alive'] is True
+    assert adapter.status()['alive'] is False
+    assert adapter.status()['remote_session_id']=='stub-session'
 
 
 # --- an unreachable runtime -------------------------------------------------
@@ -328,6 +331,9 @@ def test_a_cancelled_turn_never_reports_a_real_tool_failure(workspace,request_lo
     adapter.start()
     outcome,worker=start_turn(adapter)
     assert wait_for(lambda:adapter.diagnostics()['in_flight'] or None,10)
+    # Wait for the peer's tool frames before interrupting: an interrupted turn's later output is
+    # fenced off by contract, so the tool contract has to be observed while the turn is still live.
+    assert wait_until(lambda:[event for event in seen if event.get('type')=='tool_call_settled'])
     adapter.cancel()
     worker.join(timeout=15)
     kinds=[event.get('type') for event in seen]
@@ -367,4 +373,5 @@ def test_cancel_and_send_racing_leave_the_session_usable(workspace,request_log,a
     worker.join(timeout=15)
     assert not canceller.is_alive() and not worker.is_alive()
     assert isinstance(outcome.get('error'),CancelledError)
-    assert adapter.status()['alive'] is True and adapter.diagnostics()['in_flight'] is False
+    assert adapter.status()['alive'] is False and adapter.diagnostics()['in_flight'] is False
+    assert adapter.status()['remote_session_id']=='stub-session'

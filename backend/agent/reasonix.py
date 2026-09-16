@@ -14,7 +14,7 @@ import os
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass,replace
 from typing import Callable, Mapping
 
 from . import protocol
@@ -54,6 +54,88 @@ LIFECYCLE_CAPACITY=50
 VENDOR_META_KEY='reasonix.io'
 RELOAD_CAPABILITY_KEY='sessionReloadExtensions'
 
+# --- execution budget -----------------------------------------------------
+#
+# How long a turn may stay unproductive, how long a tool may run, and how long the turn may last at
+# all. The budget is caller policy: a composition injects it, and with none the adapter keeps the
+# timing behaviour it had before (one transport timeout, no semantic supervision).
+BUDGET_TRANSPORT_GRACE_SECONDS=60.0
+INTERRUPT_USER_CANCEL='user_cancel'
+INTERRUPT_FIRST_ACTIVITY='turn_first_activity_timeout'
+INTERRUPT_IDLE='turn_idle_timeout'
+INTERRUPT_TOOL='turn_tool_timeout'
+INTERRUPT_WALL_CLOCK='turn_wall_clock_timeout'
+TIMEOUT_INTERRUPTS=frozenset({INTERRUPT_FIRST_ACTIVITY,INTERRUPT_IDLE,INTERRUPT_TOOL,INTERRUPT_WALL_CLOCK})
+
+
+@dataclass(frozen=True)
+class ExecutionBudget:
+    """Time limits for one turn, in seconds.
+
+    ``turn_wall_clock_timeout`` is absolute: it runs from the moment the prompt is sent and is not
+    paused by model activity, a running tool or a question waiting on a person. The other three are
+    semantic: ``first_activity_timeout`` bounds a turn that has produced nothing yet,
+    ``idle_timeout`` bounds a productive turn that went quiet, and ``tool_wait_timeout`` bounds one
+    tool call. Nothing here is read from the environment, persisted or exposed to the peer.
+    """
+    first_activity_timeout: float
+    idle_timeout: float
+    tool_wait_timeout: float
+    turn_wall_clock_timeout: float
+
+    def __post_init__(self):
+        for name in ('first_activity_timeout','idle_timeout','tool_wait_timeout','turn_wall_clock_timeout'):
+            value=getattr(self,name)
+            if isinstance(value,bool) or not isinstance(value,(int,float)) or value<=0:
+                raise ValueError('ExecutionBudget.%s 必须是正数秒'%name)
+
+
+class _TurnState:
+    """Supervision state for one in-flight turn. Created per turn, discarded when it ends.
+
+    Waiting is per identity, never a flag: several questions can be open at once and several tools
+    can run at once, and the turn only leaves a wait when the last one settles.
+    """
+
+    def __init__(self,budget):
+        self.budget=budget
+        self.started_at=time.monotonic()
+        self.first_activity_at=None
+        self.last_activity_at=None
+        self.pending_interactions=set()
+        self.active_tools={}
+        self.interrupt_cause=None
+        self.accept_peer_output=True
+
+    def deadline(self,now=None):
+        """The nearest deadline that applies right now, or None when nothing is running out."""
+        now=time.monotonic() if now is None else now
+        if self.budget is None:return None
+        deadlines=[self.started_at+self.budget.turn_wall_clock_timeout]
+        if self.active_tools:
+            deadlines.append(min(self.active_tools.values())+self.budget.tool_wait_timeout)
+        elif self.pending_interactions:
+            # A person is deciding: no ordinary idle deadline runs while a question is open.
+            pass
+        elif self.first_activity_at is None:
+            deadlines.append(self.started_at+self.budget.first_activity_timeout)
+        else:
+            deadlines.append((self.last_activity_at or self.started_at)+self.budget.idle_timeout)
+        return min(deadlines)
+
+    def expired_cause(self,now=None):
+        """Which deadline the clock has passed. Wall clock outranks the rest when several do."""
+        now=time.monotonic() if now is None else now
+        if self.budget is None:return None
+        if now>=self.started_at+self.budget.turn_wall_clock_timeout:return INTERRUPT_WALL_CLOCK
+        if self.active_tools and now>=min(self.active_tools.values())+self.budget.tool_wait_timeout:
+            return INTERRUPT_TOOL
+        if self.pending_interactions:return None
+        if self.first_activity_at is None:
+            return INTERRUPT_FIRST_ACTIVITY if now>=self.started_at+self.budget.first_activity_timeout else None
+        if now>=(self.last_activity_at or self.started_at)+self.budget.idle_timeout:return INTERRUPT_IDLE
+        return None
+
 
 @dataclass(frozen=True)
 class ReasonixResumeState:
@@ -81,6 +163,7 @@ class ReasonixLaunchConfig:
     resume: ReasonixResumeState|None=None
     client_name: str='gewu-workbench'
     client_version: str='0'
+    budget: ExecutionBudget|None=None
 
 
 def _detail(error):
@@ -140,6 +223,15 @@ class ReasonixAdapter:
         self._unknown_stop_reasons={}
         self._pending_requests={}
         self._refused_requests={}
+        # One turn's supervision state at a time, guarded with its own condition: the reader thread
+        # reports activity, the supervisor waits for the nearest deadline, and the caller may cancel
+        # — all three meet here and nowhere else.
+        self._turn=None
+        self._turn_cond=threading.Condition(threading.Lock())
+        self._supervisor=None
+        # An interrupted turn leaves a runtime whose stream may still carry that turn, so the next
+        # send starts a fresh runtime on the same session instead of reusing this one.
+        self._needs_resume=False
         # Guards the pending interaction registry and the settle-before-reply-triggered-terminal
         # ordering; the turn terminal waits on it so a settlement can never be overtaken.
         self._interaction_lock=threading.RLock()
@@ -185,9 +277,15 @@ class ReasonixAdapter:
 
         Completion is never inferred from the text, from silence or from an idle reader: it is the
         ``session/prompt`` response, which the peer sends after the last update.
+
+        A turn that was interrupted — by the caller or by this adapter's own budget — finishes the
+        runtime it ran on: the next send builds a fresh one and resumes the same session first, so no
+        late output from the interrupted turn can reach a later one.
         """
         if not isinstance(text,str) or not text.strip():raise ValueError('消息需要非空文本')
+        self._recover_if_needed()
         runtime=self._runtime
+        budget=self._config.budget
         with self._lock:
             if not self._ready or runtime is None or not runtime.alive:
                 raise RuntimeUnavailable('会话当前不可发送')
@@ -197,31 +295,19 @@ class ReasonixAdapter:
             self._cancel_requested=False
             self._turn_text=[]
             self._emit_failure=None
+        with self._turn_cond:self._turn=_TurnState(budget)
+        if budget is not None:self._start_supervisor()
+        # The transport ceiling sits above the semantic one, so a supervisor that works always wins
+        # and this only fires when supervision itself failed.
+        timeout=PROMPT_TIMEOUT_SECONDS if budget is None else budget.turn_wall_clock_timeout+BUDGET_TRANSPORT_GRACE_SECONDS
         started=time.monotonic()
         try:
             try:
                 result=runtime.request('session/prompt',
                     {'sessionId':self._remote_session_id,
-                     'prompt':[{'type':'text','text':text}]},timeout=PROMPT_TIMEOUT_SECONDS)
+                     'prompt':[{'type':'text','text':text}]},timeout=timeout)
             except Exception as error:
-                # A deliberate local cancel or teardown is not an unexpected runtime loss and must
-                # not be reported as one. The budget comparison is our own measurement, so no
-                # message is ever inspected to decide any of this.
-                if self._stopping or self._cancel_requested:
-                    raise CancelledError('本轮已被本地取消或停止') from error
-                # A live process is not a live session. With the reader gone nothing can ever be
-                # answered again, so this runtime is finished for every future request and not
-                # only for this turn — which is why it is decided before the budget is even read.
-                if not runtime.alive or not runtime.reader_alive:
-                    with self._lock:self._ready=False
-                    raise RuntimeUnavailable('回合执行期间运行时失去响应通道',detail=_detail(error)) from error
-                if time.monotonic()-started>=PROMPT_TIMEOUT_SECONDS:
-                    # The budget ran out: abandon the turn, then let liveness decide fatality.
-                    self.cancel()
-                    if runtime.alive:raise TurnError('回合超过预算已放弃',detail=_detail(error)) from error
-                if runtime.alive:raise TurnError('回合执行失败',detail=_detail(error)) from error
-                with self._lock:self._ready=False
-                raise RuntimeUnavailable('回合执行期间运行时已退出',detail=_detail(error)) from error
+                raise self._turn_failure(error,started,budget) from error
             # The protocol turn is done. A turn is only delivered when every event it owes was
             # delivered: a consumer failure anywhere, including the turn event itself, fails the
             # turn — and a broken consumer must never be told the turn completed normally.
@@ -233,6 +319,13 @@ class ReasonixAdapter:
             # Delivery has precedence over the protocol outcome: the caller only hears success or
             # cancellation once the turn's whole outward contract reached the log.
             if stop==TURN_END:return
+            # A turn that was interrupted ends as its winner says, whatever words the peer used: the
+            # deadline that gave up does not become a caller cancellation just because the peer
+            # phrases the abandoned turn as "cancelled".
+            cause=self._turn_cause()
+            if cause==INTERRUPT_USER_CANCEL:raise CancelledError('本轮已被取消，会话仍可继续')
+            if cause in TIMEOUT_INTERRUPTS:
+                raise TurnError('回合超过预算已放弃',detail='stop_reason=%s' % (stop or '<missing>'),code=cause)
             # A turn we asked to abandon ends here even when the peer phrases it as an error: the
             # caller asked for it, so a cancellation is the honest answer, not a failure.
             if self._cancel_requested:raise CancelledError('本轮已被取消，会话仍可继续')
@@ -243,6 +336,164 @@ class ReasonixAdapter:
             with self._lock:
                 self._in_flight=False
                 self._turn_active=False
+            self._finish_turn()
+
+    def _turn_failure(self,error,started,budget):
+        """Map a failed prompt onto the contract.
+
+        The winner of the interrupt race owns the outcome: a cancel that arrives after a deadline
+        already expired cannot rewrite what the deadline reported, and neither can the reverse.
+        """
+        with self._turn_cond:
+            turn=self._turn
+            cause=turn.interrupt_cause if turn is not None else None
+        if cause==INTERRUPT_USER_CANCEL:return CancelledError('本轮已被本地取消或停止')
+        if cause in TIMEOUT_INTERRUPTS:return TurnError('回合超过预算已放弃',detail=_detail(error),code=cause)
+        # No interruption was claimed: this is the transport itself failing.
+        if self._stopping or self._cancel_requested:return CancelledError('本轮已被本地取消或停止')
+        # A live process is not a live session. With the reader gone nothing can ever be answered
+        # again, so this runtime is finished for every future request and not only for this turn —
+        # which is why it is decided before any budget is read.
+        runtime=self._runtime
+        if runtime is None or not runtime.alive or not runtime.reader_alive:
+            with self._lock:self._ready=False
+            return RuntimeUnavailable('回合执行期间运行时失去响应通道',detail=_detail(error))
+        reference=PROMPT_TIMEOUT_SECONDS if budget is None else budget.turn_wall_clock_timeout
+        if time.monotonic()-started>=reference:
+            # The budget ran out without the supervisor claiming it: abandon the turn the same way.
+            if self._try_interrupt(INTERRUPT_WALL_CLOCK):self._notify_cancel()
+            if runtime.alive:return TurnError('回合超过预算已放弃',detail=_detail(error))
+        if runtime.alive:return TurnError('回合执行失败',detail=_detail(error))
+        with self._lock:self._ready=False
+        return RuntimeUnavailable('回合执行期间运行时已退出',detail=_detail(error))
+
+    # --- turn supervision -------------------------------------------------
+    #
+    # The budget is enforced here and nowhere else: the caller blocks on the protocol request, the
+    # reader reports what arrived, and this only compares clocks. Nothing below reads a frame's
+    # meaning, and the transport layer is not told that assistant text, tools or questions exist.
+
+    def _start_supervisor(self):
+        thread=threading.Thread(target=self._supervise,name='reasonix-budget',daemon=True)
+        with self._turn_cond:self._supervisor=thread
+        thread.start()
+
+    def _supervise(self):
+        """Wait for the nearest deadline that applies, then claim the turn's interruption."""
+        while True:
+            with self._turn_cond:
+                turn=self._turn
+                if turn is None or turn.budget is None or turn.interrupt_cause is not None:return
+                deadline=turn.deadline()
+                if deadline is None:return
+                remaining=deadline-time.monotonic()
+                if remaining>0:
+                    self._turn_cond.wait(remaining);continue
+                cause=turn.expired_cause()
+            if cause is None:continue
+            if self._try_interrupt(cause):self._notify_cancel()
+            return
+
+    def _try_interrupt(self,cause):
+        """Claim the turn's one interruption. First writer wins, so a cancel racing a deadline
+        produces exactly one cause, one notification and one outcome — never two."""
+        with self._turn_cond:
+            turn=self._turn
+            if turn is None or turn.interrupt_cause is not None:return False
+            turn.interrupt_cause=cause
+            # From this moment the runtime's further output belongs to a turn nobody is listening to.
+            turn.accept_peer_output=False
+            self._turn_cond.notify_all()
+            return True
+
+    def _notify_cancel(self):
+        """Ask the peer to abandon the turn in flight. Only the winner of the race calls this."""
+        runtime=self._runtime
+        if runtime is None or not runtime.alive:return
+        try:runtime.notify('session/cancel',{'sessionId':self._remote_session_id})
+        except Exception as error:self._on_diagnostic('cancel',_detail(error))
+
+    def _finish_turn(self):
+        """End supervision for the turn and, if it was interrupted, finish its runtime too.
+
+        An interrupted turn leaves a wire runtime that may still deliver that turn's output, so it is
+        stopped as part of this turn's unwind rather than reused. The session identity is kept and
+        the next send resumes it on a fresh runtime.
+        """
+        with self._turn_cond:
+            turn=self._turn
+            self._turn=None
+            self._turn_cond.notify_all()
+        if turn is None or turn.interrupt_cause is None:return
+        self._needs_resume=True
+        self._close_remote_session()
+        self._teardown()
+
+    def _close_remote_session(self):
+        """Best-effort close of the peer session, bounded, before the runtime is torn down."""
+        runtime=self._runtime
+        session_id=self._remote_session_id
+        if runtime is None or not session_id or not runtime.alive:return
+        try:runtime.request('session/close',{'sessionId':session_id},timeout=CLOSE_TIMEOUT_SECONDS)
+        except Exception as error:self._on_diagnostic('close',_detail(error))
+
+    def _recover_if_needed(self):
+        """Resume the same session on a fresh runtime before any prompt is sent on a tainted one."""
+        if not self._needs_resume:return
+        self._config=replace(self._config,resume=ReasonixResumeState(session_id=self._remote_session_id,
+                                                                    runtime_key=self._config.runtime_key))
+        try:
+            self.start()
+        except Exception:
+            # No session/new fallback: silently opening a different session would drop the context
+            # the caller is still talking to. The adapter stays unusable until it is rebuilt.
+            self._needs_resume=True
+            raise
+        self._needs_resume=False
+
+    def _turn_cause(self):
+        with self._turn_cond:
+            turn=self._turn
+            return turn.interrupt_cause if turn is not None else None
+
+    def _accepts_peer_output(self):
+        with self._turn_cond:
+            turn=self._turn
+            return turn is None or turn.accept_peer_output
+
+    def _note_activity(self,event):
+        """Update the turn's supervision state from what one event means.
+
+        Noise never reaches this method: diagnostics, raw frames and lifecycle events are not emitted
+        as outward events, so they cannot refresh a deadline by accident.
+        """
+        kind=event.get('type')
+        now=time.monotonic()
+        with self._turn_cond:
+            turn=self._turn
+            if turn is None:return
+            if kind=='assistant_text_delta':
+                if turn.first_activity_at is None:turn.first_activity_at=now
+                turn.last_activity_at=now
+            elif kind=='tool_call_started':
+                if turn.first_activity_at is None:turn.first_activity_at=now
+                turn.last_activity_at=now
+                call_id=event.get('tool_call_id')
+                if call_id:turn.active_tools[call_id]=now
+            elif kind=='tool_call_settled':
+                turn.last_activity_at=now
+                call_id=event.get('tool_call_id')
+                if call_id:turn.active_tools.pop(call_id,None)
+            elif kind in ('question_requested','permission_requested'):
+                if turn.first_activity_at is None:turn.first_activity_at=now
+                interaction_id=event.get('interaction_id')
+                if interaction_id:turn.pending_interactions.add(interaction_id)
+            elif kind in ('question_settled','permission_settled'):
+                interaction_id=event.get('interaction_id')
+                if interaction_id:turn.pending_interactions.discard(interaction_id)
+                turn.last_activity_at=now
+            else:return
+            self._turn_cond.notify_all()
 
     def _stop_reason(self,result):
         """The peer's terminal reason. A missing, null or non-string value is simply absent."""
@@ -256,14 +507,21 @@ class ReasonixAdapter:
         while len(self._unknown_stop_reasons)>UNKNOWN_STOP_CAPACITY:
             self._unknown_stop_reasons.pop(next(iter(self._unknown_stop_reasons)))
 
-    def _emit(self,event):
+    def _emit(self,event,from_peer=True):
         """Hand one event to the consumer without letting the consumer break the transport.
+
+        An interrupted turn closes the gate on peer output: the runtime may still deliver that turn's
+        frames, and none of them may reach a later turn's consumer. Events this adapter raises about
+        its own cleanup (an interaction it settled) are not peer output and always go out, so the
+        interactions already exposed can still be closed exactly once.
 
         Only ordinary exceptions are absorbed: a broken sink must not kill the runtime reader,
         because the peer's connection is still perfectly usable. The first failure is recorded
         for the turn and further outward emits are suppressed, so one bad callback cannot turn
         into an exception storm for the rest of the turn.
         """
+        self._note_activity(event)
+        if from_peer and not self._accepts_peer_output():return True
         if self._emit_failure is not None:return False
         try:
             self._sink(event)
@@ -281,13 +539,19 @@ class ReasonixAdapter:
         event={'type':'turn_settled'}
         if stop:event['stop_reason']=stop
         with self._interaction_lock:
-            return self._emit(event)
+            # The turn's own terminal is this adapter's report about the turn it supervised, not more
+            # business output from the peer, so it is delivered even after an interruption: a caller
+            # must always hear how the turn it started ended.
+            return self._emit(event,from_peer=False)
 
     def cancel(self) -> bool:
-        """Abandon the turn in flight, keeping the runtime and the peer session.
+        """Abandon the turn in flight, keeping the peer session.
 
         This is a request, not a guarantee: the peer stops waiting, but work it already dispatched
-        (an MCP tool, for instance) may keep running. Nothing here is a teardown.
+        (an MCP tool, for instance) may keep running. Nothing here is a teardown — but a turn this
+        actually interrupted leaves its runtime finished, and the next send resumes the session on a
+        fresh one. Claiming the interruption is what makes a cancel and a deadline mutually
+        exclusive: the second one to arrive does not notify again and does not change the outcome.
         """
         with self._lock:
             runtime=self._runtime
@@ -296,12 +560,11 @@ class ReasonixAdapter:
             if runtime is None or not self._turn_active:return False
             if self._cancel_requested:return True          # idempotent: one notification per turn
             self._cancel_requested=True
-            session_id=self._remote_session_id
         # A waiting interaction cannot be answered any more. Refusing it now keeps the peer from
         # waiting, and settles it before the terminal this cancellation is about to cause.
-        self._invalidate_interactions('cancelled')
-        try:runtime.notify('session/cancel',{'sessionId':session_id})
-        except Exception as error:self._on_diagnostic('cancel',_detail(error))
+        if self._try_interrupt(INTERRUPT_USER_CANCEL):
+            self._invalidate_interactions('cancelled')
+            self._notify_cancel()
         return True
 
     def stop(self) -> None:
@@ -318,10 +581,7 @@ class ReasonixAdapter:
             in_flight=self._turn_active
         if in_flight:self.cancel()
         self._invalidate_interactions('stopped')
-        session_id=self._remote_session_id
-        if session_id and runtime.alive:
-            try:runtime.request('session/close',{'sessionId':session_id},timeout=CLOSE_TIMEOUT_SECONDS)
-            except Exception as error:self._on_diagnostic('close',_detail(error))
+        self._close_remote_session()
         self._teardown()
 
     def _invalidate_interactions(self,outcome):
@@ -688,7 +948,7 @@ class ReasonixAdapter:
 
     def _settled_event(self,event_type,interaction_id,**fields):
         """The host sent its response. This says nothing about the turn or the tool."""
-        return self._emit({'type':event_type,'interaction_id':interaction_id,**fields})
+        return self._emit({'type':event_type,'interaction_id':interaction_id,**fields},from_peer=False)
 
     def _on_lifecycle(self,event):
         self._lifecycle.append(event.get('type'))

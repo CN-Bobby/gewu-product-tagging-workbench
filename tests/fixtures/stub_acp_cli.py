@@ -17,6 +17,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 KNOWN_MODES={'normal','hang','silent','exit','noise','crash_after_prompt','noisy_stderr',
@@ -32,7 +33,10 @@ KNOWN_MODES={'normal','hang','silent','exit','noise','crash_after_prompt','noisy
              'prompt_missing_stop','prompt_null_stop','prompt_numeric_stop','prompt_cancelled_once',
              'ask_client','ask_client_cancelled','permission_client','malformed_client','ask_client_once',
              'cancel_aware','cancel_aware_no_stop','cancel_aware_tool','cancel_aware_once',
-             'ignore_cancel','hang_once','unsolicited_update','prompt_fail_once','spawn_child'}
+             'ignore_cancel','hang_once','unsolicited_update','prompt_fail_once','spawn_child',
+             'budget_hang_serve','budget_silent','budget_periodic','budget_tool_slow',
+             'budget_tool_stuck','budget_two_tools','budget_interactions','budget_noise',
+             'budget_late','budget_stream','budget_slow_cancel'}
 _MODE_ARG=sys.argv[1] if len(sys.argv)>1 else None
 MODE=_MODE_ARG if _MODE_ARG in KNOWN_MODES else (os.environ.get('STUB_MODE') or 'normal')
 LOG=os.environ.get('STUB_LOG')
@@ -75,6 +79,24 @@ def record(message):
     if not LOG:return
     with open(LOG,'a',encoding='utf-8') as handle:
         handle.write(json.dumps(message,ensure_ascii=False)+'\n')
+
+
+def once(mode,scratch):
+    """A per-session counter for the *_once modes.
+
+    Memory normally; a file when STUB_ONCE_FILE is set, because a session resumed by a new process is
+    served by a fresh peer that must still remember the turns that session already had."""
+    path=os.environ.get('STUB_ONCE_FILE')
+    if not path:
+        scratch['n']+=1
+        return scratch['n']
+    state={}
+    if os.path.isfile(path):
+        try:state=json.loads(open(path,encoding='utf-8').read() or '{}')
+        except json.JSONDecodeError:state={}
+    state[mode]=state.get(mode,0)+1
+    with open(path,'w',encoding='utf-8') as handle:handle.write(json.dumps(state))
+    return state[mode]
 
 
 def updates():
@@ -363,15 +385,13 @@ def main():
                 await_close_only()
                 continue
             if MODE=='hang_once':
-                PROMPT_COUNT['n']+=1
-                if PROMPT_COUNT['n']==1:continue
+                if once('hang_once',PROMPT_COUNT)==1:continue
                 emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
                 continue
             if MODE=='prompt_fail_once':
                 # One failed turn, then a healthy one: proves a non-fatal TurnError leaves the
                 # session usable without needing two sessions.
-                PROMPT_COUNT['n']+=1
-                if PROMPT_COUNT['n']==1:
+                if once('prompt_fail_once',PROMPT_COUNT)==1:
                     emit({'jsonrpc':'2.0','id':ident,'error':{'code':-32000,'message':'stub prompt failure'}})
                     continue
             if MODE=='cancel_aware_tool':
@@ -383,14 +403,12 @@ def main():
                 continue
             if MODE=='cancel_aware_once':
                 # Abandons only the first turn, so a later turn can prove the session still works.
-                CANCELLED['n']+=1
-                if CANCELLED['n']==1:
+                if once('cancel_aware_once',CANCELLED)==1:
                     await_cancel(ident,'cancelled')
                     continue
             if MODE=='ask_client_once':
                 # Asks on the first turn only, so a later turn can prove the session still works.
-                ASKED['n']+=1
-                if ASKED['n']==1:
+                if once('ask_client_once',ASKED)==1:
                     emit(question_request_frame())
                     await_inbound_reply()
                 emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
@@ -416,13 +434,138 @@ def main():
                 await_inbound_reply()
                 emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
                 continue
+
+            if MODE=='budget_hang_serve':
+                # Nothing at all, but stdio stays readable: a turn that never starts, then serves.
+                if once('budget_hang_serve',PROMPT_COUNT)==1:
+                    await_cancel(ident,'cancelled',announce=False)
+                else:
+                    emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
+                continue
+            if MODE=='budget_slow_cancel':
+                # Nothing happens until a cancel arrives, and the reply is deliberately slow so a
+                # second caller can arrive while the turn is still unwinding.
+                for line in sys.stdin:
+                    line=line.strip()
+                    if not line:continue
+                    message=json.loads(line)
+                    record(message)
+                    if message.get('method')=='session/cancel':
+                        time.sleep(1.0)
+                        emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'cancelled'}})
+                        break
+                continue
+            if MODE=='budget_stream':
+                # Keeps producing activity for as long as the turn lasts, and still answers a cancel:
+                # only the wall-clock deadline can end a turn like this.
+                stop=threading.Event()
+                def stream():
+                    index=0
+                    while not stop.is_set():
+                        emit(chunk('段%d'%index));index+=1;time.sleep(0.2)
+                threading.Thread(target=stream,daemon=True).start()
+                await_cancel(ident,'cancelled',announce=False)
+                stop.set()
+                continue
+            if MODE=='budget_silent':
+                emit(chunk('半'))
+                await_cancel(ident,'cancelled',announce=False)
+                continue
+            if MODE=='budget_periodic':
+                for index in range(7):
+                    emit(chunk('段%d'%index));time.sleep(0.2)
+                emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
+                continue
+            if MODE in ('budget_tool_slow','budget_tool_stuck'):
+                emit(tool_call_frame('budget-tool-1'))
+                if MODE=='budget_tool_stuck':
+                    # The tool never finishes, but the peer itself stays responsive to a cancel.
+                    await_cancel(ident,'cancelled',announce=False)
+                    continue
+                time.sleep(0.8)
+                emit(tool_update_frame('budget-tool-1','completed'))
+                emit(chunk('工具完成'))
+                emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
+                continue
+            if MODE=='budget_two_tools':
+                emit(tool_call_frame('budget-tool-A'));emit(tool_call_frame('budget-tool-B'))
+                time.sleep(0.5)
+                emit(tool_update_frame('budget-tool-A','completed'))
+                # B keeps running for a while; a cancel during that time ends the turn the way the real
+                # peer ends it, so this mode stays responsive like every other one.
+                cancelled=threading.Event()
+                def watch():
+                    for line in sys.stdin:
+                        line=line.strip()
+                        if not line:continue
+                        try:message=json.loads(line)
+                        except json.JSONDecodeError:continue
+                        record(message)
+                        method=message.get('method')
+                        if method=='session/cancel':cancelled.set();return
+                        if method=='session/close':
+                            emit({'jsonrpc':'2.0','id':message['id'],'result':{}});return
+                threading.Thread(target=watch,daemon=True).start()
+                cancelled.wait(1.5)
+                if cancelled.is_set():
+                    emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'cancelled'}})
+                    continue
+                emit(tool_update_frame('budget-tool-B','completed'))
+                emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
+                continue
+            if MODE=='budget_interactions':
+                emit(question_request_frame(910));emit(question_request_frame(911))
+                emit(permission_request_frame(912))
+                # Waits for three answers, but a cancel while the questions are open ends the turn
+                # the way the real peer ends it.
+                answers=0;cancelled=False
+                while answers<3 and not cancelled:
+                    line=sys.stdin.readline()
+                    if not line:return
+                    line=line.strip()
+                    if not line:continue
+                    try:message=json.loads(line)
+                    except json.JSONDecodeError:continue
+                    record(message)
+                    if message.get('method')=='session/cancel':cancelled=True
+                    elif 'method' not in message:answers+=1
+                stop='cancelled' if cancelled else 'end_turn'
+                emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':stop}})
+                continue
+            if MODE=='budget_noise':
+                # Diagnostics, an unparsed lifecycle frame and raw progress frames: none of it is
+                # progress the turn can be judged by.
+                for index in range(20):
+                    sys.stderr.write('noise-%d\n'%index);sys.stderr.flush()
+                    emit({'jsonrpc':'2.0','method':'_reasonix.io/session/status_update','params':{'state':'running'}})
+                    emit(tool_update_frame('budget-noise-%d'%index,'running'))
+                    time.sleep(0.15)
+                await_cancel(ident,'cancelled',announce=False)
+                continue
+            if MODE=='budget_late':
+                if once('budget_late',PROMPT_COUNT)==1:
+                    emit(chunk('第一轮开始'))
+                    # The delayed chunk is emitted *before* the turn's own reply, so it is on the wire
+                    # while the interrupted turn is still unwinding: only the fence can stop it.
+                    for line in sys.stdin:
+                        line=line.strip()
+                        if not line:continue
+                        message=json.loads(line)
+                        record(message)
+                        if message.get('method')=='session/cancel':
+                            emit(chunk('上一轮的迟到文本'))
+                            break
+                    emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'cancelled'}})
+                else:
+                    emit(chunk('第二轮正常文本'))
+                    emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
+                continue
             prompt_stream()
             if MODE=='crash_after_prompt':sys.exit(4)
             if MODE=='prompt_fail':
                 emit({'jsonrpc':'2.0','id':ident,'error':{'code':-32000,'message':'stub prompt failure'}})
             else:
-                PROMPT_COUNT['n']+=1
-                if MODE=='prompt_cancelled_once' and PROMPT_COUNT['n']>1:
+                if MODE=='prompt_cancelled_once' and once('prompt_cancelled_once',PROMPT_COUNT)>1:
                     emit({'jsonrpc':'2.0','id':ident,'result':{'stopReason':'end_turn'}})
                 else:
                     emit({'jsonrpc':'2.0','id':ident,'result':STOP_RESPONSES.get(MODE,{'stopReason':'end_turn'})})

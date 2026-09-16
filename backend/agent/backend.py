@@ -29,7 +29,16 @@ class BackendError(Exception):
 
 
 class TurnError(BackendError):
-    """One turn failed. The session and its runtime are still usable."""
+    """One turn failed. The session and its runtime are still usable.
+
+    ``code`` names the reason machine-readably when a caller's own policy produced it — a semantic
+    budget deadline, for instance. It defaults to None so existing callers keep working, and no
+    caller may ever classify a failure by reading the message text.
+    """
+
+    def __init__(self,message='',detail=None,code=None):
+        self.code=code
+        super().__init__(message,detail)
 
 
 class CancelledError(BackendError):  # noqa: A001 - the contract name, not asyncio's

@@ -60,7 +60,8 @@ def make_bridge(workspace,request_log,mode,opened=None):
     def factory():
         adapter=reasonix.ReasonixAdapter(reasonix.ReasonixLaunchConfig(
             executable=sys.executable,model=MODEL,cwd=str(workspace),
-            env=dict(os.environ,STUB_MODE=mode,STUB_LOG=str(request_log)),runtime_key=RUNTIME_KEY))
+            env=dict(os.environ,STUB_MODE=mode,STUB_LOG=str(request_log),
+                     STUB_ONCE_FILE=str(workspace/'session-once.json')),runtime_key=RUNTIME_KEY))
         if opened is not None:opened.append(adapter)
         return adapter
     return AgentBridge(factory,dataset_id=DATASET)
@@ -259,8 +260,9 @@ def test_cancel_through_the_bridge_keeps_the_session_usable(workspace,request_lo
     session=bridge.get_session(session_id)
     assert session['status']=='active'                       # a cancelled turn is not a dead session
     assert session['remote_session_id']==remote_session_id
-    assert bridge.status(session_id)['backend']['alive'] is True
-    # the same session, through the same bridge, still works
+    # the interrupt finished that turn's runtime; the session itself is what must survive
+    assert bridge.status(session_id)['backend']['alive'] is False
+    # the same session, through the same bridge, still works — resumed on a fresh runtime
     bridge.send(session_id,'再来一次')
     assert payloads(session_id,'turn_settled')[-1]['stop_reason']=='end_turn'
     assert bridge.get_session(session_id)['remote_session_id']==remote_session_id
