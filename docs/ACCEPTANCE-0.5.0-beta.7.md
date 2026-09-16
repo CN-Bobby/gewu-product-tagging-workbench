@@ -1,8 +1,24 @@
 # 0.5.0-beta.7 候选验收记录
 
-状态：`pending_acceptance`。候选已构建并通过包内身份、全新安装与 beta.6 数据升级冒烟；真实语义确认与生产切换仍待用户执行。本记录只写已经真实执行并留有证据的项。
+状态：`released`。本版本已完成代码验收、候选交付验证与**生产交付**（技术验收 PASS + 业务语义 sign-off PASS）。本记录只写已经真实执行并留有证据的项。
 
 候选绑定 release-prep 提交 `82379d2cd6a97229a1dbe48d94d581cee5ddd565`（version `0.5.0-beta.7`，schema 8）。
+
+## 生产交付（2026-09-17）
+
+| 项 | 值 |
+|---|---|
+| 生产版本 / build_id | `0.5.0-beta.7` / `0.5.0-beta.7+82379d2cd6a9` |
+| 生产 commit | `82379d2cd6a97229a1dbe48d94d581cee5ddd565` |
+| 服务 | 端口 `8765`、`storage = K:\Bobbytagging\Data`、`database_migration = 8`、`dirty = false` |
+| 技术验收 | `TECHNICAL_PRODUCTION_ACCEPTANCE = PASS` |
+| 业务语义 | `BUSINESS_SEMANTIC_SIGNOFF = PASS`（用户确认） |
+| 人工值 | 17/17 逐项未变（identity + value + raw_value + status + revision 全等） |
+| 升级前备份 | `K:\Bobbytagging\Data\backups\upgrade-20260916T231915515425Z`（产品自动生成，21MB，含 `workbench.db` + `datasets/`） |
+| 回退 | 可用且已验证：停服 → 装回旧候选 → `restore_backup.py` 恢复备份 → 启动旧版（不做原地降级） |
+| tag | `v0.5.0-beta.7` → `82379d2cd6a97229a1dbe48d94d581cee5ddd565` |
+
+生产切换前的只读核对（停服静止快照 vs 升级后）：计数零差异（1 数据集 / 310 商品 / 310 单元格 / 有值 17 / 空白 293 / 10 条消息 / 3 个对话 / 3 个任务 / 0 提案 / 0 版本 / 1 个草稿列），`providers/config.toml` 字节未变，`installed-build.json` 由 `2f7bf2b…` 更新为 `82379d2…`。生产 smoke 为零模型额度：前端加载、310 行渲染、草稿与历史可读、设置页与 Agent 面板正常，未发送任何模型请求、未跑批处理、未改凭据。
 
 ## 自动化验收
 

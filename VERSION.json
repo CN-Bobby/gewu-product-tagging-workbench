@@ -3,5 +3,5 @@
   "channel": "beta",
   "schema_version": 8,
   "reasonix_baseline": "1.25.1",
-  "release_status": "pending_acceptance"
+  "release_status": "released"
 }

@@ -70,14 +70,25 @@
     },
     {
       "version": "0.5.0-beta.7",
-      "status": "pending_acceptance",
+      "status": "released",
       "artifact_kind": "internal_candidate",
       "commit": "82379d2cd6a97229a1dbe48d94d581cee5ddd565",
-      "tag": null,
+      "tag": "v0.5.0-beta.7",
       "superseded_by": null,
       "candidate_installer": "格物工作台-0.5.0-beta.7-candidate.82379d2cd6a9-安装程序.exe",
       "candidate_sha256": "4d7c30f30e16c9a9063544d12360f25a041a5c7947fb5b882433bd78f7cb24ed",
-      "note": "Agent 运行时切换与交付硬化候选：Reasonix 后端契约唯一化、旧执行路径退役、Job Object 进程归属、优雅关闭、四层语义执行预算与三套按角色策略、取消/超时回收并 resume 同一原生会话、迟到事件隔离、模型与凭据快照安全、Agent 面板默认化。同一份源码已完成 Real Acceptance Phase A/B；候选全新安装、beta.6 数据升级（含 schema 7→8）与备份恢复回退均已验证；beta.7 构建后完成 packaging identity 冒烟（全新安装与 beta.6 数据副本升级）。真实语义确认与生产切换仍待用户执行。"
+      "note": "生产已交付：Agent 运行时切换与硬化版本已安装运行于 8765（K:\\Bobbytagging\\Data），技术验收与业务语义 sign-off 均 PASS，17 个已接入人工值逐项未变，回退备份保留。Reasonix / Agent Runtime 重构项目以此版本结束。",
+      "release_url": "https://github.com/CN-Bobby/gewu-product-tagging-workbench/releases/tag/v0.5.0-beta.7",
+      "distribution_status": "published_prerelease",
+      "production_delivered_at": "2026-09-16T23:19:15Z",
+      "production_build_id": "0.5.0-beta.7+82379d2cd6a9",
+      "production_storage": "K:\\Bobbytagging\\Data",
+      "production_port": 8765,
+      "technical_acceptance": "PASS",
+      "business_semantic_signoff": "PASS",
+      "manual_values_check": "17/17 unchanged",
+      "upgrade_backup": "K:\\Bobbytagging\\Data\\backups\\upgrade-20260916T231915515425Z",
+      "rollback": "available (backup restore + old candidate, verified)"
     }
   ]
 }

@@ -12,7 +12,9 @@ def test_version_is_consistent():
     from backend.app import health
     assert health()['version']==VERSION
     assert health()['build_id'].startswith(VERSION+'+')
-    assert health()['release_status']=='pending_acceptance'
+    # Health mirrors VERSION.json rather than naming one lifecycle state, so promoting a version
+    # (pending_acceptance -> released) does not require editing this test.
+    assert health()['release_status']==json.loads((root/'VERSION.json').read_text())['release_status']
     assert len(health()['source_sha256'])==64
 
 def test_task_build_is_frozen_at_creation(dataset):
@@ -48,7 +50,8 @@ def test_release_ledger_and_single_install_identity():
     version=json.loads((root/'VERSION.json').read_text(encoding='utf-8'))
     ledger=json.loads((root/'RELEASE_LEDGER.json').read_text(encoding='utf-8'))
     current=next(item for item in ledger['versions'] if item['version']==VERSION)
-    assert current['status']==version['release_status']=='pending_acceptance'
+    assert current['status']==version['release_status']
+    assert version['release_status'] in ('pending_acceptance','released')
     # Exactly one predecessor supersedes into this version, and it is the previous prerelease of the
     # same line: the assertion follows the version sequence instead of naming a literal, so bumping
     # the version does not require editing this test.
