@@ -39,6 +39,30 @@ def test_manual_conflict_and_rule_revision(dataset):
     assert cell['value']=='人工值' and cell['conflict']['normalized_value']=='后台值'
     with pytest.raises(ValueError):draft.save_version(did)
 
+def test_proposal_group_deduplicates_merges_and_supersedes(dataset):
+    did=dataset['id'];a=add(did,'a');b=add(did,'b');pids=[row['id'] for row in draft.sheet(did)['rows'][:2]]
+    with Session.begin() as session:session.add(WorkbenchMeta(id='active-chat:'+did,dataset_id=did,kind='active_chat_turn',data={'turn_id':'turn-a'}))
+    first=draft.propose(did,'第一列',[{'kind':'execute','column_ids':[a['id']],'product_ids':[pids[0]]}],use_active_turn=True)
+    duplicate=draft.propose(did,'重复',[{'kind':'execute','column_ids':[a['id']],'product_ids':[pids[0]]}],use_active_turn=True)
+    assert duplicate['id']==first['id'] and duplicate['merge_action']=='reused'
+    combined=draft.propose(did,'第二列',[{'kind':'execute','column_ids':[b['id']],'product_ids':[pids[1]]}],use_active_turn=True)
+    assert combined['group_id']==first['group_id'] and combined['group_revision']==2
+    assert first['id']!=combined['id'] and len(combined['changes'][0]['column_ids'])==2
+    with Session.begin() as session:require(session,WorkbenchMeta,'active-chat:'+did).data={'turn_id':'turn-b'}
+    replacement=draft.propose(did,'修改第一列范围',[{'kind':'execute','column_ids':[a['id']],'product_ids':[pids[1]]}],use_active_turn=True)
+    assert replacement['group_revision']==3
+    targets={item['column_id']:item['product_ids'] for item in replacement['changes'][0]['targets']}
+    assert targets=={a['id']:[pids[1]],b['id']:[pids[1]]}
+    with pytest.raises(ValueError,match='已替换'):draft.confirm(did,combined['id'])
+
+def test_confirmation_key_is_idempotent(dataset):
+    did=dataset['id'];column=add(did,'idempotent');pid=draft.sheet(did)['rows'][0]['id']
+    proposal=draft.propose(did,'执行',[{'kind':'execute','column_ids':[column['id']],'product_ids':[pid]}])
+    first=draft.confirm(did,proposal['id'],confirmation_key='same-request')
+    second=draft.confirm(did,proposal['id'],confirmation_key='same-request')
+    assert [x['id'] for x in first]==[x['id'] for x in second]
+    with Session() as session:assert len(list(session.scalars(select(BatchJob).where(BatchJob.proposal_id==proposal['id']))))==1
+
 def test_batch_text_no_images_partial_split_retry(dataset,monkeypatch):
     import json
     did=dataset['id'];c=add(did);calls=[]

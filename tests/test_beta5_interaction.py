@@ -8,6 +8,20 @@ def test_tool_lifecycle_has_one_current_state_per_call():
     assert result['activity']==[{'title':'读取表格','status':'completed'}, {'title':'读取表格','status':'failed'}]
 
 
+def test_business_discussion_remains_visible_and_operations_collapse():
+    raw='我先读取当前工作表。\n\n这批样本以冷色为主，印花款应按底色判断。\n\n调用参数错误，重新提交。\n\n边界色需要保留未知。'
+    presentation=build(raw)
+    assert '这批样本以冷色为主' in presentation['discussion'] and '边界色需要保留未知' in presentation['discussion']
+    assert '我先读取当前工作表' not in presentation['discussion']
+    assert len(presentation['technical_notes'])==2
+
+
+def test_presentation_does_not_repeat_owned_heading():
+    presentation=build('**当前判断**\n\n本批需要先确定三个色系边界。')
+    assert presentation['heading']=='当前判断'
+    assert presentation['discussion']=='本批需要先确定三个色系边界。'
+
+
 def test_managed_question_accepts_multiple_and_text_once(dataset,monkeypatch):
     """The answer is recorded once, and nothing resumes: there is no conversation left to."""
     from backend import business_questions as questions

@@ -16,10 +16,10 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select
 
-from backend import agent_application, jobs, runtime_isolation, service
+from backend import agent_application, harness, jobs, runtime_isolation, service
 from backend.agent import events as event_store, reasonix
 from backend.agent.backend import RuntimeUnavailable, TurnError
-from backend.db import Dataset, Message, Run, Session, Tag, require, uid
+from backend.db import Dataset, Message, Run, Session, STORAGE, Tag, require, uid
 
 DEFS=[{'key':'color','name':'颜色','type':'FACT','definition':'仅提取标题或 SKU 中明确声明的颜色，不确定则留空','options':[],'source':'text'}]
 STUB=str(Path(__file__).resolve().parent/'fixtures'/'stub_acp_cli.py')
@@ -108,11 +108,29 @@ def backends(monkeypatch):
     return built,state
 
 
+def poison_legacy_client(monkeypatch):
+    """Put a recorder where the retired client used to live.
+
+    ``harness.ACP`` no longer exists, so the injection has to create the attribute. That is the
+    point: a composition that reaches for it again is recorded here and fails the test, whether it
+    reaches through ``jobs`` or through the agent application.
+    """
+    built=[]
+    class PoisonACP:
+        def __init__(self,*args,**kwargs):
+            built.append(args)
+            raise AssertionError('production composition constructed the retired harness.ACP')
+    monkeypatch.setattr(harness,'ACP',PoisonACP,raising=False)
+    return built
+
+
+def test_the_retired_client_is_not_defined_by_the_launch_module():
+    assert not hasattr(harness,'ACP'),'harness must not define a runtime client any more'
+
+
 def test_T1_the_worker_runs_on_the_backend_contract_not_the_legacy_client(dataset,backends,monkeypatch):
-    from backend import harness
     built,state=backends
-    legacy=[]
-    monkeypatch.setattr(harness,'ACP',lambda *a,**k:legacy.append(a))
+    legacy=poison_legacy_client(monkeypatch)
     run=open_run(dataset)
     run_worker(run['id'])
     assert legacy==[]                       # the legacy client is never constructed
@@ -124,10 +142,8 @@ def test_T1_the_worker_runs_on_the_backend_contract_not_the_legacy_client(datase
 
 
 def test_T2_the_coordinator_runs_on_the_backend_contract(dataset,backends,monkeypatch):
-    from backend import harness
     built,state=backends
-    legacy=[]
-    monkeypatch.setattr(harness,'ACP',lambda *a,**k:legacy.append(a))
+    legacy=poison_legacy_client(monkeypatch)
     did=dataset['id'];ident=start_turn(did)
     jobs.chats[did]={'client':None,'stop':False}
     jobs._chat(did,ident,'看图片','test/model')
@@ -143,8 +159,27 @@ def test_T2_the_coordinator_runs_on_the_backend_contract(dataset,backends,monkey
     assert jobs.chats=={}
 
 
+def test_the_agent_ui_composition_never_reaches_the_retired_client(backends,monkeypatch):
+    """The UI agent is the other production composition; it must build through the same contract.
+
+    The application binds the adapter in its own module namespace, so the recorder is patched there
+    as well — the point is which *launch facts* the composition produces, not which class it names.
+    """
+    built,state=backends
+    legacy=poison_legacy_client(monkeypatch)
+    made=[]
+    class Recorder:
+        def __init__(self,config):self.config=config;made.append(self)
+    monkeypatch.setattr(agent_application,'ReasonixAdapter',Recorder)
+    adapter=agent_application.backend_factory('ds-agent','test/model')()
+    assert legacy==[]
+    assert len(made)==1
+    assert Path(adapter.config.cwd)==Path(STORAGE)/'harness'/'ds-agent'/'agent'
+    assert adapter.config.runtime_key=='agent:ds-agent'
+    assert adapter.config.model=='test/model'
+
+
 def test_T3_the_worker_runtime_carries_the_trusted_identity(dataset,backends):
-    from backend.db import STORAGE
     built,state=backends
     run=open_run(dataset)
     run_worker(run['id'])
