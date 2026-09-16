@@ -3,10 +3,18 @@ import threading
 from sqlalchemy import select, func
 from .db import *
 from .harness import VISION_MODEL, executable, runtime_dir
+from .agent.reasonix import ExecutionBudget
 
 active={}
 chats={}
 lock=threading.Lock()
+# Background budgets. A worker may legitimately spend minutes on images and tools and has nobody to
+# ask, so it is allowed to be quiet longer than the interactive surface; the coordinator only reads
+# and proposes. The wall clock is the same bound for all three.
+WORKER_EXECUTION_BUDGET=ExecutionBudget(first_activity_timeout=180,idle_timeout=300,
+                                        tool_wait_timeout=360,turn_wall_clock_timeout=1200)
+COORDINATOR_EXECUTION_BUDGET=ExecutionBudget(first_activity_timeout=120,idle_timeout=240,
+                                             tool_wait_timeout=360,turn_wall_clock_timeout=1200)
 WORKER_INSTRUCTION=('执行单商品打标。先 get_products 读取本商品，再用 view_product_image 检查图片，'
                     '最后 record_product_tags 保存完整结果。不要只在回复里给结果。严格采用已确认的标签定义：\n')
 
@@ -23,7 +31,7 @@ def _refuse_interaction(holder,event):
     try:method(event.get('interaction_id'))
     except Exception:pass      # already settled, or the runtime is gone: nothing left to answer
 
-def _backend(dataset_id,model,suffix,product_id=None,role='coordinator',sink=None):
+def _backend(dataset_id,model,suffix,product_id=None,role='coordinator',sink=None,budget=None):
     """Build the one backend this job owns, described only in backend-neutral launch facts.
 
     The job — never the peer — carries the trusted execution context: it chooses the runtime
@@ -31,7 +39,8 @@ def _backend(dataset_id,model,suffix,product_id=None,role='coordinator',sink=Non
     the runtime through configuration instead of being asserted in a prompt. Background work has
     no conversation behind it, so it never owns a business question. `role` selects the harness
     runtime-directory identity (its instructions and MCP surface) and stays out of the backend
-    configuration, which knows nothing about coordinator or worker.
+    configuration, which knows nothing about coordinator or worker — the caller decides the time
+    budget too, and passes it here explicitly.
     """
     from .agent.reasonix import ReasonixAdapter,ReasonixLaunchConfig
     from .model_settings import normalize_reference
@@ -43,7 +52,8 @@ def _backend(dataset_id,model,suffix,product_id=None,role='coordinator',sink=Non
         if sink is not None:sink(event)
     adapter=ReasonixAdapter(ReasonixLaunchConfig(executable=executable(),model=normalize_reference(model),
         cwd=str(cwd),env=environment(dataset_id,None,{}),
-        runtime_key=':'.join(['job',dataset_id,suffix]+([str(product_id)] if product_id else []))))
+        runtime_key=':'.join(['job',dataset_id,suffix]+([str(product_id)] if product_id else [])),
+        budget=budget))
     holder.append(adapter)
     adapter.bind(emit)
     adapter.start()
@@ -75,7 +85,7 @@ def _execute(run_id):
                 if s.scalar(select(Tag).where(Tag.run_id==run_id,Tag.product_id==pid)):continue
             client=None
             try:
-                client=_backend(dataset_id,model,run_id,pid,role='worker')
+                client=_backend(dataset_id,model,run_id,pid,role='worker',budget=WORKER_EXECUTION_BUDGET)
                 active[run_id]['client']=client
                 if active[run_id]['stop']:break
                 client.send(WORKER_INSTRUCTION+json.dumps(schema['definitions'],ensure_ascii=False))
@@ -147,7 +157,7 @@ def _chat(dataset_id,ident,text,model):
             with Session.begin() as s:
                 m=require(s,Message,ident);m.events=(m.events+[stored])[-100:]
     try:
-        client=_backend(dataset_id,model,'chat',role='coordinator',sink=event)
+        client=_backend(dataset_id,model,'chat',role='coordinator',sink=event,budget=COORDINATOR_EXECUTION_BUDGET)
         chats[dataset_id]['client']=client
         if chats[dataset_id]['stop']:raise RuntimeError('回复已停止')
         # Replay bounded visible history; business context lives in MCP/database, not hidden reasoning.

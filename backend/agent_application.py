@@ -17,13 +17,19 @@ import time
 from . import harness
 from .agent import events as store
 from .agent.bridge import AgentBridge,AgentBridgeError,SessionNotFound
-from .agent.reasonix import ReasonixAdapter,ReasonixLaunchConfig
+from .agent.reasonix import ExecutionBudget,ReasonixAdapter,ReasonixLaunchConfig
 from .runtime_isolation import environment
 
 # One app lifetime closes every session it owns before the process ends. Each close is already
 # bounded inside the backend (close timeout, then terminate, then kill), so this budget only has to
 # cover the number of sessions, not an unbounded wait on any one of them.
 SHUTDOWN_TIMEOUT_SECONDS=15.0
+
+# The interactive budget. A person is usually watching, so an unproductive turn is ended sooner than
+# a batch one; waiting on a question pauses the idle deadline and never the wall-clock one, and the
+# wall clock stays at the transport bound the workbench has always used.
+UI_EXECUTION_BUDGET=ExecutionBudget(first_activity_timeout=120,idle_timeout=180,
+                                    tool_wait_timeout=360,turn_wall_clock_timeout=1200)
 
 _LOCK=threading.Lock()
 _BRIDGES={}
@@ -47,7 +53,8 @@ def backend_factory(dataset_id,model):
         # no surface of its own for the retired persisted-question capability.
         cwd=harness.runtime_dir(dataset_id,'agent')
         return ReasonixAdapter(ReasonixLaunchConfig(executable=harness.executable(),model=model,
-            cwd=str(cwd),env=environment(dataset_id,None,{}),runtime_key='agent:'+dataset_id))
+            cwd=str(cwd),env=environment(dataset_id,None,{}),runtime_key='agent:'+dataset_id,
+            budget=UI_EXECUTION_BUDGET))
     return build
 
 

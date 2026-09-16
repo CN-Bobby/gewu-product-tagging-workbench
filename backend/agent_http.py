@@ -38,6 +38,10 @@ _ERROR_MAP={
 def _raise_application_error(error):
     status,code=_ERROR_MAP.get(type(error),(502,'bridge_error'))
     payload={'code':code,'message':str(error)}
+    # `code` above is this layer's taxonomy. A failure that names its own reason (a semantic deadline,
+    # for instance) reports it alongside, so a caller can act on it without reading the message.
+    reason=getattr(error,'code',None)
+    if isinstance(reason,str) and reason:payload['reason']=reason
     fatal=getattr(error,'fatal',None)
     if fatal is not None:payload['fatal']=bool(fatal)
     raise HTTPException(status_code=status,detail=payload) from error
