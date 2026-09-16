@@ -1,5 +1,7 @@
 # Reasonix 集成架构审计与最小化重构方案
 
+> **历史文档 / superseded（2026-09-16 注）**：本文审计的是 `commit 57ec211` 时期的实现（网页聊天运行时 + `harness.ACP`）。该实现的迁移已在 M1–M6B 完成：`conversation.py` 与 `harness.ACP` 均已删除，两条生产链现在都经 `AgentBackend → ReasonixAdapter`，MCP 业务提问能力已退役。**本文的调用链、`ACP` 客户端描述和改造方案请勿当作当前状态**；当前链路见 `PROJECT_HANDOFF.md` §5.4。以下正文按当时语境保留，不作改写。
+
 审计对象:`D:\数据打标项目` 当前 `feature/0.5.0-delivery`(commit `57ec211`)。本文只做审计与方案,不含代码改动。
 
 ---

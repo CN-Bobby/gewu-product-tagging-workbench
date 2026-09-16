@@ -1,6 +1,6 @@
 # 格物商品打标工作台：接力开发交接文档
 
-更新时间：2026-09-13（Asia/Shanghai）
+更新时间：2026-09-16（Asia/Shanghai）；上一版：2026-09-13（beta.6 交接）
 
 工作目录：`D:\数据打标项目`
 
@@ -30,18 +30,12 @@
 
 当前状态不是“beta.6 正式完成”，而是：
 
-- beta.6 候选代码已构建；
-- 已做包内冷启动和本机 beta.5 → beta.6 覆盖升级；
-- 本机当前运行的是 `0.5.0-beta.6+2f7bf2b59975`；
-- 自动化、前端构建和仓库审计在候选构建提交上通过；
-- 真实模型测试随后暴露两个 P0 缺陷，尚未修复；
-- beta.6 仍为 `pending_acceptance`，不是正式发布；
-- 源码 HEAD 比安装包构建提交更新，但多出的只是文档提交（安装记录与本文档），不含任何代码修复；本分支已于 2026-09-13 交接时推送到远端。
+- beta.6 候选代码已构建；本机运行 `0.5.0-beta.6+2f7bf2b59975`（**该安装包不含本文档之后的任何源码修复**）；
+- 两个 P0（F01 截断反推、F02 对话零反馈）已于 beta.6 修复，证据见 `docs/BETA6_P0_VERIFICATION.md`；
+- beta.6 仍为 `pending_acceptance`，不是正式发布，未创建 tag/Release；
+- 2026-09-16 起在本地分支完成了 Agent 运行时迁移（M1–M6B 共 7 个提交），**尚未推送、尚未打包**；`origin` 恢复点仍停在旧的 `1e39ffe`。
 
-接力后的首要目标不是继续加新功能，而是修复并验证：
-
-1. 反推定义已有可用 JSON 却被 `finish_reason=length` 判失败，同时图片字段未触发视觉；
-2. 新建对话长时间零反馈，业务提问 MCP 卡 5 分钟，整个 `session/prompt` 又没有总超时。
+接力后的首要目标不是再做 legacy 清理，而是按 §5.4 的当前链路继续做 runtime hardening（见 §11 之后的“后续硬化 backlog”）。
 
 ## 2. 产品定义
 
@@ -180,11 +174,11 @@
 |`backend/db.py`|数据库模型、schema 迁移和迁移前一致备份|
 |`backend/importer.py`、`backend/image_inputs.py`|Excel/WPS 图片导入、图片资产和主图选择|
 |`backend/draft.py`、`backend/draft_export.py`|持续草稿、提案、版本、单元格编辑和导出|
-|`backend/conversation.py`|网页聊天回合调度和持久化|
-|`backend/chat_threads.py`、`backend/chat_images.py`|多对话、回收站、附件编号和商品绑定|
-|`backend/harness.py`|Reasonix ACP 进程、运行会话、权限、工具/问题事件和错误分类|
+|`backend/chat_threads.py`、`backend/chat_images.py`|多对话、回收站、附件编号和商品绑定（历史查看面；网页聊天运行时已在 M5-4 退役）|
+|`backend/harness.py`|Reasonix 启动与运行时目录配置：指令文本、`reasonix.toml`（MCP allow/deny、调用上限）、trusted env、可执行探测。**不含任何运行时客户端**|
+|`backend/agent/`、`backend/agent_application.py`、`backend/agent_http.py`|Agent 后端契约与实现（`backend.py`/`reasonix.py`）、进程与 wire（`runtime.py`/`protocol.py`）、事件日志与 SSE（`events.py`/`stream.py`）、桥接（`bridge.py`），以及组合根与 HTTP 路由|
 |`backend/runtime_isolation.py`|每个数据集/会话的 Reasonix 目录与模型凭据隔离|
-|`backend/mcp_server.py`、`backend/business_questions.py`|工作台 MCP 能力和业务问题桥接|
+|`backend/mcp_server.py`|工作台 MCP 能力（业务问题桥接已在 M5-6B 退役）|
 |`backend/source_labels.py`|已有标签列接入、人工值保护、停用/恢复|
 |`backend/source_label_inference.py`|已有标签画像、24/60 混合抽样、视觉分组、标准草案和确认|
 |`backend/batch.py`、`backend/vision.py`|直接模型请求、批处理、视觉观察、缓存和模型尝试记录|
@@ -207,6 +201,28 @@
 - 可重复启动而不重复迁移；
 - 保留旧数据、旧会话和任务证据；
 - 回退时恢复“旧程序 + 对应升级前数据备份”，不能只替换程序。
+
+### 5.4 当前 Agent 运行时链路与已退役路径（2026-09-16 现场核对）
+
+两条生产执行链，二者都只经 Agent 后端契约，互不共用进程状态：
+
+```text
+UI Agent   → AgentBridge → AgentBackend → ReasonixAdapter → Runtime → Reasonix → MCP → 工作台业务层
+Jobs/Worker/Coordinator → AgentBackend → ReasonixAdapter → Runtime → Reasonix → MCP → 工作台业务层
+```
+
+已退役、**不得再被当作现行路径**：
+
+| 已退役 | 退役于 | 现状 |
+|---|---|---|
+| `backend/conversation.py`（网页聊天回合调度） | M5-4 | 模块已删除；`chat_threads`/`ChatQuestion`/`Message` 只作历史查看与 CRUD |
+| `harness.ACP` 运行时客户端 | M5-6A（M5-5 先迁走 jobs） | 生产构造调用为 0，类已删除；`harness.py` 只保留启动/配置职责 |
+| MCP `ask_business_question` + `TAG_QUESTION_OWNER` + `allow_business_questions` | M5-6B | 工具、开关、生成配置项全部删除；`business_questions.py` 已删除，`ChatQuestion` 历史行保留 |
+| 网页 `/api/datasets/{did}/chat*`、`/api/drafts/{did}/runtime` 路由 | M5-3/M5-4 | 未注册；旧命令面已静默 |
+
+仍在位、属于**历史业务数据**而非运行时的面：conversation CRUD、`Message` 历史、`ChatQuestion` 历史、附件、`Message.presentation` 历史字段、history-only viewer、Draft SSE 业务投影、`AgentRuntimeSession`（仅 `chat_threads.destroy` 清理用）。
+
+需要用户交互的问题只走 **Reasonix native question → AgentBridge**；后台 worker/coordinator 不具备交互式提问能力。
 
 ## 6. 版本、构建、安装和 Git 现状
 
@@ -322,7 +338,11 @@ SHA256：
 - 模型文本/视觉独立验证，视觉探针从 beta.5 的 1×1 改为 512×512 JPEG，并区分常见错误类别。
 - 候选包构建、包内冒烟和本机覆盖升级。
 
-## 9. 当前 P0 缺陷（真实测试，尚未修复）
+## 9. beta.6 P0 缺陷（**已于 beta.6 修复**；以下保留为问题记录）
+
+两项均已修复并留下验证记录：见 `docs/BETA6_P0_VERIFICATION.md`（F01 先解析后判截断、图片字段规范化与映射、复用已存响应、程序基线；F02 分层超时/归因/进度/问题桥接）。本节以下文字是当时的原始问题陈述，不要据此判断当前代码状态。
+
+其中 F02 的第 3、4 条（业务提问及时落库、回答恢复原回合）在后续 M5-6B 被更强的方案取代：**该能力整体退役**——MCP `ask_business_question` 已不存在，交互统一走 Reasonix native question → AgentBridge。
 
 完整证据见 `docs/BETA6_TEST_FEEDBACK-20260913.md`。
 
@@ -392,7 +412,9 @@ SHA256：
 - A→B→A 模型切换与多个网页对话不串消息、问题和任务；
 - 禁止工具不会被反复调用，也不会覆盖更早、更主要的超时原因。
 
-## 10. 后台 CLI 对话管理的目标机制
+## 10. 后台 CLI 对话管理的目标机制（**历史方案**）
+
+> 状态：本节写于 beta.6 时期，描述的是当时存在的网页聊天运行时。该运行时已在 M5-4 退役，交互式对话改由 Agent 面板 + `AgentBridge` 承载，因此下面的状态机与持久身份设计只作历史参考；其中已落地的部分见 §5.4。
 
 这是两项失败共同暴露的架构重点。建议把状态机明确成：
 
@@ -425,7 +447,7 @@ SHA256：
 
 按当前真实阻塞排序：
 
-### P0：先恢复可信和可完成性
+### P0：先恢复可信和可完成性（**已完成**：F01/F02 于 beta.6 修复，记录见 `docs/BETA6_P0_VERIFICATION.md`）
 
 - 修复 F01：截断结果解析/恢复、局部补全、程序基线和图片字段映射。
 - 修复 F02：对话可见进度、问题桥接、分层超时、停止/恢复和主错误归因。
@@ -450,13 +472,21 @@ SHA256：
 - 任务末聚合定义缺口，进一步降低对话卡片噪音。
 - 评估 WPS 原生 `DISPIMG` 回写；当前导出图片是可用的浮动图片，不能假装已完全恢复 WPS 原公式语义。
 
+### 后续硬化 backlog（**不属于 legacy 清理，也不属于 M5**）
+
+1. **Reasonix process lifecycle**：网页进程被硬杀/崩溃后的恢复；orphan Reasonix 进程回收（当前无回收代码）。
+2. **Execution budget**：first-activity / idle / total / MCP tool 四个时限。现状是只有总时限（`ReasonixAdapter` 1200s）与 MCP 单次上限（`reasonix.toml` 300s）；分层预算已在 M5-5 评审中明确"不在清理阶段顺手加"。
+3. **Model / credential lifecycle safety**：切换或修改 model/credential 时对 active Agent、active Run 的安全约束。
+
 ### 发布/协作待办
 
 - 本地分支已于 2026-09-13 交接时推送至 `origin/feature/0.5.0-delivery`；此后新增提交是否推送仍须用户逐次授权。
 - beta.6 真实验收失败，不能标记 `accepted`，不能创建 beta.6 正式 tag/Release。
 - 两项 P0 修复完成后更新 `CHANGELOG.md`、`RELEASE_LEDGER.json`、交付台账、验收记录和安装包哈希；不要回写旧构建证据。
 
-## 12. 接力实施建议
+## 12. 接力实施建议（**历史**：阶段 A–C 已完成）
+
+> 状态：以下分阶段建议写于 beta.6 修复前。阶段 A–C 已执行并留存验证记录（`docs/BETA6_P0_VERIFICATION.md`）；阶段 D 的构建与真实验收**尚未执行**，仍是 beta.6 的剩余门禁（见 §11）。
 
 ### 阶段 A：只读复现与保护现有证据
 
@@ -517,6 +547,7 @@ Invoke-RestMethod http://127.0.0.1:8765/api/health | ConvertTo-Json -Depth 8
 - `README.md`：当前产品操作与总体能力。
 - `docs/DELIVERY_STATUS.md`：交付门禁总台账。
 - `docs/ACCEPTANCE-0.5.0-beta.6.md`：候选自动化、安装和剩余人工验收。
+- `docs/BETA6_P0_VERIFICATION.md`：beta.6 两个 P0 的修复与验证记录。
 - `docs/BETA6_TEST_FEEDBACK-20260913.md`：本轮两个 P0 真实失败。
 - `RELEASE_LEDGER.json`：版本、提交、候选安装包和 SHA256。
 - `docs/RELEASE_GOVERNANCE.md`：候选、正式版本和冻结规则。
@@ -531,6 +562,7 @@ Invoke-RestMethod http://127.0.0.1:8765/api/health | ConvertTo-Json -Depth 8
 - 不在正式 310 行数据上自动重打或修改 17 个人工值。
 - 不删除 `K:\Bobbytagging\Data`、SQLite WAL、Reasonix 会话或升级备份。
 - 不把当前安装的 `2f7bf2b...` 描述为包含后续源码/文档修复。
+- 不把本地未推送的 M5 运行时迁移（M1–M6B）描述为已发布或已进入安装包。
 - 不以 160 项测试通过代替真实模型语义验收。
 - 不因 `finish_reason=length` 未解析内容就直接丢弃已付费响应。
 - 不把 raw Excel “图片”列和内部 `__image__` 资产当成两个可由用户自行猜测的概念。
