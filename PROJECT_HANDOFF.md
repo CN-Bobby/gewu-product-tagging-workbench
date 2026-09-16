@@ -1,6 +1,6 @@
 # 格物商品打标工作台：接力开发交接文档
 
-更新时间：2026-09-16（Asia/Shanghai）；上一版：2026-09-13（beta.6 交接）
+更新时间：2026-09-17（Asia/Shanghai）；上一版：2026-09-16（Agent 运行时迁移）
 
 工作目录：`D:\数据打标项目`
 
@@ -33,9 +33,10 @@
 - beta.6 候选代码已构建；本机运行 `0.5.0-beta.6+2f7bf2b59975`（**该安装包不含本文档之后的任何源码修复**）；
 - 两个 P0（F01 截断反推、F02 对话零反馈）已于 beta.6 修复，证据见 `docs/BETA6_P0_VERIFICATION.md`；
 - beta.6 仍为 `pending_acceptance`，不是正式发布，未创建 tag/Release；
-- 2026-09-16 起在本地分支完成了 Agent 运行时迁移（M1–M6B 共 7 个提交），**尚未推送、尚未打包**；`origin` 恢复点仍停在旧的 `1e39ffe`。
+- 2026-09-16～17 在本地分支完成了 Agent 运行时迁移与 M6 Runtime Hardening（M1–M6，本地共 13 个提交），**尚未推送**（`origin/feature/0.5.0-delivery` 仍停在旧的 `1ceb4ac`）、**尚未打包**；
+- 当前源码后端全量测试为 **596 passed**（`docs/REAL_ACCEPTANCE_CHECKLIST.md` 记录了它证明什么、不证明什么）。
 
-接力后的首要目标不是再做 legacy 清理，而是按 §5.4 的当前链路继续做 runtime hardening（见 §11 之后的“后续硬化 backlog”）。
+M6 Runtime Hardening 已收口（见 §5.5），**不再新增 runtime milestone**。接力后的首要目标是按 `docs/REAL_ACCEPTANCE_CHECKLIST.md` 执行真实验收与交付，而不是继续做 legacy 清理或新的硬化。
 
 ## 2. 产品定义
 
@@ -224,6 +225,25 @@ Jobs/Worker/Coordinator → AgentBackend → ReasonixAdapter → Runtime → Rea
 
 需要用户交互的问题只走 **Reasonix native question → AgentBridge**；后台 worker/coordinator 不具备交互式提问能力。
 
+### 5.5 M6 Runtime Hardening COMPLETE（2026-09-17）
+
+M6 三个子轮次（M6-1 Process Lifecycle、M6-2 Execution Budget、M6-3 Model/Credential Lifecycle Safety）已全部实现、测试并本地提交，共 5 个提交：`e1a6b6e`（Job Object）→ `cf0e968`（graceful shutdown）→ `139809c`（语义预算）→ `246f1b2`（生产预算注入）→ `3257e50`（模型/凭据快照）。**本轮之后不再新增 runtime milestone（没有 M6-4 / M6-5）。**
+
+1. **Process ownership** — Reasonix 进程树由 Windows Job Object 托管（匿名 job + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`），`Popen` 后立即 assign、`stop()` 最后 release；宿主不支持时降级为 `job_unavailable` 事件并把事实暴露在 `diagnostics()['job']`。
+2. **Graceful shutdown** — `agent_application.start()/shutdown()` 受 lifespan 调用；关闭时先为快照里**每个**会话启动各自的 close worker，再用一个共享 deadline 统一等待，因此一个不肯关闭的会话不会饿死后面的会话；关闭期间不再接受新会话（`ApplicationStopping` → 503）。
+3. **Execution budgets** — first-activity / idle / tool-wait / wall-clock 四层语义预算，按 UI / Worker / Coordinator 显式注入：
+
+   | 角色 | first | idle | tool | wall-clock |
+   |---|---|---|---|---|
+   | UI Agent（`agent_application`） | 120 | 180 | 360 | 1200 |
+   | Worker（`jobs._execute`） | 180 | 300 | 360 | 1200 |
+   | Coordinator（`jobs._chat`） | 120 | 240 | 360 | 1200 |
+
+   wall-clock 是绝对上限（活动不延长）；`budget=None` 保持旧的单层行为（generic seam 默认仍为 `None`）；传输层上限 = wall-clock + 60s 宽限，MCP 单次调用仍是它自己那一层的 300s。
+4. **Interrupted-turn recovery** — 被打断的回合**不复用**旧 Runtime：先尽力 `session/close`，再 teardown，下次 `send()` 新建 Runtime 并对**同一个** native session 发 `session/resume`（+ 扩展重载）；恢复失败只报 `RuntimeUnavailable`，**绝不**回退 `session/new`。
+5. **Stale-event isolation** — interrupt 是 exactly-once（first writer wins，`_turn_cond` 下判定），并立刻关闭 stale-event fence（`accept_peer_output=False`），因此被中断回合的迟到帧不会串进下一轮；显式 cancel 与语义超时走同一条回收路径。
+6. **Model / credential snapshot safety** — 创建 Session / Run 时一次性冻结 model + provider + credential；active workload 存在时一切会改变 launch 解析结果的 Settings 变更返回 409 `settings_in_use`；worker 一个 run 内只解析一次凭据；dangling / disabled 凭据一律显式失败、不回退 primary；recovery 复用创建时的 launch environment。另有共享 home 冲突保护：同一 dataset 已有活动会话且冻结配置不同 → 409 `runtime_config_in_use`。
+
 ## 6. 版本、构建、安装和 Git 现状
 
 ### 6.1 当前现场（2026-09-13 已复核）
@@ -232,7 +252,7 @@ Jobs/Worker/Coordinator → AgentBackend → ReasonixAdapter → Runtime → Rea
 |---|---|
 |源码分支|`feature/0.5.0-delivery`|
 |源码 HEAD|不要引用本文档写死的哈希：文档自身也是提交，此值必然过期。用 `git log -1 --format=%H` 现场读取，实质锚点是“候选构建提交”一行|
-|远端分支|`origin/feature/0.5.0-delivery`，2026-09-13 交接时已推送并与本地一致（此前远端停在 `ccc953b`，只到 beta.3）|
+|远端分支|`origin/feature/0.5.0-delivery`，2026-09-13 交接时已推送并与当时本地一致。**2026-09-17 现状：远端停在 `1ceb4ac`，本地领先 13 个提交且未推送**（M1–M6）。推送需用户逐次授权|
 |唯一版本源|`VERSION.json` = `0.5.0-beta.6`、schema 8、`pending_acceptance`|
 |候选构建提交|`2f7bf2b59975ba2cc5693ec346868d470774fe61`（本机安装的就是它；后续文档提交与任何 P0 修复都不在该包内）|
 |本机安装 build ID|`0.5.0-beta.6+2f7bf2b59975`|
@@ -272,6 +292,15 @@ SHA256：
 - 当前运行进程报告 `dirty=false`，构建提交与候选台账一致。
 
 这些只证明结构、兼容和安装链路，不证明真实模型的反推语义与对话恢复已经验收。
+
+### 6.2.1 当前源码证据（M6 收口，2026-09-17）
+
+以下数字属于**本地分支源码**，`2f7bf2b...` 安装包内是旧代码，两者不要混用：
+
+- 后端全量测试：**596 passed**（`python -m pytest -q`，真实全量执行）；
+- 仓库审计：`{'tracked_files': 257, 'forbidden_paths': [], 'secret_hits': [], 'sample_hits': []}`（M6 收口时的受控文件数；新增本文档之后的清单文件会使其变成 258，命中项仍须全为空）；
+- M6 专项套件：`tests/test_agent_runtime.py`（Job Object）、`tests/test_agent_http.py`（graceful shutdown）、`tests/test_execution_budget.py` + `tests/test_budget_policy.py`（预算）、`tests/test_model_credential_lifecycle.py`（模型/凭据快照）；
+- 前端本轮未改动，沿用最近一次全绿的生产构建；如最终交付前有前端改动，须重跑 `npm run build --prefix frontend`。
 
 ### 6.3 发布纪律
 
@@ -472,17 +501,39 @@ SHA256：
 - 任务末聚合定义缺口，进一步降低对话卡片噪音。
 - 评估 WPS 原生 `DISPIMG` 回写；当前导出图片是可用的浮动图片，不能假装已完全恢复 WPS 原公式语义。
 
-### 后续硬化 backlog（**不属于 legacy 清理，也不属于 M5**）
+### 后续硬化 backlog（**已由 M6 完成**，2026-09-17 更新）
 
-1. **Reasonix process lifecycle**：网页进程被硬杀/崩溃后的恢复；orphan Reasonix 进程回收（当前无回收代码）。
-2. **Execution budget**：first-activity / idle / total / MCP tool 四个时限。现状是只有总时限（`ReasonixAdapter` 1200s）与 MCP 单次上限（`reasonix.toml` 300s）；分层预算已在 M5-5 评审中明确"不在清理阶段顺手加"。
-3. **Model / credential lifecycle safety**：切换或修改 model/credential 时对 active Agent、active Run 的安全约束。
+以下三项曾是 M5 之后的主要硬化目标，现已全部实现、测试并本地提交，见 §5.5：
+
+1. ~~**Reasonix process lifecycle**~~ → 已完成（M6-1）：Job Object 托管进程树 + graceful shutdown。
+2. ~~**Execution budget**~~ → 已完成（M6-2）：first-activity / idle / tool / wall-clock 四层预算 + 按角色显式注入 + 中断回收与同会话 resume。
+3. ~~**Model / credential lifecycle safety**~~ → 已完成（M6-3）：创建时冻结 model/provider/credential + active workload 期间 Settings 变更锁 + dangling/disabled 显式失败。
+
+### Deferred backlog（**NON-BLOCKING FOR DELIVERY**，只记录不实现）
+
+以下条目已明确评估为不阻塞交付，**本轮及后续 Real Acceptance 阶段都不要顺手清理或实现**：
+
+**PRODUCT BACKLOG**
+- AgentPanel 不传 model 时回落到 `harness.DEFAULT_MODEL`，与 Settings 里的 `default_model` 不一致。属产品行为问题，不是 lifecycle safety。
+
+**KNOWN LIMITATION**
+- 删除 credential 后，旧 dataset home 的 `.env` 可能残留该 secret，直到下一次 `environment()` 重写；已验证会被重写覆盖，不做全盘扫描清理器。
+- durable credential identity across process restart 当前未实现（进程重启后旧会话不可在进程内恢复，故暂不需要持久化 credential id）。
+
+**DEFERRED CLEANUP**
+- `harness.py` naming（模块已只负责启动/配置，名字仍是历史名）。
+- legacy presentation residue（`Message.presentation` 历史字段）。
+- `protocol.py` 未被使用的 helper。
+- `AgentRuntimeSession` 历史残留（仅 `chat_threads.destroy` 清理用）。
+- `TAG_CONVERSATION_ID` / `view_chat_image` 残差。
+- 其它 M5 已归档 residue。
 
 ### 发布/协作待办
 
-- 本地分支已于 2026-09-13 交接时推送至 `origin/feature/0.5.0-delivery`；此后新增提交是否推送仍须用户逐次授权。
+- 本地分支已于 2026-09-13 交接时推送至 `origin/feature/0.5.0-delivery`；此后新增提交是否推送仍须用户逐次授权（当前本地领先远端 13 个提交）。
 - beta.6 真实验收失败，不能标记 `accepted`，不能创建 beta.6 正式 tag/Release。
 - 两项 P0 修复完成后更新 `CHANGELOG.md`、`RELEASE_LEDGER.json`、交付台账、验收记录和安装包哈希；不要回写旧构建证据。
+- 下一步（M6 收口后）：按 `docs/REAL_ACCEPTANCE_CHECKLIST.md` 在隔离数据目录执行真实验收，通过后再构建新候选（不要覆盖 beta.6 产物），并同步更新台账。
 
 ## 12. 接力实施建议（**历史**：阶段 A–C 已完成）
 
@@ -542,9 +593,18 @@ Invoke-RestMethod http://127.0.0.1:8765/api/health | ConvertTo-Json -Depth 8
 
 真实模型验收会消耗额度，必须使用隔离数据目录和已授权的本机凭据。不要把客户文件、正式数据库、缓存、会话或 Key 打入源码 ZIP/安装包。
 
+M6 收口后的专项回归（离线、零付费）：
+
+```powershell
+.venv\Scripts\python.exe -m pytest tests/test_agent_runtime.py tests/test_agent_http.py `
+  tests/test_execution_budget.py tests/test_budget_policy.py `
+  tests/test_model_credential_lifecycle.py -q
+```
+
 ## 14. 重要文档索引
 
 - `README.md`：当前产品操作与总体能力。
+- `docs/REAL_ACCEPTANCE_CHECKLIST.md`：**下一阶段要执行的**真实验收清单（M6 收口后生成，尚未执行）。
 - `docs/DELIVERY_STATUS.md`：交付门禁总台账。
 - `docs/ACCEPTANCE-0.5.0-beta.6.md`：候选自动化、安装和剩余人工验收。
 - `docs/BETA6_P0_VERIFICATION.md`：beta.6 两个 P0 的修复与验证记录。
@@ -562,8 +622,9 @@ Invoke-RestMethod http://127.0.0.1:8765/api/health | ConvertTo-Json -Depth 8
 - 不在正式 310 行数据上自动重打或修改 17 个人工值。
 - 不删除 `K:\Bobbytagging\Data`、SQLite WAL、Reasonix 会话或升级备份。
 - 不把当前安装的 `2f7bf2b...` 描述为包含后续源码/文档修复。
-- 不把本地未推送的 M5 运行时迁移（M1–M6B）描述为已发布或已进入安装包。
-- 不以 160 项测试通过代替真实模型语义验收。
+- 不把本地未推送的 Agent 运行时迁移与 M6 硬化（M1–M6，13 个提交）描述为已发布或已进入安装包。
+- 不以自动化测试通过（当前 596 passed）代替真实模型语义验收。
+- 不把已经评估为 NON-BLOCKING 的 deferred backlog（见 §11）当成交付 blocker，也不在验收阶段顺手清理。
 - 不因 `finish_reason=length` 未解析内容就直接丢弃已付费响应。
 - 不把 raw Excel “图片”列和内部 `__image__` 资产当成两个可由用户自行猜测的概念。
 - 不用无限 `session/prompt` 等待承载需要用户回答的交互。
@@ -584,3 +645,5 @@ Invoke-RestMethod http://127.0.0.1:8765/api/health | ConvertTo-Json -Depth 8
 - 交付台账、验收、变更说明、回退点和未完成门禁同步更新。
 
 在此之前，应使用“已记录”“已定位”“代码已修复待构建”“候选已构建待真实验收”等精确状态，不使用笼统的“已经好了”。
+
+M6 收口后的下一阶段验收标准不再沿用本节：见 `docs/REAL_ACCEPTANCE_CHECKLIST.md`（真实验收清单，尚未执行）。
