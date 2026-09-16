@@ -32,7 +32,7 @@
 
 - beta.6 候选代码已构建；本机运行 `0.5.0-beta.6+2f7bf2b59975`（**该安装包不含本文档之后的任何源码修复**）；
 - 两个 P0（F01 截断反推、F02 对话零反馈）已于 beta.6 修复，证据见 `docs/BETA6_P0_VERIFICATION.md`；
-- beta.6 仍为 `pending_acceptance`，不是正式发布，未创建 tag/Release；
+- beta.6 仍为 `pending_acceptance`，不是正式发布，未创建 tag/Release；当前候选线已推进到 **0.5.0-beta.7**（本机安装的仍是 beta.6）；
 - 2026-09-16～17 在本地分支完成了 Agent 运行时迁移与 M6 Runtime Hardening（M1–M6，本地共 13 个提交），**尚未推送**（`origin/feature/0.5.0-delivery` 仍停在旧的 `1ceb4ac`）、**尚未打包**；
 - 当前源码后端全量测试为 **596 passed**（`docs/REAL_ACCEPTANCE_CHECKLIST.md` 记录了它证明什么、不证明什么）。
 
@@ -253,7 +253,7 @@ M6 三个子轮次（M6-1 Process Lifecycle、M6-2 Execution Budget、M6-3 Model
 |源码分支|`feature/0.5.0-delivery`|
 |源码 HEAD|不要引用本文档写死的哈希：文档自身也是提交，此值必然过期。用 `git log -1 --format=%H` 现场读取，实质锚点是“候选构建提交”一行|
 |远端分支|`origin/feature/0.5.0-delivery`，2026-09-13 交接时已推送并与当时本地一致。**2026-09-17 现状：远端停在 `1ceb4ac`，本地领先 13 个提交且未推送**（M1–M6）。推送需用户逐次授权|
-|唯一版本源|`VERSION.json` = `0.5.0-beta.6`、schema 8、`pending_acceptance`|
+|唯一版本源|`VERSION.json` = `0.5.0-beta.7`、schema 8、`pending_acceptance`（现场以 `VERSION.json` 为准）|
 |候选构建提交|`2f7bf2b59975ba2cc5693ec346868d470774fe61`（本机安装的就是它；后续文档提交与任何 P0 修复都不在该包内）|
 |本机安装 build ID|`0.5.0-beta.6+2f7bf2b59975`|
 |本机安装目录|`K:\Bobbytagging\app`|
@@ -533,7 +533,7 @@ SHA256：
 - 本地分支已于 2026-09-13 交接时推送至 `origin/feature/0.5.0-delivery`；此后新增提交是否推送仍须用户逐次授权（当前本地领先远端 13 个提交）。
 - beta.6 真实验收失败，不能标记 `accepted`，不能创建 beta.6 正式 tag/Release。
 - 两项 P0 修复完成后更新 `CHANGELOG.md`、`RELEASE_LEDGER.json`、交付台账、验收记录和安装包哈希；不要回写旧构建证据。
-- 下一步（M6 收口后）：按 `docs/REAL_ACCEPTANCE_CHECKLIST.md` 在隔离数据目录执行真实验收，通过后再构建新候选（不要覆盖 beta.6 产物），并同步更新台账。
+- 真实验收（Phase A/B）与候选交付验证（全新安装/升级/回退）已完成，记录见 `docs/ACCEPTANCE-0.5.0-beta.7.md`；下一步只剩**正式数据上的语义确认与生产切换**（需用户授权），在此之前不建 tag/Release。
 
 ## 12. 接力实施建议（**历史**：阶段 A–C 已完成）
 
@@ -604,9 +604,10 @@ M6 收口后的专项回归（离线、零付费）：
 ## 14. 重要文档索引
 
 - `README.md`：当前产品操作与总体能力。
-- `docs/REAL_ACCEPTANCE_CHECKLIST.md`：**下一阶段要执行的**真实验收清单（M6 收口后生成，尚未执行）。
+- `docs/REAL_ACCEPTANCE_CHECKLIST.md`：真实验收清单（Phase A/B 已按此执行，结果见 beta.7 验收记录）。
 - `docs/DELIVERY_STATUS.md`：交付门禁总台账。
-- `docs/ACCEPTANCE-0.5.0-beta.6.md`：候选自动化、安装和剩余人工验收。
+- `docs/ACCEPTANCE-0.5.0-beta.7.md`：**当前候选**的验收记录（真实模型 Phase A/B、候选安装/升级/回退与 packaging 冒烟）。
+- `docs/ACCEPTANCE-0.5.0-beta.6.md`：上一版候选的自动化、安装和剩余人工验收。
 - `docs/BETA6_P0_VERIFICATION.md`：beta.6 两个 P0 的修复与验证记录。
 - `docs/BETA6_TEST_FEEDBACK-20260913.md`：本轮两个 P0 真实失败。
 - `RELEASE_LEDGER.json`：版本、提交、候选安装包和 SHA256。
@@ -646,4 +647,4 @@ M6 收口后的专项回归（离线、零付费）：
 
 在此之前，应使用“已记录”“已定位”“代码已修复待构建”“候选已构建待真实验收”等精确状态，不使用笼统的“已经好了”。
 
-M6 收口后的下一阶段验收标准不再沿用本节：见 `docs/REAL_ACCEPTANCE_CHECKLIST.md`（真实验收清单，尚未执行）。
+M6 收口后的下一阶段验收标准不再沿用本节：真实验收已按 `docs/REAL_ACCEPTANCE_CHECKLIST.md` 执行完毕，结果与剩余门禁见 `docs/ACCEPTANCE-0.5.0-beta.7.md`。
