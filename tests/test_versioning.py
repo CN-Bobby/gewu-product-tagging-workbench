@@ -78,6 +78,27 @@ def test_release_ledger_and_single_install_identity():
     assert '已保留或恢复原版本' not in source
 
 
+def test_dev_build_identity_is_read_only_from_fields_the_build_writes():
+    import re
+    root=Path(__file__).resolve().parents[1]
+    build=(root/'scripts'/'build_windows.py').read_text(encoding='utf-8')
+    manifest_block=build.split('manifest={',1)[1].split('build-manifest.json',1)[0]
+    written=set(re.findall(r"'([a-z_]+)':",manifest_block))
+    launcher=(root/'scripts'/'dev-launcher.ps1').read_text(encoding='utf-8')
+    reads=set(re.findall(r'\$manifest\.([a-z_]+)',launcher))
+    assert reads<=written, sorted(reads-written)
+    # build-test.ps1 fills the current pointer and prints from the line the build script emits.
+    emitted=build.split("'output':str(out)",1)[1].split('raise SystemExit(0)',1)[0]
+    emitted_keys=set(re.findall(r"'([a-z_]+)':",emitted))|{'output'}
+    consumer=(root/'scripts'/'build-test.ps1').read_text(encoding='utf-8')
+    consumed=set(re.findall(r'\$result\.([a-z_]+)',consumer))
+    assert consumed<=emitted_keys, sorted(consumed-emitted_keys)
+    # The UI shows the running build_id and marks a development or uncommitted build.
+    page=(root/'frontend'/'src'/'main.jsx').read_text(encoding='utf-8')
+    shown=set(re.findall(r'buildInfo\??\.([a-z_]+)',page))
+    assert {'build_id','build_mode','dirty'}<=shown<=written|{'version','release_status','commit'}
+
+
 def test_customer_artifact_names_are_version_only():
     root=Path(__file__).resolve().parents[1]
     source=(root/'scripts'/'assemble_release.py').read_text(encoding='utf-8')

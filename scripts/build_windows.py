@@ -1,20 +1,41 @@
-"""Build from a clean commit with pinned wheels, embedded Python and native Reasonix."""
+"""Build from a clean commit with pinned wheels, embedded Python and native Reasonix.
+
+``--dev`` produces a runnable directory under ``builds/`` with no installer and no release
+gate; see ``scripts/build-test.ps1`` and ``scripts/dev-launcher.ps1``."""
 import argparse,hashlib,json,os,shutil,subprocess,sys,zipfile
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
-parser=argparse.ArgumentParser();parser.add_argument('--candidate',action='store_true');parser.add_argument('--evidence',type=Path);args=parser.parse_args()
+parser=argparse.ArgumentParser();parser.add_argument('--candidate',action='store_true')
+parser.add_argument('--dev',action='store_true',help='development build: skip the release gate and the installer, write to builds/')
+parser.add_argument('--allow-dirty',action='store_true',help='dev only: build from a dirty worktree and record dirty=true')
+parser.add_argument('--evidence',type=Path);args=parser.parse_args()
 version=json.loads((ROOT/'VERSION.json').read_text(encoding='utf-8'))
 ledger=json.loads((ROOT/'RELEASE_LEDGER.json').read_text(encoding='utf-8'))
 ledger_entry=next((item for item in ledger.get('versions',[]) if item.get('version')==version['version']),None)
-if not ledger_entry or ledger_entry.get('status')!=version.get('release_status'):
-    raise SystemExit('VERSION.json and RELEASE_LEDGER.json disagree')
-if subprocess.check_output(['git','status','--porcelain'],cwd=ROOT,text=True).strip():raise SystemExit('Build requires clean Git worktree')
-if not args.candidate:
-    gate=[sys.executable,str(ROOT/'scripts/check_release.py')]
-    if args.evidence:gate.extend(['--evidence',str(args.evidence)])
-    subprocess.run(gate,check=True)
+dirty=bool(subprocess.check_output(['git','status','--porcelain'],cwd=ROOT,text=True).strip())
+if args.dev:
+    # A development build is not a release: no ledger gate, no acceptance gate, no installer.
+    # It may come from a dirty tree, but then the fact is recorded instead of hidden.
+    if dirty and not args.allow_dirty:
+        raise SystemExit('Build requires clean Git worktree (pass --allow-dirty for a development build)')
+else:
+    if not ledger_entry or ledger_entry.get('status')!=version.get('release_status'):
+        raise SystemExit('VERSION.json and RELEASE_LEDGER.json disagree')
+    if dirty:raise SystemExit('Build requires clean Git worktree')
+    if not args.candidate:
+        gate=[sys.executable,str(ROOT/'scripts/check_release.py')]
+        if args.evidence:gate.extend(['--evidence',str(args.evidence)])
+        subprocess.run(gate,check=True)
 commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
-out=ROOT/'releases'/version['version']/commit[:12]
+branch=subprocess.check_output(['git','rev-parse','--abbrev-ref','HEAD'],cwd=ROOT,text=True).strip()
+if args.dev:
+    sys.path.insert(0,str(ROOT));from backend.build_info import build_info
+    # Two dirty trees can share HEAD, so the directory name carries the source digest as well.
+    # build_id itself stays <version>+<commit> per RELEASE_LEDGER policy.
+    directory=version['version']+'+'+commit[:12]+('-dirty.'+build_info()['source_sha256'][:8] if dirty else '')
+    out=ROOT/'builds'/directory
+else:
+    out=ROOT/'releases'/version['version']/commit[:12]
 if out.exists():raise SystemExit('Refusing to overwrite an existing build directory: '+str(out))
 app=out/'app';app.mkdir(parents=True)
 tools=ROOT/'storage/build-tools';pins=json.loads((ROOT/'build-tools.lock.json').read_text(encoding='utf-8'))
@@ -58,14 +79,27 @@ subprocess.run([str(compiler),'/nologo','/target:winexe','/reference:System.Wind
     '/reference:System.Web.Extensions.dll','/out:'+str(app/'Workbench.exe'),str(ROOT/'scripts/DesktopLauncher.cs'),str(assembly)],check=True)
 sys.path.insert(0,str(ROOT));from backend.build_info import build_info
 from backend.tagging_rules import freeze
+if args.dev:build_mode,distribution='dev','development build, not for distribution'
+elif args.candidate:build_mode,distribution='candidate','candidate pending external acceptance'
+else:build_mode,distribution='release','release'
 manifest={**build_info(),'version':version['version'],'build_id':version['version']+'+'+commit[:12],
-    'release_status':version['release_status'],'commit':commit,'dirty':False,'release':not args.candidate,'built_at':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(),
+    'release_status':version['release_status'],'commit':commit,'branch':branch,'build_mode':build_mode,
+    'storage_mode':'isolated' if args.dev else 'user-selected',
+    'dirty':dirty if args.dev else False,'release':build_mode=='release','built_at':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(),
     'skill':{k:v for k,v in freeze().items() if k in ('version','sha256')},
     'reasonix':{'version':version['reasonix_baseline'],'sha256':sha(binary)},'database_migration':version['schema_version'],
     'python':{'version':'3.14.3','sha256':pins['python-3.14.3-embed-amd64.zip']['sha256']},
-    'distribution':'candidate pending external acceptance' if args.candidate else 'release',
+    'distribution':distribution,
     'files':{p.relative_to(app).as_posix():sha(p) for p in app.rglob('*') if p.is_file()}}
 (app/'build-manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+if args.dev:
+    # Development builds stop here: no installer, no source zip, no checksum file, nothing
+    # that could be mistaken for a release artifact.
+    print(json.dumps({'output':str(out),'app':str(app),'directory':out.name,'version':manifest['version'],
+                      'build_id':manifest['build_id'],'commit':commit,'branch':branch,'build_mode':build_mode,
+                      'storage_mode':manifest['storage_mode'],'dirty':manifest['dirty'],
+                      'source_sha256':manifest['source_sha256']},ensure_ascii=False))
+    raise SystemExit(0)
 shutil.copy2(app/'build-manifest.json',out/'release-manifest.json')
 if args.evidence:shutil.copy2(args.evidence,out/'release-evidence.json')
 delete_files='\n'.join('Delete "$INSTDIR\\'+p.relative_to(app).as_posix().replace('/','\\')+'"' for p in app.rglob('*') if p.is_file())
