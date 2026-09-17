@@ -127,16 +127,19 @@ test('session_failed locks the panel even without a command error',()=>{
 
 // --- tools -----------------------------------------------------------------
 
-test('a tool lifecycle shows up in order and settles once',()=>{
+test('a tool lifecycle lands on the turn card in order and settles once',()=>{
   const state=reduce([{type:'turn_sending',text:'看下表'},
     event(1,'tool_call_started',{tool_call_id:'c1',server:'m3b7_fixture',tool:'echo_tool',host_status:'pending'}),
     event(2,'tool_call_settled',{tool_call_id:'c1',server:'m3b7_fixture',tool:'echo_tool',host_status:'completed'}),
     event(3,'turn_settled',{stop_reason:'end_turn'})],openSession());
-  const tools=state.items.filter(item=>item.kind==='tool');
-  assert.equal(tools.length,1);
-  assert.equal(tools[0].tool,'echo_tool');
-  assert.equal(tools[0].hostStatus,'completed');
-  assert.ok(state.items.findIndex(item=>item.kind==='tool')>0);
+  const cards=state.items.filter(item=>item.kind==='activity');
+  assert.equal(cards.length,1,'the tool belongs to the turn card, not to a chat message of its own');
+  assert.equal(state.items.filter(item=>item.kind==='tool').length,0);
+  assert.equal(cards[0].tools.length,1);
+  assert.equal(cards[0].tools[0].tool,'echo_tool');
+  assert.equal(cards[0].tools[0].status,'completed');
+  assert.equal(cards[0].completedCount,1);
+  assert.equal(cards[0].status,'done');
 });
 
 test('a failed tool settlement stays a host fact and does not fail the turn',()=>{
@@ -144,7 +147,10 @@ test('a failed tool settlement stays a host fact and does not fail the turn',()=
     event(1,'tool_call_started',{tool_call_id:'c1',host_status:'pending'}),
     event(2,'tool_call_settled',{tool_call_id:'c1',host_status:'failed'}),
     event(3,'message_completed',{})],openSession());
-  assert.equal(state.items.find(item=>item.kind==='tool').hostStatus,'failed');
+  const card=state.items.find(item=>item.kind==='activity');
+  assert.equal(card.tools[0].status,'failed');
+  assert.equal(card.retryCount,1);
+  assert.equal(card.status,'done','a recovered failure does not fail the turn');
   assert.equal(state.error,null);
   assert.equal(canSend(state),true);
 });

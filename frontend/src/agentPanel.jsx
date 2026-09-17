@@ -7,14 +7,16 @@
 // All decisions about what a status means live in agentState.js; this file wires inputs to it and
 // renders the result.
 import React,{useEffect,useReducer,useRef,useState}from'react';
-import{Send,Pause,Power,Wrench,RotateCcw}from'lucide-react';
+import{Send,Pause,Power,RotateCcw}from'lucide-react';
 import{agentReducer,initialAgentState,canSend,pendingInteractions,SESSION_STATUS,TURN_STATUS}from'./agentState';
+import{activityView,activityVisible}from'./agentActivity';
 
 const LAST_SESSION='agent:last-session';
+// A presentation preference, not a data model: it only decides whether a finished card starts open.
+const DETAIL_PREFERENCE='agent:activity-detail';
 // The event name the stream uses for every frame. It is named, not the SSE default, and a mismatch
 // is silent in a browser, so a test cross-checks it against the server constant.
 const STREAM_EVENT='agent_event';
-const TOOL_LABEL={pending:'正在调用工具',completed:'工具完成（主机报告）',failed:'工具失败（主机报告）'};
 
 // One place that turns an application failure into what the UI shows: a code, a safe message and
 // whether the session is finished. A runtime's own text is never read, let alone displayed.
@@ -28,11 +30,38 @@ async function call(path,body,method='POST'){
   return Promise.reject({code:'invalid_request',message:typeof detail==='string'?detail:'请求失败',fatal:false});
 }
 
-function ToolCard({item}){
-  return <div className="message assistant" key={item.id}>
-    <div className="message-name">工具<span>{item.server||'未知来源'}</span></div>
-    <div className="message-text message-status"><Wrench size={13}/> {TOOL_LABEL[item.hostStatus]||'工具状态未知'}{item.tool?'：'+item.tool:''}</div>
-  </div>;
+// One turn's execution, as one card. Reading it top to bottom: what the agent is doing now, how many
+// operations are done, and a way into the full timeline. A running card never expands — the point of
+// the card is that a long turn cannot push the reply off the screen — and a finished one is a single
+// quiet line until the user asks for more.
+function TurnActivityCard({item,detail}){
+  const [toggled,setToggled]=useState(false);
+  const view=activityView(item);
+  if(!view||!activityVisible(item))return null;
+  const expanded=!view.running&&(toggled||detail===true);
+  const glyph=view.running?'◌':(view.status==='done'?'✓':(view.status==='cancelled'?'■':'⚠'));
+  const region='activity-timeline-'+item.id;
+  return <section className={'turn-activity '+view.status}
+    data-activity-status={view.status} data-activity-expanded={expanded?'true':'false'}
+    data-tool-count={view.toolCount} data-completed={view.completedCount}
+    data-retry={view.retryCount} data-current-action={item.currentTool||''}>
+    <div className="activity-line">
+      <span className="activity-glyph" aria-hidden="true">{glyph}</span>
+      <span className="activity-headline">{view.headline}</span>
+      {view.running&&<span className="activity-counts">{view.counts}</span>}
+    </div>
+    {view.running&&view.detail&&<div className="activity-detail" role="status">{view.detail}</div>}
+    <button type="button" className="activity-toggle" aria-expanded={expanded} aria-controls={region}
+      onClick={()=>setToggled(open=>!open)}>{view.expandLabel}</button>
+    {expanded&&<ul className="activity-timeline" id={region}>
+      {view.lines.map(line=><li key={line.id} className={line.status}>
+        <span className="activity-glyph" aria-hidden="true">{line.glyph}</span>
+        <span className="activity-action">{line.label}</span>
+        {line.note&&<span className="activity-note">{line.note}</span>}
+        <span className="activity-meta">{line.tool}{line.duration?' · '+line.duration:''}{line.error?' · '+line.error:''}</span>
+      </li>)}
+    </ul>}
+  </section>;
 }
 
 function InteractionCard({item,busy,onAnswer,onSkip}){
@@ -58,6 +87,10 @@ export function AgentPanel({did}){
   const[state,dispatch]=useReducer(agentReducer,initialAgentState);
   const[draft,setDraft]=useState('');
   const[busy,setBusy]=useState('');
+  // Off by default: the card is meant to be quiet, and the detail is one click away. It stays a
+  // preference — the card never turns back into a message per tool event.
+  const[detail,setDetail]=useState(()=>{try{return localStorage.getItem(DETAIL_PREFERENCE)==='1'}catch{return false}});
+  const setDetailPreference=value=>{setDetail(value);try{localStorage.setItem(DETAIL_PREFERENCE,value?'1':'0')}catch{}};
   const stream=useRef(null),end=useRef(null);
   const canWrite=canSend(state)&&!!did;
   const waiting=pendingInteractions(state);
@@ -158,6 +191,10 @@ export function AgentPanel({did}){
     <div className="agent-status" data-status={state.sessionStatus}>
       <span>会话：{state.sessionStatus}</span>
       <span>本轮：{state.turnStatus}</span>
+      <label className="activity-preference" title="默认展开每一轮的执行过程">
+        <input type="checkbox" checked={detail} onChange={event=>setDetailPreference(event.target.checked)}/>
+        显示详细执行过程
+      </label>
       {active&&<button title="结束会话" disabled={busy==='stop'} onClick={stop}><Power size={14}/>结束会话</button>}
       {!active&&state.sessionStatus!==SESSION_STATUS.CREATING&&state.sessionStatus!==SESSION_STATUS.STARTING
         &&<button title="新建会话" disabled={!did} onClick={start}>
@@ -170,7 +207,7 @@ export function AgentPanel({did}){
       {state.error.fatal?'　会话已结束，请新建会话。':'　可以继续发送。'}</div>}
 
     <div className="chat-scroll">
-      {state.items.map(item=>item.kind==='tool'?<ToolCard key={item.id} item={item}/>
+      {state.items.map(item=>item.kind==='activity'?<TurnActivityCard key={item.id} item={item} detail={detail}/>
         :<div className={'message '+item.kind} key={item.id}>
           <div className="message-name">{item.kind==='user'?'你':'Agent'}{item.status==='streaming'?'正在回复':''}</div>
           <div className="message-text">{item.text}</div>
