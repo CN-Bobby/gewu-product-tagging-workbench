@@ -9,6 +9,26 @@ parser=argparse.ArgumentParser();parser.add_argument('--candidate',action='store
 parser.add_argument('--dev',action='store_true',help='development build: skip the release gate and the installer, write to builds/')
 parser.add_argument('--allow-dirty',action='store_true',help='dev only: build from a dirty worktree and record dirty=true')
 parser.add_argument('--evidence',type=Path);args=parser.parse_args()
+
+
+def worktree_digest():
+    """Fingerprint every worktree change git reports, for development build directory naming.
+
+    ``build_info()['source_sha256']`` covers the shipped runtime sources only, so a tree whose sole
+    change is ``scripts/desktop_bootstrap.py`` (which does ship) or ``frontend/package.json`` used to
+    yield the same directory name and turn the next build into a refused overwrite. This is a
+    development naming input; it never replaces ``source_sha256`` in a manifest, health or job spec.
+    """
+    digest=hashlib.sha256()
+    digest.update(subprocess.check_output(['git','diff','HEAD','--binary'],cwd=ROOT))
+    others=subprocess.check_output(['git','ls-files','--others','--exclude-standard','-z'],cwd=ROOT)
+    for name in sorted(x for x in others.split(b'\0') if x):
+        digest.update(name+b'\0')
+        path=ROOT/os.fsdecode(name)
+        digest.update(hashlib.sha256(path.read_bytes()).digest() if path.is_file() else b'absent')
+    return digest.hexdigest()
+
+
 version=json.loads((ROOT/'VERSION.json').read_text(encoding='utf-8'))
 ledger=json.loads((ROOT/'RELEASE_LEDGER.json').read_text(encoding='utf-8'))
 ledger_entry=next((item for item in ledger.get('versions',[]) if item.get('version')==version['version']),None)
@@ -30,13 +50,17 @@ commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).st
 branch=subprocess.check_output(['git','rev-parse','--abbrev-ref','HEAD'],cwd=ROOT,text=True).strip()
 if args.dev:
     sys.path.insert(0,str(ROOT));from backend.build_info import build_info
-    # Two dirty trees can share HEAD, so the directory name carries the source digest as well.
+    worktree_sha256=worktree_digest() if dirty else None
+    # Two dirty trees can share HEAD, so the directory name carries the worktree digest as well.
     # build_id itself stays <version>+<commit> per RELEASE_LEDGER policy.
-    directory=version['version']+'+'+commit[:12]+('-dirty.'+build_info()['source_sha256'][:8] if dirty else '')
+    directory=version['version']+'+'+commit[:12]+('-dirty.'+worktree_sha256[:8] if dirty else '')
     out=ROOT/'builds'/directory
 else:
+    worktree_sha256=None
     out=ROOT/'releases'/version['version']/commit[:12]
-if out.exists():raise SystemExit('Refusing to overwrite an existing build directory: '+str(out))
+if out.exists():
+    raise SystemExit('Refusing to overwrite an existing build directory: '+str(out)+
+        ' - this worktree state was already built. Remove that directory to rebuild it.')
 app=out/'app';app.mkdir(parents=True)
 tools=ROOT/'storage/build-tools';pins=json.loads((ROOT/'build-tools.lock.json').read_text(encoding='utf-8'))
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
@@ -91,6 +115,7 @@ manifest={**build_info(),'version':version['version'],'build_id':version['versio
     'python':{'version':'3.14.3','sha256':pins['python-3.14.3-embed-amd64.zip']['sha256']},
     'distribution':distribution,
     'files':{p.relative_to(app).as_posix():sha(p) for p in app.rglob('*') if p.is_file()}}
+if args.dev and dirty:manifest['worktree_sha256']=worktree_sha256
 (app/'build-manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
 if args.dev:
     # Development builds stop here: no installer, no source zip, no checksum file, nothing
@@ -98,7 +123,7 @@ if args.dev:
     print(json.dumps({'output':str(out),'app':str(app),'directory':out.name,'version':manifest['version'],
                       'build_id':manifest['build_id'],'commit':commit,'branch':branch,'build_mode':build_mode,
                       'storage_mode':manifest['storage_mode'],'dirty':manifest['dirty'],
-                      'source_sha256':manifest['source_sha256']},ensure_ascii=False))
+                      'source_sha256':manifest['source_sha256'],'worktree_sha256':worktree_sha256},ensure_ascii=False))
     raise SystemExit(0)
 shutil.copy2(app/'build-manifest.json',out/'release-manifest.json')
 if args.evidence:shutil.copy2(args.evidence,out/'release-evidence.json')

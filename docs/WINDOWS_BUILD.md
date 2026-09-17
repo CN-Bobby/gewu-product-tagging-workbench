@@ -16,13 +16,13 @@ python scripts/build_windows.py --candidate
 
 ## 开发测试构建（不安装）
 
-日常迭代不走安装包。`构建测试版本.cmd`（等价于`scripts\build-test.ps1`）一次完成：读VERSION.json版本号、取git短SHA、执行`build_windows.py --dev --allow-dirty`、输出到`builds/应用版本+commit前12位/`（脏工作区再加`-dirty.源码摘要前8位`以区分同名commit）、写入`builds/current.json`指针、启动该版本。`开发测试工作台.cmd`（`scripts\dev-launcher.ps1`）是固定入口，只读current指针，切换版本只改指针，不需要重新安装或卸载。
+日常迭代不走安装包。`构建测试版本.cmd`（等价于`scripts\build-test.ps1`）一次完成：读VERSION.json版本号、取git短SHA、执行`build_windows.py --dev --allow-dirty`、输出到`builds/应用版本+commit前12位/`（脏工作区再加`-dirty.工作区摘要前8位`；该摘要覆盖全部已跟踪改动与未跟踪新文件，所以只改`scripts/`或前端依赖也会得到独立目录，不会与上次构建撞名）、写入`builds/current.json`指针、启动该版本。`开发测试工作台.cmd`（`scripts\dev-launcher.ps1`）是固定入口，只读current指针，切换版本只改指针，不需要重新安装或卸载。
 
-开发构建跳过发布门禁与NSIS，不产出安装包、源码ZIP或校验文件；已存在的构建目录一律拒绝覆盖，历史版本原样保留用于回退和A/B对比。
+开发构建跳过发布门禁与NSIS，不产出安装包、源码ZIP或校验文件；已存在的构建目录一律拒绝覆盖：拒绝只发生在工作区状态与上次构建完全相同时，提示会说明该目录已存在、删掉才能重建。历史版本原样保留用于回退和A/B对比。
 
 数据目录完全在程序目录之外。开发构建默认使用显式指定的`K:\Bobbytagging\Data-Test`，端口按数据目录推导（8765保留给安装版），因此删除任意一个build目录都不影响业务数据，运行期也不会向程序目录写入数据库、日志或缓存。Launcher把安装版记录在`%LOCALAPPDATA%\GeWuWorkbench\desktop.json`的数据目录只读地当拒绝清单：以开发模式打开该目录会被拒绝，正式验收必须显式加`-Acceptance`；该文件存在但读不出内容时同样拒绝启动，不猜测哪个目录安全。
 
-app内的build-manifest.json记录版本、build_id、commit、branch、build_mode（dev/candidate/release）、storage_mode、dirty与built_at。顶栏显示实际运行的build_id，开发构建或未提交工作区另有标记；「模型设置→版本技术信息」列出上述全部字段。
+app内的build-manifest.json记录版本、build_id、commit、branch、build_mode（dev/candidate/release）、storage_mode、dirty、built_at，脏构建另记录决定目录名的`worktree_sha256`。顶栏显示实际运行的build_id，开发构建或未提交工作区另有标记；「模型设置→版本技术信息」列出版本、build_id、release_status、commit、branch、build_mode、storage_mode、dirty与built_at（`worktree_sha256`只在manifest内，用于对应目录名）。
 
 安装包只用于Release Candidate、最终Real Acceptance、正式交付，以及安装/升级机制本身的专项测试。
 
