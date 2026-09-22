@@ -16,3 +16,4 @@ releases/
 *.spec
 !tests/fixtures/
 !tests/fixtures/*.xlsx
+tests/fixtures/keyword_research/

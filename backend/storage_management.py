@@ -22,7 +22,7 @@ def usage():
             'cache_records':counts,'categories':{'originals':folder_bytes(STORAGE/'originals'),
             'original_images':folder_bytes(STORAGE/'assets'),'sessions_and_credentials':folder_bytes(STORAGE/'datasets'),
             'backups':folder_bytes(STORAGE/'backups'),'database':(STORAGE/'workbench.db').stat().st_size if (STORAGE/'workbench.db').exists() else 0,
-            'exports':folder_bytes(STORAGE/'exports'),'disposable_cache':disposable},
+            'exports':folder_bytes(STORAGE/'exports'),'keyword_research':folder_bytes(STORAGE/'keyword-research'),'disposable_cache':disposable},
             'note':'数据库体积包含原始记录与权威结果；清理缓存不删除原表、原图、结果、导出或会话。'}
 
 

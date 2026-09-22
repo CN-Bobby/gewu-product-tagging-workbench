@@ -14,6 +14,8 @@ from .exporter import export_run
 from . import draft,batch,draft_export,text_facts
 from . import field_catalog,worksheet_query,task_control
 from . import knowledge,templates,storage_management,model_settings,capabilities
+from .keyword_research import routes as keyword_research_routes
+from .keyword_research import registry as keyword_registry, runner as keyword_runner
 from .build_info import VERSION, build_info
 from .agent_http import router as agent_router
 from . import agent_application
@@ -24,7 +26,7 @@ from .runtime_isolation import CredentialUnavailable
 async def lifespan(app):
     app.state.stopping=False
     agent_application.start()
-    init_db();jobs.recover();batch.recover()
+    init_db();jobs.recover();batch.recover();keyword_registry.recover()
     with Session() as s:ids=list(s.scalars(select(Dataset.id)))
     for did in ids:draft.migrate(did)
     yield
@@ -34,6 +36,7 @@ async def lifespan(app):
     for rid in list(jobs.active):jobs.stop_run(rid)
     for did in list(jobs.chats):jobs.stop_chat(did)
     for jid in list(batch.active):batch.stop(jid)
+    keyword_runner.stop_all()
 
 app=FastAPI(title='商品特征工程工作台',version=VERSION,lifespan=lifespan)
 
@@ -408,6 +411,7 @@ async def agent_events(session_id:str,request:Request,after_sequence:str|None=No
         media_type='text/event-stream',headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})
 
 app.include_router(agent_router)
+app.include_router(keyword_research_routes.router)
 
 @app.get('/api/drafts/{did}/events')
 async def draft_events(did:str,request:Request,after:int=0):

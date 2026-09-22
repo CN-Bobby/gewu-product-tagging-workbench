@@ -48,3 +48,16 @@ test('the shared draft stream is still consumed for workbench state',()=>{
     'the projection must not be conditional');
   assert.ok(!main.includes("if(ev.kind==='chat_chunk')return"),'the projection is no longer inlined');
 });
+
+test('the keyword research page is a second top-level page, not a replacement',()=>{
+  assert.ok(main.includes("import {KeywordResearch} from './keywordResearch'"),'the page is imported');
+  // the worksheet subtree stays whole: the new page is one condition in front of it
+  assert.match(main,/\{page!==PAGE_HOME\?<KeywordResearch api=\{api\}\/>:!data\?</,'the page branches before the empty state');
+  assert.match(main,/const \[page,setPage\]=useState\(PAGE_HOME\)/,'the page state comes from the module');
+  assert.match(main,/\{modal&&page===PAGE_HOME&&/,'the worksheet modal cannot open behind the page');
+});
+
+test('the topbar carries the entry to the keyword page',()=>{
+  assert.ok(main.includes('关键词调研'),'the entry label is in the topbar');
+  assert.match(main,/<button onClick=\{\(\)=>setPage\(PAGE\.KEYWORD\)\}>关键词调研<\/button>/,'the entry switches the page');
+});

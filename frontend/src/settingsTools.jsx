@@ -95,7 +95,7 @@ export function ProviderSettings({api,onSaved}){
 export function StorageDialog({api,onClose}){
  const [usage,setUsage]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
  const load=()=>api('/api/storage').then(setUsage);useEffect(()=>{load().catch(e=>setError(e.message))},[]);
- const labels={originals:'原始表格',original_images:'原始图片',sessions_and_credentials:'独立会话与授权',backups:'备份',database:'权威数据库',exports:'导出文件',disposable_cache:'可清理缓存'};
+ const labels={originals:'原始表格',original_images:'原始图片',sessions_and_credentials:'独立会话与授权',backups:'备份',database:'权威数据库',exports:'导出文件',keyword_research:'关键词调研',disposable_cache:'可清理缓存'};
  const bytes=n=>n>1024**3?(n/1024**3).toFixed(2)+' GB':(n/1024**2).toFixed(2)+' MB';
  return <div className="modal-backdrop"><section className="modal"><div className="panel-heading"><strong>数据与缓存空间</strong><button onClick={onClose}>关闭</button></div><div className="modal-body">{error&&<p role="alert">{error}</p>}{usage&&<><p>数据：{usage.data_path}</p><p>缓存：{usage.cache_path}</p><p>软上限10 GB，8 GB起提醒。{usage.warning?'当前已达到提醒阈值。':''}</p><table><tbody>{Object.entries(usage.categories).map(([k,v])=><tr key={k}><td>{labels[k]}</td><td>{bytes(v)}</td></tr>)}</tbody></table><p>{usage.note}</p><button disabled={busy} onClick={async()=>{setBusy(true);setError('');try{setUsage(await api('/api/storage/clear-cache',{}))}catch(e){setError(e.message)}finally{setBusy(false)}}}>清理可重建的文字与图片缓存</button><p>目录在首次启动时选择；修改目录需要完整备份迁移，当前页面不会移动已有数据。</p></>}</div></section></div>
 }
