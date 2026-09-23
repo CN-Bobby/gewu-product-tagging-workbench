@@ -1,0 +1,81 @@
+# -*- coding: utf-8 -*-
+"""关键词调研的 MCP 传输层回归测试。
+
+离线夹具（FakeMCP）覆写的正是 `_call_once`，也就是真实传输那一层，所以「SDK 的 yield
+形状」这类只在真连服务器时才暴露的缺陷，用它永远抓不到——2026-09-23 的真实回合就栽在
+这里：工作台锁定的 mcp 1.29.1 里 `streamable_http_client` 会 yield 三个值（多一个
+session-id 取值器），而桌面版 pin 的 2.1.1 只有两个，按两个解包即抛
+`ValueError: too many values to unpack (expected 2, got 3)`。
+
+这里在回环地址上起一个最小 MCP 服务，用**生产** `MCPClient` 真打一次
+initialize → tools/call → 解析，把这条缝钉住。只走回环，不碰外网，不读任何凭据。
+"""
+import asyncio
+import threading
+import time
+
+import pytest
+import uvicorn
+from mcp.server.fastmcp import FastMCP
+
+from backend.keyword_research.call_log import CallLog
+from backend.keyword_research.mcp_client import MCPClient
+from backend.keyword_research.rate_limiter import RateLimiter
+from tests.test_keyword_research_pipeline import offline_only  # noqa: F401  离线护栏
+
+pytestmark = pytest.mark.usefixtures("offline_only")
+
+
+@pytest.fixture
+def local_endpoint():
+    """回环上的最小 MCP 服务：一个工具，回一个与 SellerSprite 同形状的响应。"""
+    server = FastMCP("transport-probe")
+
+    @server.tool()
+    def product_node(request: dict) -> dict:
+        return {"code": "OK", "message": "成功",
+                "data": {"items": [{"asin": "X1"}], "total": 1,
+                         "nodeIdPath": (request or {}).get("nodeIdPath")}}
+
+    app = server.streamable_http_app()
+    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
+    running = uvicorn.Server(config)
+    thread = threading.Thread(target=running.run, daemon=True, name="local-mcp-server")
+    thread.start()
+    try:
+        for _ in range(400):
+            if running.started and getattr(running, "servers", None) and running.servers[0].sockets:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("本地 MCP 服务未在 20 秒内起来")
+        port = running.servers[0].sockets[0].getsockname()[1]
+        paths = [route.path for route in app.routes if getattr(route, "path", "").endswith("mcp")]
+        path = paths[0] if paths else "/mcp"
+        yield f"http://127.0.0.1:{port}{path}"
+    finally:
+        running.should_exit = True
+        thread.join(timeout=15)
+        assert not thread.is_alive(), "本地 MCP 服务未能收工：测试不许泄漏线程"
+
+
+def test_production_client_calls_a_streamable_http_server(local_endpoint, tmp_path):
+    """生产传输路径端到端：解包、会话、调用、解析、调用日志，一次走完。"""
+    log = CallLog(tmp_path / "call_log.json")
+    client = MCPClient(local_endpoint,
+                       RateLimiter(max_calls=100, window_seconds=60.0, min_interval=0.0), log)
+
+    data = asyncio.run(client.call("product_node", {"request": {"nodeIdPath": "1055398"}},
+                                   "transport-probe"))
+
+    assert data["code"] == "OK"
+    assert data["data"]["items"][0]["asin"] == "X1"
+    assert data["data"]["nodeIdPath"] == "1055398"
+
+    recorded = log.as_dict() if hasattr(log, "as_dict") else None
+    calls = recorded["calls"] if recorded else None
+    if calls is None:
+        import json
+        calls = json.loads((tmp_path / "call_log.json").read_text(encoding="utf-8"))["calls"]
+    assert [call["tool"] for call in calls] == ["product_node"]
+    assert calls[0]["status"] == "success"
