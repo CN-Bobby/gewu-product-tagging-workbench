@@ -361,6 +361,34 @@ def test_report_template_is_generated_into_the_data_directory():
     assert engine_runner.template_digest() == digest
 
 
+def test_engine_command_bootstraps_the_scripts_dir(tmp_path):
+    """子进程必须自己把引擎脚本目录放进 sys.path。
+
+    随包 runtime 是孤立型解释器（flags.safe_path=True、isolated=1，等价 -I）：它既不把「脚本
+    所在目录」放进 sys.path，也忽略 PYTHON* 环境变量；开发 venv 两样都正常。所以同一个脚本在
+    开发机上跑得通、打包后就 `ModuleNotFoundError: No module named 'classify_keywords'`——
+    2026-09-23 的真实回合正是这样倒在 validate_labels.py 上。这里用 -I 模拟打包环境，正反两面实证。
+    """
+    import subprocess
+    import sys
+
+    from backend.keyword_research import engine_runner
+
+    (tmp_path / 'engine_sibling_probe.py').write_text('VALUE = 7\n', encoding='utf-8')
+    probe = tmp_path / 'probe.py'
+    probe.write_text('from engine_sibling_probe import VALUE\nprint(VALUE)\n', encoding='utf-8')
+
+    command = engine_runner.command_for(probe, (), scripts_dir=tmp_path)
+    guarded = subprocess.run([command[0], '-I', *command[1:]], capture_output=True, text=True)
+    assert guarded.returncode == 0, guarded.stderr
+    assert guarded.stdout.strip() == '7'
+
+    # 反证：不带引导、直接跑，-I 下兄弟导入必然失败
+    without = subprocess.run([sys.executable, '-I', str(probe)], capture_output=True, text=True)
+    assert without.returncode != 0
+    assert 'ModuleNotFoundError' in without.stderr
+
+
 @needs_fixtures
 def test_runner_produces_a_downloadable_report_over_the_real_pipeline(monkeypatch, tmp_path, client):
     """工作台自己的那条路：运行登记 → runner → 真 Pipeline（录制夹具）→ 报告 → HTTP 下载。

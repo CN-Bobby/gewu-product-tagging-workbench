@@ -17,7 +17,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 ENGINE_ROOT = Path(__file__).resolve().parent / 'engine'
 SCRIPTS_DIR = ENGINE_ROOT / 'scripts'
@@ -63,6 +63,22 @@ def asset_digest() -> dict:
     return {'sha256': digest.hexdigest(), 'files': len(files)}
 
 
+# 引擎脚本之间会互相 import（如 validate_labels import classify_keywords），原实现靠
+# `sys.path.insert(0, SCRIPTS_DIR)` 办这件事。改成子进程后既不能依赖解释器把「脚本所在目录」
+# 放进 sys.path、也不能靠 PYTHONPATH：随包的运行时是孤立型 Python（flags.safe_path=True、
+# isolated=1，等价 -I），它既不加入脚本目录，也忽略 PYTHON* 环境变量。所以把那段引导代码
+# 放进子进程自己执行：先注入脚本目录，再用 runpy 以 __main__ 跑目标脚本。
+_BOOTSTRAP = ('import runpy, sys; sys.path.insert(0, sys.argv[1]); '
+              'sys.argv = sys.argv[2:]; runpy.run_path(sys.argv[0], run_name="__main__")')
+
+
+def command_for(script: Path, extra_args: Sequence[str] = (),
+                scripts_dir: Path | None = None) -> list[str]:
+    """构造「引导 + 目标脚本」的命令行。scripts_dir 可注入，便于按同样的形状做隔离实证。"""
+    return [sys.executable, '-c', _BOOTSTRAP, str(scripts_dir or SCRIPTS_DIR), str(script),
+            *extra_args]
+
+
 def template_path() -> Path:
     """报告模板路径：放在实例数据目录里，缺了就现场生成。
 
@@ -74,8 +90,8 @@ def template_path() -> Path:
     if target.is_file():
         return target
     target.parent.mkdir(parents=True, exist_ok=True)
-    _spawn('build_template.py', [sys.executable, str(SCRIPTS_DIR / 'build_template.py'),
-                                 '--out', str(target)], target.parent)
+    _spawn('build_template.py',
+           command_for(SCRIPTS_DIR / 'build_template.py', ['--out', str(target)]), target.parent)
     if not target.is_file():
         raise EngineError('build_template.py', target.parent, 1, '模板生成后仍不存在')
     return target
@@ -88,8 +104,11 @@ def template_digest() -> dict:
 
 
 def _child_env() -> dict:
-    # 引擎脚本会 import 同目录的兄弟模块，靠的是解释器自带的 sys.path[0]（脚本所在目录），
-    # 不需要像原实现那样手工插 sys.path。
+    """子进程环境：只关字节码与固定编码。
+
+    脚本间的 import 由 command_for 的引导代码负责，不走 PYTHONPATH——随包 runtime 是孤立型
+    解释器，会忽略 PYTHON* 环境变量（实测）。
+    """
     env = dict(os.environ)
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
@@ -148,5 +167,5 @@ def run_script(name: str, workdir: Path | str, *extra_args: str,
     if not script.is_file():
         raise FileNotFoundError(f'引擎脚本不存在: {script}')
     workdir = Path(workdir)
-    return _spawn(name, [sys.executable, str(script), '--workdir', str(workdir), *extra_args],
+    return _spawn(name, command_for(script, ['--workdir', str(workdir), *extra_args]),
                   workdir, on_output, timeout, cancel)
