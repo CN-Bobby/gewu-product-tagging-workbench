@@ -89,6 +89,7 @@ class MCPClient:
         max_temp_retries: int = 1,
         request_timeout: float = 180.0,
         rate_limit_retry_wait: float = 60.0,
+        task_retry_budget: int = 10,
     ) -> None:
         self.endpoint = endpoint
         self.rate_limiter = rate_limiter
@@ -97,6 +98,13 @@ class MCPClient:
         self.max_temp_retries = max_temp_retries
         self.request_timeout = request_timeout
         self.rate_limit_retry_wait = rate_limit_retry_wait
+        self.task_retry_budget = max(0, int(task_retry_budget))
+        self.task_retries_used = 0
+
+    def set_task_retry_budget(self, retry_budget: int, retries_used: int = 0) -> None:
+        """Set the confirmed plan's allowance and retries already recorded for this run."""
+        self.task_retry_budget = max(0, int(retry_budget))
+        self.task_retries_used = max(0, int(retries_used))
 
     def _emit(self, kind: str, **payload: Any) -> None:
         if self.on_event is not None:
@@ -198,11 +206,26 @@ class MCPClient:
         attempt = 0
         last_error: Optional[MCPError] = None
         while True:
+            if attempt > 0:
+                # Enforce before waiting or making the next network request.
+                if self.task_retries_used >= self.task_retry_budget:
+                    raise MCPError(
+                        f"任务临时重试预算已用尽：已发起 {self.task_retries_used} 次重试，"
+                        f"上限 {self.task_retry_budget} 次；已阻止 {tool} 的后续重试请求。"
+                    ) from last_error
             wait = self.rate_limiter.wait_until_allowed(
                 on_wait=lambda w: self._emit("rate_limit_wait", wait_seconds=w, tool=tool, scope=scope)
             )
             if wait > 0:
                 self._emit("rate_limit_passed", waited_seconds=wait, tool=tool)
+            # Recheck after the limiter await: concurrent calls may have all
+            # passed the early check while waiting, but each must reserve its
+            # retry synchronously before starting the next request.
+            if attempt > 0 and self.task_retries_used >= self.task_retry_budget:
+                raise MCPError(
+                    f"任务临时重试预算已用尽：已发起 {self.task_retries_used} 次重试，"
+                    f"上限 {self.task_retry_budget} 次；已阻止 {tool} 的后续重试请求。"
+                ) from last_error
             seq = self.call_log.start_call(
                 tool, scope,
                 is_retry=attempt > 0,
@@ -211,6 +234,14 @@ class MCPClient:
                 hard_cap=hard_cap,
             )
             self._emit("call_start", seq=seq, tool=tool, scope=scope)
+            if attempt > 0:
+                # This synchronous section has no await, so concurrent coroutines
+                # cannot spend the same retry slot twice. Count only attempts that
+                # actually reach the request boundary.
+                self.task_retries_used += 1
+            # Count every request attempt, including one that fails in transport
+            # or at the business layer, so the limiter reflects actual traffic.
+            self.rate_limiter.record_call()
             try:
                 data = await self._call_once(tool, arguments)
             except MCPError as exc:
@@ -223,8 +254,8 @@ class MCPClient:
                     attempt += 1
                     self._emit("call_retry", seq=seq, tool=tool, attempt=attempt)
                     if exc.rate_limited:
-                        # 服务端限流（如“接口访问次数已达上限”）：本地 8 次/分钟
-                        # 无法覆盖服务端口径，等待 60 秒后重试
+                        # 服务端限流（如“接口访问次数已达上限”）：本地限流
+                        # 无法覆盖服务端口径，等待配置时长后重试
                         retry_wait = self.rate_limit_retry_wait
                         self._emit("rate_limit_wait", wait_seconds=retry_wait,
                                    tool=tool, scope=scope, source="server")
@@ -233,7 +264,6 @@ class MCPClient:
                 raise
             finally:
                 pass
-            self.rate_limiter.record_call()
             returned = self._count_items(data)
             truncated = self._detect_truncation(data)
             self.call_log.finish_call(seq, success=True, returned=returned,
@@ -353,7 +383,7 @@ def test_mcp_connection(endpoint: str, timeout: float = 60.0,
                         rate_limiter: RateLimiter | None = None) -> dict:
     """设置页“测试连接”：list_tools 验证凭据与连通性（不产生业务调用）。
 
-    按限流纪律：连接测试也走限流器（默认模块级限流器，8次/60s）。
+    连接测试也走限流器（默认模块级限流器，60次/滚动60秒，间隔至少1秒）。
     """
     import asyncio
 

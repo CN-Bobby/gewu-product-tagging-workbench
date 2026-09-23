@@ -2,7 +2,7 @@
 """任务流水线：skill v1.6.2 总流程 14 步的脚本化编排。
 
 设计约束：
-- 所有 SellerSprite 调用经全局限流器（8次/60s）与 call_log；
+- 所有 SellerSprite 调用经全局限流器（默认60次/滚动60s、间隔至少1秒）与 call_log；
 - MCP 返回先原样落盘 raw/ 再解析（skill 契约），raw/cache 即断点：产物存在则跳过；
 - LLM 两步（标注、分析）在 llm_label.py / llm_analysis.py 中分批/分段执行；
 - run() 为同步入口，供作业线程调用；取消通过 cancel() 置位（可被其它线程调用）。
@@ -34,6 +34,24 @@ OnEvent = Optional[Callable[[dict], None]]
 NODE_TOP_N = 50
 PAGE_SIZE = 50
 KEYWORD_POOL_PAGES = 3
+
+
+def _retry_budget_from_confirmed_plan(plan: dict) -> int:
+    """Read current nested or legacy flattened plans (legacy default: 2)."""
+    budget_data = plan.get("budget") if isinstance(plan.get("budget"), dict) else plan
+    retry_budget = budget_data.get("retry_budget", plan.get("retry_budget", 2))
+    try:
+        return max(0, int(retry_budget))
+    except (TypeError, ValueError):
+        return 2
+
+
+def _used_retries_from_call_log(call_log_data: dict) -> int:
+    """Count every retry attempt already started, including failed/in-progress calls."""
+    calls = call_log_data.get("calls", []) if isinstance(call_log_data, dict) else []
+    if not isinstance(calls, list):
+        return 0
+    return sum(1 for call in calls if isinstance(call, dict) and call.get("is_retry"))
 
 
 class PipelineCanceled(Exception):
@@ -142,6 +160,12 @@ class Pipeline:
         plan = self._load_plan()
         if not plan.get("confirmed"):
             raise RuntimeError("预算未确认：请先核算并确认预算")
+        # Current plans keep the budget under `budget`; older plans may be flat.
+        retry_budget = _retry_budget_from_confirmed_plan(plan)
+        set_retry_budget = getattr(self.mcp, "set_task_retry_budget", None)
+        if callable(set_retry_budget):
+            retries_used = _used_retries_from_call_log(self.call_log.load())
+            set_retry_budget(retry_budget, retries_used=retries_used)
 
         self._check_cancel()
         self._phase("collecting", "开始数据采集")

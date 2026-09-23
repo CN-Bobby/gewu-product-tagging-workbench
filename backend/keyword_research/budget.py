@@ -11,7 +11,7 @@ T=趋势词数（core+longtail，受 cap 限制）。
 公式里的 A 项是逐 ASIN traffic_keyword 矩阵调用：options.matrix_enabled 缺省为 True；
 显式为假时矩阵调用数为 0，A 项从 total 中扣除，其余项不变。
 M1 模式（单输入 ASIN + Node）：输入 ASIN 单独批次反查，+1 次。
-基准外最多 2 次临时错误补调用；硬上限 35。
+基准外最多 10 次临时错误补调用；硬上限默认 200。
 """
 from __future__ import annotations
 
@@ -56,8 +56,8 @@ class GroupBudget:
 class Budget:
     groups: list[GroupBudget] = field(default_factory=list)
     trend_cap: int = 20
-    hard_cap: int = 35
-    retry_budget: int = 2
+    hard_cap: int = 200
+    retry_budget: int = 10
 
     @property
     def planned_total(self) -> int:
@@ -117,7 +117,7 @@ def plan_budget(
         int(options.get("longtail_trend_keywords", longtail_trend)),
         int(options.get("trend_keyword_cap", trend_cap)),
     )
-    budget = Budget(trend_cap=t, hard_cap=35, retry_budget=2)
+    budget = Budget(trend_cap=t, hard_cap=200, retry_budget=10)
     for g in groups:
         marketplace = g["marketplace"]
         asins = list(g.get("asins") or [])

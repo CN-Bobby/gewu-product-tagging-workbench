@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""SellerSprite MCP 调用限流器：滑动窗口，默认 8 次 / 滚动 60 秒，相邻调用 ≥ 7.5 秒。
+"""SellerSprite MCP 调用限流器：滑动窗口，默认 60 次 / 滚动 60 秒，相邻调用 ≥ 1 秒。
 
-需求 1：MCP 调用频率锁定每分钟 8 次。所有 SellerSprite 调用（含连接测试、
+默认自用配置：滚动 60 秒内最多 60 次，相邻调用至少间隔 1 秒。所有 SellerSprite 调用（含连接测试、
 临时重试）必须经过本限流器；达到窗口上限时阻塞等待，不得停止任务。
 """
 from __future__ import annotations
@@ -15,8 +15,8 @@ OnWait = Optional[Callable[[float], None]]
 
 
 class RateLimiter:
-    def __init__(self, max_calls: int = 8, window_seconds: float = 60.0,
-                 min_interval: float = 7.5) -> None:
+    def __init__(self, max_calls: int = 60, window_seconds: float = 60.0,
+                 min_interval: float = 1.0) -> None:
         if max_calls <= 0 or window_seconds <= 0 or min_interval < 0:
             raise ValueError("限流参数必须为正")
         self.max_calls = max_calls

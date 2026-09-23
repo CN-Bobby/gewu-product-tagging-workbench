@@ -29,6 +29,6 @@ class EngineConfig:
     llm_temperature: float = 0.2
     llm_max_tokens: int = DEFAULT_LLM_MAX_TOKENS
     llm_request_timeout: float = 120.0
-    window_max_calls: int = 8
+    window_max_calls: int = 60
     window_seconds: float = 60.0
-    min_call_interval: float = 7.5
+    min_call_interval: float = 1.0

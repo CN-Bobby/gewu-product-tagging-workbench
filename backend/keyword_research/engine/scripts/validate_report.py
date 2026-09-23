@@ -44,6 +44,19 @@ def check(name, ok, detail=""):
     results.append((name, ok, detail))
 
 
+def retry_budget_from_plan(plan_data):
+    """Read retry allowance from current or legacy plan layouts.
+
+    Plans created before retry_budget was recorded historically allowed 2 retries.
+    """
+    budget = plan_data.get("budget") if isinstance(plan_data.get("budget"), dict) else {}
+    value = plan_data.get("retry_budget", budget.get("retry_budget", 2))
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 2
+
+
 def chart_title(chart):
     try:
         paragraphs = chart.title.tx.rich.p
@@ -476,8 +489,11 @@ def main():
                       plan_data.get("planned_total") == expected_calls,
                       f"计划={plan_data.get('planned_total')} / 期望={expected_calls}")
                 actual = log_data.get("actual_total", len(log_data.get("calls") or []))
-                check("实际调用不超过基准+2次临时重试", actual <= expected_calls + 2,
-                      f"实际={actual} / 硬上限={expected_calls + 2}")
+                retry_budget = retry_budget_from_plan(plan_data)
+                allowed_total = plan_data.get("planned_total", expected_calls) + retry_budget
+                check(f"实际调用不超过基准+{retry_budget}次临时重试",
+                      actual <= allowed_total,
+                      f"实际={actual} / 硬上限={allowed_total}")
                 calls = log_data.get("calls") or []
                 tools = [str(c.get("tool") or "") for c in calls]
                 scopes = [str(c.get("scope") or "") for c in calls]

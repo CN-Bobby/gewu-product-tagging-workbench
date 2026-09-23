@@ -111,3 +111,69 @@ def test_nested_transport_group_is_actionable_redacted_and_not_retried(tmp_path,
     assert private_asin not in json.dumps(calls)
     assert 'example.invalid' not in json.dumps(calls)
     assert 'sk-private-credential' not in json.dumps(calls)
+
+
+@pytest.mark.parametrize("retry_budget", [2, 10])
+def test_task_retry_budget_is_cumulative_and_blocks_before_excess_request(
+        tmp_path, monkeypatch, retry_budget):
+    from backend.keyword_research import mcp_client
+
+    class CountingLimiter:
+        def __init__(self):
+            self.attempts = 0
+
+        def wait_until_allowed(self, on_wait=None):
+            return 0
+
+        def record_call(self):
+            self.attempts += 1
+
+    limiter = CountingLimiter()
+    log = CallLog(tmp_path / f"calls-{retry_budget}.json")
+    client = MCPClient("http://127.0.0.1/unused", limiter, log,
+                       max_temp_retries=1, task_retry_budget=retry_budget)
+    request_attempts = 0
+
+    async def temporary_failure(tool, arguments):
+        nonlocal request_attempts
+        request_attempts += 1
+        raise MCPError("temporary transport failure", retryable=True)
+
+    monkeypatch.setattr(client, "_call_once", temporary_failure)
+    for _ in range(retry_budget):
+        with pytest.raises(MCPError, match="temporary transport failure"):
+            asyncio.run(client.call("tool", {}, "task"))
+
+    with pytest.raises(MCPError, match=f"已发起 {retry_budget} 次重试.*上限 {retry_budget} 次"):
+        asyncio.run(client.call("tool", {}, "task"))
+
+    # Each previous call made a base request and one retry. The blocked call
+    # made its base request, but its next retry was rejected before transport.
+    assert request_attempts == retry_budget * 2 + 1
+    assert limiter.attempts == request_attempts  # failed attempts consume limiter capacity too
+    assert client.task_retries_used == retry_budget
+    assert len(log.load()["calls"]) == request_attempts
+
+
+def test_recreated_client_restores_retries_already_spent_by_run(tmp_path, monkeypatch):
+    log = CallLog(tmp_path / "restarted-run.json")
+    seq = log.start_call("tool", "retry from previous Pipeline", is_retry=True)
+    log.finish_call(seq, success=False, error="temporary transport failure")
+    limiter = RateLimiter(max_calls=100, window_seconds=60.0, min_interval=0.0)
+    client = MCPClient("http://127.0.0.1/unused", limiter, log, max_temp_retries=1)
+    client.set_task_retry_budget(2, retries_used=1)
+    request_attempts = 0
+
+    async def temporary_failure(tool, arguments):
+        nonlocal request_attempts
+        request_attempts += 1
+        raise MCPError("temporary transport failure", retryable=True)
+
+    monkeypatch.setattr(client, "_call_once", temporary_failure)
+    with pytest.raises(MCPError, match="temporary transport failure"):
+        asyncio.run(client.call("tool", {}, "resumed task"))
+    with pytest.raises(MCPError, match="已发起 2 次重试.*上限 2 次"):
+        asyncio.run(client.call("tool", {}, "resumed task"))
+
+    assert client.task_retries_used == 2
+    assert request_attempts == 3  # one base + one retry, then one base; no third retry request
