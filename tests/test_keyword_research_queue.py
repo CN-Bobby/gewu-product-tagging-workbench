@@ -172,6 +172,32 @@ def test_retry_uses_same_run_directory_and_preserves_cache(isolated_runs):
     assert registry.read(run_id)['attempt'] == 0
 
 
+def test_enqueue_validates_all_ids_before_any_queue_mutation(isolated_runs):
+    import shutil
+
+    valid, recycled = _create('valid'), _create('already recycled')
+    shutil.rmtree(registry.run_dir(recycled))
+    with pytest.raises(ValueError,match='回收站'):
+        registry.enqueue([valid,recycled],enable_dispatch=True)
+    assert registry.read(valid)['status']==registry.CREATED
+    queue=registry.queue_state()
+    assert queue['items']==[] and queue['dispatch_enabled'] is False
+
+
+def test_enqueue_reads_all_selected_runs_while_holding_queue_lock(isolated_runs,monkeypatch):
+    run_ids=[_create('first'),_create('second')]
+    original_read=registry.read
+    lock_states=[]
+    def observing_read(run_id):
+        lock_states.append(registry._LOCK._is_owned())
+        return original_read(run_id)
+    monkeypatch.setattr(registry,'read',observing_read)
+
+    registry.enqueue(run_ids)
+
+    assert lock_states and all(lock_states)
+
+
 def test_pagination_has_no_silent_200_item_boundary(isolated_runs):
     ids = [_create() for _ in range(203)]
     first, cursor = registry.list_runs(limit=200)

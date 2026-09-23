@@ -59,7 +59,8 @@ def normalize_month(month: str | None) -> str | None:
 def validate_group(marketplace: str, asins: list[str],
                    node_ids: list[str] | None = None,
                    node_top_n: int | None = None,
-                   max_asins: int = MAX_ASINS_PER_GROUP) -> dict:
+                   max_asins: int = MAX_ASINS_PER_GROUP,
+                   mode: str | None = None) -> dict:
     """校验并规整一个站点组。
 
     返回规整后的 group dict：marketplace / asins（去重后）/ node_ids / node_top_n。
@@ -93,15 +94,36 @@ def validate_group(marketplace: str, asins: list[str],
     if node_top_n is not None and node_top_n not in (50, 100):
         errors.append("node_top_n 仅支持 50 或 100")
 
+    # New clients choose exactly one input mode. Older snapshots and requests omit
+    # the field and retain their historical mixed-input behavior.
+    if mode is not None:
+        if mode not in ("asin", "node"):
+            errors.append("mode 只能是 asin 或 node")
+        elif mode == "asin":
+            if not cleaned:
+                errors.append("ASIN 模式至少输入 1 个 ASIN")
+            if nodes:
+                errors.append("ASIN 模式不能填写 Node ID")
+        else:
+            if cleaned:
+                errors.append("Node 模式不能填写 ASIN")
+            if len(nodes) != 1:
+                errors.append("Node 模式必须且只能填写 1 个 Node ID")
+            if node_top_n not in (50, 100):
+                errors.append("Node 模式必须选择榜单条数 50 或 100")
+
     if errors:
         raise ValidationError(errors)
 
-    return {
+    normalized = {
         "marketplace": mp,
         "asins": cleaned,
         "node_ids": nodes,
         "node_top_n": node_top_n if node_top_n is not None else 50,
     }
+    if mode is not None:
+        normalized["mode"] = mode
+    return normalized
 
 
 def validate_task(groups: list[dict], month: str | None,
@@ -122,6 +144,7 @@ def validate_task(groups: list[dict], month: str | None,
             list(g.get("node_ids") or []),
             g.get("node_top_n"),
             max_asins=max_asins,
+            mode=g.get("mode"),
         )
         for g in groups
     ]

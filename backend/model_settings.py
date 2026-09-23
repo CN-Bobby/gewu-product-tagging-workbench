@@ -176,14 +176,14 @@ def read():
 
 
 def defaults():
-    settings=read();text=settings.get('default_model') or 'deepseek/deepseek-v4-flash'
+    settings=read();text=settings.get('default_model') or 'deepseek/deepseek-flash'
     text=normalize_reference(text)
     provider=next((p for p in settings['providers'] if p['name']==text.partition('/')[0]),None)
     if provider:
         text=model_reference(provider['name'],provider.get('text_model') or text.partition('/')[2])
         visual=provider.get('vision_model') or provider.get('text_model')
         return text,model_reference(provider['name'],visual)
-    return text,'deepseek/deepseek-v4-flash-vision-exp'
+    return text,'deepseek/deepseek-flash'
 
 
 def _vision_fixture():
@@ -215,6 +215,8 @@ def _safe_response_error(response, capability, secret=''):
     except Exception:
         detail=''
     detail=re.sub(r'(?i)bearer\s+[^\s]+','Bearer ***',str(detail))
+    detail=re.sub(r'https?://[^\s\"\'<>]+','[服务地址已隐藏]',detail)
+    detail=re.sub(r'\bB0[A-Z0-9]{8}\b','[商品编号已隐藏]',detail,flags=re.I)
     if secret:
         detail=detail.replace(secret,'***')
     detail=detail.replace('\n',' ').strip()[:240]
@@ -228,9 +230,13 @@ def _response_detail(response,secret=''):
 
 def _validate_request(endpoint, api_key, model, capability, content, expected_order=None):
     try:
+        host=urlparse(endpoint).hostname or ''
+        body={'model':model,'messages':[{'role':'user','content':content}],
+              'max_tokens':512 if expected_order else 32}
+        if host.casefold() in ('api.deepseek.com','api.deepseek.cn'):
+            body['thinking']={'type':'disabled'}
         with httpx.Client(timeout=20) as client:
-            response=client.post(endpoint,headers={'Authorization':'Bearer '+api_key,'Content-Type':'application/json'},json={
-                'model':model,'messages':[{'role':'user','content':content}], 'max_tokens':32})
+            response=client.post(endpoint,headers={'Authorization':'Bearer '+api_key,'Content-Type':'application/json'},json=body)
     except httpx.TimeoutException as exc:
         raise ProbeFailure('network_error',f'{capability}模型验证超时，请检查服务地址或网络') from exc
     except httpx.HTTPError as exc:
@@ -252,13 +258,20 @@ def _validate_request(endpoint, api_key, model, capability, content, expected_or
     except Exception as exc:
         raise ProbeFailure('response_contract_failed',f'{capability}模型验证失败：服务返回不是合法 JSON',response.status_code) from exc
     if not isinstance(data,dict) or not data.get('choices'):
-        raise ProbeFailure('response_contract_failed',f'{capability}模型验证失败：服务未返回可用结果',response.status_code)
+        raise ProbeFailure('response_contract_failed',f'{capability}模型验证失败：服务未返回可用结果，请检查模型名、服务兼容格式和输出预算',response.status_code)
     if expected_order:
-        raw=data['choices'][0].get('message',{}).get('content')
+        choice=data['choices'][0]
+        raw=(choice.get('message') or {}).get('content')
         try:value=json.loads(raw) if isinstance(raw,str) else raw
         except Exception:value=None
         if not isinstance(value,dict) or value.get('order')!=expected_order:
-            raise ProbeFailure('response_contract_failed','视觉请求成功，但模型没有返回可验证的图形顺序',response.status_code)
+            if choice.get('finish_reason')=='length':
+                message='视觉请求被输出长度限制截断；请检查模型的最大输出限制'
+            elif not raw:
+                message='视觉请求成功但没有正文；请确认模型支持图片输入，并启用非思考模式'
+            else:
+                message='视觉请求成功但未按要求返回图形顺序；请确认模型支持图片输入与 JSON 输出'
+            raise ProbeFailure('response_contract_failed',message,response.status_code)
     return data
 
 def _probe(endpoint,api_key,model,capability,content,expected_order=None):
@@ -317,8 +330,9 @@ def save(body):
     legacy=body.get('models',[])
     if legacy is None:legacy=[]
     if not isinstance(legacy,list) or any(not isinstance(m,str) or not m.strip() for m in legacy):raise ValueError('旧格式模型列表无效')
-    text_raw=body.get('text_model') or (legacy[0] if legacy else '')
-    visual_raw=body.get('vision_model') or next((m for m in legacy if 'vision' in m.lower()),None) or (legacy[1] if len(legacy)>1 else text_raw)
+    unified=body.get('model')
+    text_raw=unified or body.get('text_model') or (legacy[0] if legacy else '')
+    visual_raw=(unified or body.get('vision_model') or next((m for m in legacy if 'vision' in m.lower()),None) or (legacy[1] if len(legacy)>1 else text_raw))
     text_model=_local_input(name,text_raw,'文本模型')
     vision_model=_local_input(name,visual_raw,'视觉模型')
     home=provider_home();home.mkdir(parents=True,exist_ok=True);path=home/'config.toml'

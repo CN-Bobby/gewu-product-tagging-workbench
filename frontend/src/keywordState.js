@@ -52,7 +52,7 @@ function monthOf(value){
 }
 
 export const initialKeywordForm={
-  groups:[{key:'g1',marketplace:'',asinsText:'',nodeIdsText:'',nodeTopN:50}],
+  groups:[{key:'g1',marketplace:'',mode:'asin',asinsText:'',nodeIdsText:'',nodeTopN:50}],
   dataMonth:'',
   matrixMonth:'',
   matrixEnabled:true,
@@ -64,12 +64,17 @@ export const initialKeywordForm={
 export function buildRunRequest(form){
   const source=form||initialKeywordForm;
   const body={
-    groups:(source.groups||[]).map((group,index)=>({
-      marketplace:String(group.marketplace||'').trim().toUpperCase(),
-      asins:parseAsins(group.asinsText).valid,
-      node_ids:parseNodeIds(group.nodeIdsText),
-      node_top_n:Number(group.nodeTopN)||50,
-    })).filter(group=>group.marketplace||group.asins.length||group.node_ids.length),
+    groups:(source.groups||[]).map(group=>{
+      const mode=group.mode==='node'?'node':'asin';
+      const nodes=parseNodeIds(group.nodeIdsText);
+      return {
+        marketplace:String(group.marketplace||'').trim().toUpperCase(),
+        mode,
+        asins:mode==='asin'?parseAsins(group.asinsText).valid:[],
+        node_ids:mode==='node'?nodes:[],
+        node_top_n:mode==='node'?Number(group.nodeTopN)||50:50,
+      };
+    }).filter(group=>group.marketplace||group.asins.length||group.node_ids.length),
     data_month:monthOf(source.dataMonth),
     matrix_month:source.matrixEnabled===false?null:monthOf(source.matrixMonth),
     matrix_enabled:source.matrixEnabled!==false,
@@ -77,6 +82,20 @@ export function buildRunRequest(form){
   const hash=String(source.planHash||'').trim();
   if(hash)body.plan_hash=hash;
   return body;
+}
+
+export function validQueueSelection(ids,runs){
+  const eligible=new Map((runs||[]).map(item=>[item.run_id||item.id,item]));
+  const selected=[...new Set(ids||[])];
+  const valid=selected.filter(id=>{
+    const item=eligible.get(id);
+    return item&&['created','failed','cancelled','interrupted','skipped'].includes(item.status);
+  });
+  return {valid,stale:selected.filter(id=>!valid.includes(id)),items:valid.map(id=>eligible.get(id))};
+}
+
+export function pendingQueueCount(items){
+  return (items||[]).filter(item=>['queued','running','cancelling','interrupted'].includes(item.status)).length;
 }
 
 // --- run vocabulary ---------------------------------------------------------
@@ -276,7 +295,8 @@ export function applySnapshot(state,snapshot){
 export function keywordReducer(state,action){
   switch(action&&action.type){
     case 'run_created':
-      return {...initialKeywordState,runId:action.runId||null,status:RUN_STATUS.QUEUED,message:'已提交'};
+      return {...initialKeywordState,runId:action.runId||null,status:action.status||RUN_STATUS.QUEUED,
+        message:action.status==='created'?'已保存，尚未开始':'已提交'};
     case 'run_event':return applyRunEvent(state,action.event);
     case 'snapshot':return applySnapshot(state,action.snapshot);
     default:return state;

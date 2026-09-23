@@ -15,13 +15,14 @@ function validationLabel(value){
 
 export function ProviderSettings({api,onSaved}){
   const [name,setName]=useState('deepseek');
-  const [base,setBase]=useState('');
+  const [base,setBase]=useState('https://api.deepseek.com');
   const [key,setKey]=useState('');
   const [credentialId,setCredentialId]=useState('');
-  const [credentialName,setCredentialName]=useState('默认 Key');
+  const [modelName,setModelName]=useState('deepseek-flash');
   const [setDefault,setSetDefault]=useState(true);
-  const [textModel,setTextModel]=useState('');
-  const [visionModel,setVisionModel]=useState('');
+  const [legacyTextModel,setLegacyTextModel]=useState('');
+  const [legacyVisionModel,setLegacyVisionModel]=useState('');
+  const [savedNotice,setSavedNotice]=useState('');
   const [status,setStatus]=useState(null);
   const [error,setError]=useState('');
   const [busy,setBusy]=useState(false);
@@ -31,64 +32,95 @@ export function ProviderSettings({api,onSaved}){
     const provider=(value.providers||[]).find(p=>p.name===(value.default_model||'').split('/')[0])||(value.providers||[])[0];
     if(provider){
       setName(provider.name||'');
-      setBase(provider.base_url||'');
+      setBase(provider.base_url||'https://api.deepseek.com');
       const models=(provider.models||[]).filter(Boolean);
-      setTextModel(localModel(provider.name,provider.text_model||provider.default||models[0]||''));
-      setVisionModel(localModel(provider.name,provider.vision_model||models.find(m=>/vision/i.test(m))||models[1]||models[0]||''));
+      const text=localModel(provider.name,provider.text_model||provider.default||models[0]||'deepseek-flash');
+      const vision=localModel(provider.name,provider.vision_model||text);
+      setLegacyTextModel(text);setLegacyVisionModel(vision);
+      setModelName(text===vision?text:provider.name==='deepseek'?'deepseek-flash':text||vision||'deepseek-flash');
       const credential=(provider.credentials||[]).find(x=>x.id===provider.primary_credential_id)||(provider.credentials||[])[0];
-      setCredentialId(credential?.id||'');setCredentialName(credential?.name||'默认 Key');
+      setCredentialId(credential?.id||'');setKey('');
+    }else{
+      setName('deepseek');setBase('https://api.deepseek.com');setModelName('deepseek-flash');
+      setCredentialId('');setKey('');setLegacyTextModel('');setLegacyVisionModel('');
     }
   });
   useEffect(()=>{load().catch(e=>setError(e.message))},[]);
 
-  const textLocal=localModel(name,textModel),visionLocal=localModel(name,visionModel);
-  const textRef=name&&textLocal?`${name}/${textLocal}`:'—';
-  const visionRef=name&&visionLocal?`${name}/${visionLocal}`:'—';
+  const modelLocal=localModel(name,modelName);
+  const modelRef=name&&modelLocal?`${name}/${modelLocal}`:'—';
   const provider=status?.providers?.find(p=>p.name===name);
+  const credentialName=provider?.credentials?.find(item=>item.id===credentialId)?.name||'默认 Key';
+  const reusableCredential=!!provider?.credentials?.some(item=>item.id===credentialId&&item.enabled&&item.authorized);
   const validation=provider?.validation;
+  const imageValidation=validation?.image||validation?.vision;
+  const legacyMismatch=legacyTextModel&&legacyVisionModel&&legacyTextModel!==legacyVisionModel;
+  const validationMessages=[validation?.text?.status==='failed'&&`文本验证：${validation.text.message} · ${validation.text.code}`,
+    imageValidation?.status==='failed'&&`图片验证：${imageValidation.message} · ${imageValidation.code}`].filter(Boolean);
+  const chooseProvider=selected=>{
+    setSavedNotice('');setKey('');setError('');
+    if(!selected){setName('');setBase('');setModelName('deepseek-flash');setCredentialId('');setLegacyTextModel('');setLegacyVisionModel('');return}
+    const p=(status?.providers||[]).find(item=>item.name===selected);if(!p)return;
+    setName(p.name);setBase(p.base_url||'');
+    const models=(p.models||[]).filter(Boolean);
+    const text=localModel(p.name,p.text_model||p.default||models[0]||'deepseek-flash');
+    const vision=localModel(p.name,p.vision_model||text);
+    setLegacyTextModel(text);setLegacyVisionModel(vision);setModelName(text===vision?text:p.name==='deepseek'?'deepseek-flash':text||vision||'deepseek-flash');
+    const c=(p.credentials||[]).find(item=>item.id===p.primary_credential_id)||(p.credentials||[])[0];
+    setCredentialId(c?.id||'');
+  };
   const submit=async()=>{
-    setBusy(true);setError('');
+    setBusy(true);setError('');setSavedNotice('');
     try{
-      await api('/api/settings/models',{name,base_url:base,text_model:textLocal,vision_model:visionLocal,api_key:key,credential_id:credentialId||undefined,credential_name:credentialName,set_default:setDefault});
+      await api('/api/settings/models',{name,base_url:base,model:modelLocal,
+        // Identical compatibility aliases let an older local build read this entry without
+        // splitting text and image into different models. `model` is the current contract.
+        text_model:modelLocal,vision_model:modelLocal,api_key:key,credential_id:credentialId||undefined,
+        credential_name:credentialName,set_default:setDefault});
       setKey('');
       const value=await api('/api/settings/models');
       setStatus(value);
+      const savedProvider=value.providers?.find(item=>item.name===name);
+      setCredentialId(savedProvider?.primary_credential_id||credentialId);
+      setLegacyTextModel(localModel(name,savedProvider?.text_model||modelLocal));
+      setLegacyVisionModel(localModel(name,savedProvider?.vision_model||modelLocal));
+      setSavedNotice('配置已保存；下方分别显示文本与图片验证结果。');
       onSaved(value);
     }catch(e){setError(e.message)}finally{setBusy(false)}
   };
   return <section className="provider-settings">
     <div className="settings-intro">
-      <div><span className="eyebrow">本机连接</span><h3>模型服务与授权</h3></div>
-      <p>配置保存前会分别发送一条不含商品数据的最小文本请求和视觉请求。密钥只保存在本机。</p>
+      <div><span className="eyebrow">本机连接</span><h3>大模型 API</h3></div>
+      <p>默认用同一个 DeepSeek Flash 模型处理文本和商品图片。密钥只保存在本机。</p>
     </div>
     <div className="settings-card">
-      <div className="settings-card-title"><strong>服务连接</strong><span>OpenAI 兼容接口</span></div>
-      {(status?.providers||[]).length>0&&<label className="settings-field"><span className="field-label">已保存服务</span><select value={(status.providers||[]).some(p=>p.name===name)?name:''} onChange={e=>{const p=status.providers.find(x=>x.name===e.target.value);if(!p)return;setName(p.name);setBase(p.base_url||'');setTextModel(p.text_model||'');setVisionModel(p.vision_model||'');const c=(p.credentials||[]).find(x=>x.id===p.primary_credential_id)||(p.credentials||[])[0];setCredentialId(c?.id||'');setCredentialName(c?.name||'默认 Key');setKey('')}}><option value="">新建服务</option>{status.providers.map(p=><option key={p.name} value={p.name}>{p.name}</option>)}</select></label>}
+      <div className="settings-card-title"><strong>DeepSeek Flash · 多模态</strong><span>一个模型、一把 Key</span></div>
       <div className="settings-grid">
-        <label className="settings-field"><span className="field-label">本机服务标识</span><input aria-label="本机服务标识" value={name} onChange={e=>setName(e.target.value)} placeholder="deepseek"/><small className="field-help">本机配置别名，用于组成“服务名/模型名”，不是模型名称。</small></label>
-        <label className="settings-field"><span className="field-label">OpenAI 兼容服务地址</span><input aria-label="OpenAI兼容服务地址" value={base} onChange={e=>setBase(e.target.value)} placeholder="https://api.example.com/v1"/><small className="field-help">填写服务根地址或 /v1 地址；不要填写 API Key、用户名密码或 /chat/completions。</small></label>
+        <label className="settings-field"><span className="field-label">API 地址</span><input aria-label="API 地址" value={base} onChange={e=>{setBase(e.target.value);setSavedNotice('')}} placeholder="https://api.deepseek.com"/><small className="field-help">默认地址已填好。如服务方提供专用地址，可在这里修改。</small></label>
+        <label className="settings-field"><span className="field-label">模型名称</span><input aria-label="模型名称" value={modelName} onChange={e=>{setModelName(e.target.value);setSavedNotice('')}} placeholder="deepseek-flash"/><small className="field-help">文本和商品图片共用这个模型名。</small></label>
       </div>
-      <div className="settings-grid"><label className="settings-field"><span className="field-label">Key 名称</span><input aria-label="Key名称" value={credentialName} onChange={e=>setCredentialName(e.target.value)} placeholder="工作账号"/></label><label className="settings-field"><span className="field-label">API 密钥</span><input aria-label="API密钥" type="password" autoComplete="new-password" value={key} onChange={e=>setKey(e.target.value)} placeholder={credentialId?'已保存，留空以继续使用':'新增 Key 必填'}/><small className="field-help">只保存在本机受限凭据文件中，不进入日志、任务或安装包。</small></label></div>
-      <div className="settings-actions"><button onClick={()=>{setCredentialId('');setCredentialName('新 Key');setKey('')}}>添加新 Key</button><label className="checkline"><input type="checkbox" checked={setDefault} onChange={e=>setSetDefault(e.target.checked)}/>设为默认服务和模型</label></div>
-    </div>
-    <div className="settings-card">
-      <div className="settings-card-title"><strong>用途模型</strong><span>填写服务内模型名</span></div>
-      <div className="settings-grid">
-        <label className="settings-field"><span className="field-label">文本模型 <b>必填</b></span><input aria-label="文本模型" value={textModel} onChange={e=>setTextModel(e.target.value)} placeholder="deepseek-v4-flash"/><small className="field-help">例如 deepseek-v4-flash。无需重复填写服务名前缀。</small></label>
-        <label className="settings-field"><span className="field-label">视觉模型 <b>必填</b></span><input aria-label="视觉模型" value={visionModel} onChange={e=>setVisionModel(e.target.value)} placeholder="deepseek-v4-flash-vision-exp"/><small className="field-help">用于主图观察；可以与文本模型填写相同名称。</small></label>
-      </div>
-      <div className="canonical-ref"><span>当前实际引用</span><div><code>文本：{textRef}</code><code>视觉：{visionRef}</code></div><small>这是系统实际发送给 Reasonix 的规范引用，用户不需要再次填写。</small></div>
+      <label className="settings-field"><span className="field-label">API Key</span><input aria-label="API Key" type="password" autoComplete="new-password" value={key} onChange={e=>{setKey(e.target.value);setSavedNotice('')}} placeholder={credentialId?'已保存；留空继续使用当前 Key':'请输入 API Key'}/><small className="field-help">编辑时留空会继续使用已保存的 Key；这里不会回显密钥。</small></label>
+      <div className="canonical-ref"><span>将使用</span><div><code>{modelRef}</code></div><small>保存后会分别验证文本和图片请求。配置保存状态与验证结果会分开显示。</small></div>
+      {legacyMismatch&&<p className="settings-legacy-note">当前旧配置的文本模型与图片模型不同。保存本页后两种用途将统一使用上面的模型名；原模型引用仍保留在下方高级信息中。</p>}
+      <div className="settings-actions"><button className="primary" disabled={busy||!name.trim()||!base.trim()||!modelLocal.trim()||(!reusableCredential&&!key.trim())} onClick={submit}>{busy?'正在保存并验证…':'保存并验证'}</button><span>{reusableCredential&&!key?'已选择本机保存的 Key':''}</span></div>
+      {savedNotice&&<p className="settings-saved" role="status">{savedNotice}</p>}
+      {error&&<p className="settings-error" role="alert">保存失败：{error}<br/><small>如果配置已成功保存，验证失败原因会显示在文本或图片状态中。</small></p>}
     </div>
     <div className="settings-card status-card">
       <div className="settings-card-title"><strong>配置状态</strong><span>{provider?.name||name||'未配置'}</span></div>
-      <div className="status-grid"><div><span>服务地址</span><b className={provider?.base_url?'ok':''}>{provider?.base_url?'已保存':'未保存'}</b></div><div><span>密钥</span><b className={provider?.authorized?'ok':''}>{provider?.authorized?'已保存':'未保存'}</b></div><div><span>文本模型</span><b className={validation?.text?.status==='validated'?'ok':''}>{validationLabel(validation?.text)}</b></div><div><span>视觉模型</span><b className={validation?.vision?.status==='validated'?'ok':''}>{validationLabel(validation?.vision)}</b></div></div>
+      <div className="status-grid"><div><span>模型与地址</span><b className={provider?.base_url?'ok':''}>{provider?.base_url?'已保存':'未保存'}</b></div><div><span>API Key</span><b className={provider?.authorized?'ok':''}>{provider?.authorized?'已保存':'未保存'}</b></div><div><span>文本请求</span><b className={validation?.text?.status==='validated'?'ok':''}>{validationLabel(validation?.text)}</b></div><div><span>图片请求</span><b className={imageValidation?.status==='validated'?'ok':''}>{validationLabel(imageValidation)}</b></div></div>
       {validation?.validated_at&&<small className="field-help">最近验证：{new Date(validation.validated_at).toLocaleString()}</small>}
-      {validation?.text?.status==='failed'&&<p className="settings-error">文本：{validation.text.message} · {validation.text.code}</p>}
-      {validation?.vision?.status==='failed'&&<p className="settings-error">视觉：{validation.vision.message} · {validation.vision.code}</p>}
-      {(provider?.credentials||[]).length>0&&<div className="credential-list">{provider.credentials.map(item=><div key={item.id}><span>{item.name} · {item.authorized?'已保存':'无密钥'} · {item.enabled?'启用':'停用'}{item.id===provider.primary_credential_id?' · 当前':''}</span><div><button onClick={()=>{setCredentialId(item.id);setCredentialName(item.name);setKey('')}}>编辑</button><button onClick={async()=>{const value=await api(`/api/settings/models/${provider.name}/credentials/${item.id}/${item.enabled?'disable':'enable'}`,{});setStatus(value);onSaved(value)}}>{item.enabled?'停用':'启用'}</button><button disabled={item.id===provider.primary_credential_id} onClick={async()=>{const value=await api(`/api/settings/models/${provider.name}/credentials/${item.id}/primary`,{});setStatus(value);onSaved(value)}}>设为当前</button><button onClick={async()=>{if(!confirm('删除这个 Key？运行中任务不会受到影响。'))return;const value=await api(`/api/settings/models/${provider.name}/credentials/${item.id}/delete`,{});setStatus(value);onSaved(value)}}>删除</button></div></div>)}</div>}
+      {validationMessages.map(message=><p key={message} className="settings-error">{message}</p>)}
     </div>
-    {error&&<p className="settings-error" role="alert">{error}<br/><small>原配置仍保留；请按提示修正地址、授权或模型名称后重试。</small></p>}
-    <div className="settings-actions"><button className="primary" disabled={busy||!name||!base||!textLocal||!visionLocal} onClick={submit}>{busy?'正在分别验证文本与视觉模型…':'保存并分别验证'}</button><span>{busy?'任一项失败也会保留本次配置':'文本：'+validationLabel(validation?.text)+' · 视觉：'+validationLabel(validation?.vision)}</span></div>
+    <details className="settings-card settings-advanced">
+      <summary>高级服务与旧配置</summary>
+      <p className="field-help">可切换已保存服务并管理多个 Key。旧的文本/视觉模型引用只在这里查看；本页保存时统一到上方单模型。</p>
+      {(status?.providers||[]).length>0&&<label className="settings-field"><span className="field-label">已保存服务</span><select aria-label="已保存服务" value={(status.providers||[]).some(p=>p.name===name)?name:''} onChange={event=>chooseProvider(event.target.value)}><option value="">新建兼容服务…</option>{status.providers.map(p=><option key={p.name} value={p.name}>{p.name}</option>)}</select></label>}
+      <div className="settings-grid"><label className="settings-field"><span className="field-label">服务标识</span><input aria-label="服务标识" value={name} onChange={event=>{setName(event.target.value);setCredentialId('');setSavedNotice('')}} placeholder="deepseek"/></label><label className="settings-field"><span className="field-label">默认服务</span><span className="checkline"><input type="checkbox" checked={setDefault} onChange={event=>setSetDefault(event.target.checked)}/>保存后设为全局默认</span></label></div>
+      <div className="canonical-ref"><span>旧配置模型引用</span><div><code>文本：{legacyTextModel?`${name}/${legacyTextModel}`:'—'}</code><code>图片：{legacyVisionModel?`${name}/${legacyVisionModel}`:'—'}</code></div></div>
+      <div className="settings-actions"><button onClick={()=>{setCredentialId('');setKey('');setSavedNotice('请输入新 Key，再点上方“保存并验证”。')}}>添加新 Key</button></div>
+      {(provider?.credentials||[]).length>0&&<div className="credential-list"><strong>本机 Key</strong>{provider.credentials.map(item=><div key={item.id}><span>{item.name} · {item.authorized?'已保存':'无密钥'} · {item.enabled?'启用':'停用'}{item.id===provider.primary_credential_id?' · 当前':''}</span><div><button onClick={()=>{setCredentialId(item.id);setKey('');setSavedNotice('已选中此 Key；API Key 留空会复用它。')}}>选用</button><button onClick={async()=>{const value=await api(`/api/settings/models/${provider.name}/credentials/${item.id}/${item.enabled?'disable':'enable'}`,{});setStatus(value);onSaved(value)}}>{item.enabled?'停用':'启用'}</button><button disabled={item.id===provider.primary_credential_id} onClick={async()=>{const value=await api(`/api/settings/models/${provider.name}/credentials/${item.id}/primary`,{});setStatus(value);onSaved(value)}}>设为当前</button><button onClick={async()=>{if(!confirm('删除这个 Key？运行中任务不会受到影响。'))return;const value=await api(`/api/settings/models/${provider.name}/credentials/${item.id}/delete`,{});setStatus(value);onSaved(value);if(item.id===credentialId)setCredentialId(value.providers?.find(p=>p.name===name)?.primary_credential_id||'')}}>删除</button></div></div>)}</div>}
+    </details>
   </section>;
 }
 

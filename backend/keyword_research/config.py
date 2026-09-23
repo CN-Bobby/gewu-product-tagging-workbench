@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 DEFAULT_MCP_URL = "https://mcp.sellersprite.com/mcp"
 DEFAULT_LLM_BASE_URL = "https://api.deepseek.com"
-DEFAULT_LLM_MODEL = "deepseek-v4-flash"
+DEFAULT_LLM_MODEL = "deepseek-flash"
 DEFAULT_LLM_MODE = "auto"  # auto | responses | chat
 # 官方输出上限 384K；关闭思考后输出预算全归正文，16384 留足余量
 DEFAULT_LLM_MAX_TOKENS = 16384

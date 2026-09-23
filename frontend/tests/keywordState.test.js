@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 
 import{RUN_STATUS,applyRunEvent,applySnapshot,buildRunRequest,initialKeywordForm,
   initialKeywordState,isActiveStatus,isTerminalEvent,isTerminalStatus,keywordReducer,parseAsins,
-  parseNodeIds}from'../src/keywordState.js';
+  parseNodeIds,pendingQueueCount,validQueueSelection}from'../src/keywordState.js';
 
 const event=(sequence,event_type,payload={})=>({run_id:'r1',sequence,event_type,at:'2026-09-23T00:00:00Z',payload});
 const reduce=(events,start=initialKeywordState)=>events.reduce(applyRunEvent,start);
@@ -52,13 +52,42 @@ test('node ids are split the same way and deduplicated in order',()=>{
   assert.deepEqual(parseNodeIds(''),[]);
 });
 
-test('the run body carries the parsed form and no plan hash before the budget is counted',()=>{
+test('ASIN mode sends only the custom ASIN scope and no Node inputs',()=>{
   const one=asin(1);
-  const body=buildRunRequest(form({groups:[{key:'g1',marketplace:'us',asinsText:`${one.toLowerCase()}, ${one}, bad`,
-    nodeIdsText:'1055398',nodeTopN:100}],dataMonth:'202607'}));
-  assert.deepEqual(body,{groups:[{marketplace:'US',asins:[one],node_ids:['1055398'],node_top_n:100}],
+  const group={key:'g1',marketplace:'us',asinsText:`${one.toLowerCase()}, ${one}, bad`,
+    mode:'asin',nodeIdsText:'1055398, 1064954',nodeTopN:100};
+  const body=buildRunRequest(form({groups:[group],dataMonth:'202607'}));
+  const nodeBody=buildRunRequest(form({groups:[{...group,mode:'node'}]}));
+  assert.deepEqual(body,{groups:[{marketplace:'US',mode:'asin',asins:[one],node_ids:[],node_top_n:50}],
     data_month:'202607',matrix_month:null,matrix_enabled:true});
+  assert.deepEqual(nodeBody.groups[0],{marketplace:'US',mode:'node',asins:[],node_ids:['1055398','1064954'],node_top_n:100});
+  assert.equal(group.nodeIdsText,'1055398, 1064954','inactive mode draft stays in the form for a later switch back');
   assert.equal('plan_hash' in body,false);
+});
+
+test('Node mode serializes all typed IDs so a multi-Node entry is never silently truncated',()=>{
+  const body=buildRunRequest(form({groups:[{key:'g1',marketplace:'CA',mode:'node',asinsText:asin(2),
+    nodeIdsText:'1055398, 1064954',nodeTopN:100}]}));
+  assert.deepEqual(body.groups,[{marketplace:'CA',mode:'node',asins:[],node_ids:['1055398','1064954'],node_top_n:100}]);
+});
+
+test('queue selection excludes missing and no-longer-queueable task IDs before confirmation',()=>{
+  const selected=['run-a','deleted-run','run-a','run-done'];
+  const result=validQueueSelection(selected,[
+    {run_id:'run-a',status:'failed',display_name:'可续跑'},
+    {run_id:'run-done',status:'done',display_name:'已完成'},
+  ]);
+  assert.deepEqual(result.valid,['run-a']);
+  assert.deepEqual(result.stale,['deleted-run','run-done']);
+  assert.deepEqual(result.items.map(item=>item.display_name),['可续跑']);
+});
+
+test('pending queue count ignores terminal history rows',()=>{
+  assert.equal(pendingQueueCount([
+    {status:'running'},{status:'queued'},{status:'interrupted'},
+    {status:'failed'},{status:'done'},{status:'skipped'},
+  ]),3);
+  assert.equal(pendingQueueCount([]),0);
 });
 
 test('an empty month is sent as null and the matrix month is dropped when the matrix is off',()=>{
@@ -239,4 +268,10 @@ test('starting a run clears the previous projection',()=>{
   assert.equal(created.finished,false);
   assert.deepEqual(created.artifacts,[]);
   assert.equal(created.lastSequence,0);
+});
+
+test('a save-only task reflects its backend created state until it is enqueued',()=>{
+  const created=keywordReducer(initialKeywordState,{type:'run_created',runId:'r10',status:'created'});
+  assert.equal(created.status,'created');
+  assert.equal(created.message,'已保存，尚未开始');
 });

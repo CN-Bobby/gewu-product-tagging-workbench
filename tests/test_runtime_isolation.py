@@ -78,6 +78,28 @@ def test_new_model_fields_are_saved_and_canonicalized(tmp_path,monkeypatch):
     assert provider['validation']['status']=='validated'
 
 
+def test_single_model_setting_populates_legacy_text_and_vision_fields(tmp_path,monkeypatch):
+    home=tmp_path/'providers';home.mkdir();monkeypatch.setenv('TAG_PROVIDER_HOME',str(home))
+    calls=[]
+    monkeypatch.setattr(model_settings,'validate_models',
+        lambda *args,**kwargs:(calls.append(args) or {'status':'validated','validated_at':'test',
+          'text_model':args[2],'vision_model':args[3],'text':{'status':'validated'},
+          'vision':{'status':'validated'}}))
+    result=model_settings.save({'name':'deepseek','base_url':'https://api.deepseek.com',
+        'model':'deepseek-flash','api_key':'synthetic-key'})
+    provider=result['providers'][0]
+    assert provider['text_model']==provider['vision_model']=='deepseek-flash'
+    assert provider['model_refs']==['deepseek/deepseek-flash']
+    assert calls[0][2:]==('deepseek-flash','deepseek-flash')
+
+
+def test_empty_provider_defaults_use_current_deepseek_flash(tmp_path,monkeypatch):
+    home=tmp_path/'providers';home.mkdir();monkeypatch.setenv('TAG_PROVIDER_HOME',str(home))
+    assert model_settings.defaults()==('deepseek/deepseek-flash','deepseek/deepseek-flash')
+    from backend import harness
+    assert harness.DEFAULT_MODEL==harness.VISION_MODEL=='deepseek/deepseek-flash'
+
+
 def test_validation_failure_keeps_previous_configuration(tmp_path,monkeypatch):
     home=source(tmp_path,monkeypatch)
     monkeypatch.setattr(model_settings,'validate_models',lambda *args,**kwargs:{'status':'validated','validated_at':'test','text_model':args[2],'vision_model':args[3]})

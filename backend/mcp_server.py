@@ -38,14 +38,14 @@ if visual_tagging_enabled():
             if p.dataset_id!=DATASET or (PRODUCT and p.id!=PRODUCT):raise ValueError('图片不在当前任务范围')
             if not a.path:raise ValueError('该图片只有外部 URL，无法作为视觉证据')
         from .vision import analyze
-        return analyze(asset_id,os.environ.get('TAG_VISION_MODEL','deepseek/deepseek-v4-flash-vision-exp'))
+        return analyze(asset_id,os.environ.get('TAG_VISION_MODEL','deepseek/deepseek-flash'))
 
     @mcp.tool()
     def view_chat_image(image_number:int, question:str='') -> dict:
         """Read one current-conversation image by its stable 图N number. The image remains discussion evidence unless the user explicitly binds it to a product."""
         if not CONVERSATION:raise ValueError('当前运行没有对话图片空间')
         from .chat_images import analyze_by_number
-        return analyze_by_number(DATASET,CONVERSATION,image_number,question,os.environ.get('TAG_VISION_MODEL','deepseek/deepseek-v4-flash-vision-exp'))
+        return analyze_by_number(DATASET,CONVERSATION,image_number,question,os.environ.get('TAG_VISION_MODEL','deepseek/deepseek-flash'))
 
 @mcp.tool()
 def propose_tag_schema(goal:str, definitions:list[dict]) -> dict:

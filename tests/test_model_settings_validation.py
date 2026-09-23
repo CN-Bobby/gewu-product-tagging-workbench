@@ -37,6 +37,38 @@ def test_validate_models_uses_two_non_business_requests(monkeypatch):
     assert '商品' not in str(Client.calls[1][2])
 
 
+def test_deepseek_flash_image_probe_disables_thinking_and_has_output_room(monkeypatch):
+    Client.calls=[]
+    Client.responses=[Response(),Response(payload={'choices':[{'message':{'content':'{"order":["circle","triangle","square"]}'}}]})]
+    monkeypatch.setattr(model_settings.httpx,'Client',Client)
+    result=model_settings.validate_models('https://api.deepseek.com/v1','secret-key',
+                                          'deepseek-flash','deepseek-flash')
+    assert result['status']=='validated'
+    assert [call[2]['model'] for call in Client.calls]==['deepseek-flash','deepseek-flash']
+    assert all(call[2]['thinking']=={'type':'disabled'} for call in Client.calls)
+    assert Client.calls[0][2]['max_tokens']==32
+    assert Client.calls[1][2]['max_tokens']>=256
+
+
+def test_non_deepseek_provider_keeps_its_existing_probe_shape(monkeypatch):
+    Client.calls=[];Client.responses=[Response(),Response(payload={'choices':[{'message':{'content':'{"order":["circle","triangle","square"]}'}}]})]
+    monkeypatch.setattr(model_settings.httpx,'Client',Client)
+    model_settings.validate_models('https://provider.example/v1','secret-key','text','vision')
+    assert all('thinking' not in call[2] for call in Client.calls)
+    assert Client.calls[1][2]['max_tokens']>=256
+
+
+def test_deepseek_probe_error_hides_endpoint_and_asin_like_identifier(monkeypatch):
+    private_asin='B0'+'12345678'
+    Client.calls=[]
+    Client.responses=[Response(400,{'error':{'message':f'bad request https://api.deepseek.com/?key=secret {private_asin}'}}),Response()]
+    monkeypatch.setattr(model_settings.httpx,'Client',Client)
+    result=model_settings.validate_models('https://api.deepseek.com','secret','deepseek-flash','deepseek-flash')
+    assert 'api.deepseek.com' not in str(result)
+    assert private_asin not in str(result)
+    assert 'secret' not in str(result)
+
+
 @pytest.mark.parametrize('status,code',[(401,'authentication_failed'),(403,'authentication_failed'),(404,'endpoint_not_found'),(500,'provider_error')])
 def test_validate_models_reports_independent_safe_status(monkeypatch,status,code):
     Client.calls=[];Client.responses=[Response(status,{'error':{'message':'Bearer secret-key rejected'}}),Response(status,{'error':{'message':'Bearer secret-key rejected'}})]

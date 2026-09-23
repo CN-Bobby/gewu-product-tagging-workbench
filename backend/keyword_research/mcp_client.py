@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any, Awaitable, Callable, Optional
 
 from mcp import ClientSession
@@ -23,12 +24,42 @@ NO_RETRY_MARKERS = (
     "unauthorized",
     "permission",
     "invalid parameter",
+    "invalid param",
     "invalid_argument",
     "bad request",
     "参数错误",
     "无权限",
     "额度",
+    "invalid_parameter",
 )
+
+_ASIN_RE = re.compile(r"\bB0[A-Z0-9]{8}\b", re.IGNORECASE)
+_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
+_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9._-]{8,}\b")
+
+
+def _sanitize_diagnostic(text: str) -> str:
+    text = _BEARER_RE.sub("Bearer [已隐藏]", str(text))
+    text = _KEY_RE.sub("[密钥已隐藏]", text)
+    text = _URL_RE.sub("[服务地址已隐藏]", text)
+    text = _ASIN_RE.sub("[ASIN已隐藏]", text)
+    return text.replace("\r", " ").replace("\n", " ")[:500]
+
+
+def diagnostic_for_exception(exc: BaseException) -> str:
+    """Unwrap concurrent transport failures into a safe, actionable message."""
+    nested = getattr(exc, "exceptions", None)
+    if isinstance(nested, (list, tuple)):
+        parts = []
+        for child in nested:
+            message = diagnostic_for_exception(child)
+            if message and message not in parts:
+                parts.append(message)
+        if parts:
+            return "并发请求失败：" + "；".join(parts)
+    message = _sanitize_diagnostic(str(exc).strip())
+    return message or type(exc).__name__
 
 
 class MCPError(Exception):
@@ -111,10 +142,16 @@ class MCPClient:
                     data = self._decode_result(result)
                     self._raise_business_error(data)
                     return data
-        except MCPError:
-            raise
-        except Exception as exc:  # 传输层异常视为临时错误
-            raise MCPError(f"传输错误: {exc}", retryable=True) from exc
+        except MCPError as exc:
+            raise MCPError(_sanitize_diagnostic(str(exc)),
+                           retryable=exc.retryable, unauthorized=exc.unauthorized,
+                           rate_limited=exc.rate_limited) from None
+        except Exception as exc:  # transport wrappers may themselves be ExceptionGroups
+            message = diagnostic_for_exception(exc)
+            raise MCPError(f"传输/并发请求错误: {message}",
+                           retryable=self._is_retryable(message),
+                           unauthorized=self._is_unauthorized(message),
+                           rate_limited=_is_rate_limit_text(message)) from None
 
     @staticmethod
     def _raise_business_error(data: dict) -> None:

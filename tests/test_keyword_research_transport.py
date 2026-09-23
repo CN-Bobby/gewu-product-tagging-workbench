@@ -11,6 +11,7 @@ session-id 取值器），而桌面版 pin 的 2.1.1 只有两个，按两个解
 initialize → tools/call → 解析，把这条缝钉住。只走回环，不碰外网，不读任何凭据。
 """
 import asyncio
+import json
 import threading
 import time
 
@@ -19,7 +20,7 @@ import uvicorn
 from mcp.server.fastmcp import FastMCP
 
 from backend.keyword_research.call_log import CallLog
-from backend.keyword_research.mcp_client import MCPClient
+from backend.keyword_research.mcp_client import MCPClient, MCPError
 from backend.keyword_research.rate_limiter import RateLimiter
 from tests.test_keyword_research_pipeline import offline_only  # noqa: F401  离线护栏
 
@@ -79,3 +80,34 @@ def test_production_client_calls_a_streamable_http_server(local_endpoint, tmp_pa
         calls = json.loads((tmp_path / "call_log.json").read_text(encoding="utf-8"))["calls"]
     assert [call["tool"] for call in calls] == ["product_node"]
     assert calls[0]["status"] == "success"
+
+
+def test_nested_transport_group_is_actionable_redacted_and_not_retried(tmp_path, monkeypatch):
+    from backend.keyword_research import mcp_client
+    private_asin='B0'+'SYN00001'
+
+    class FailedStream:
+        async def __aenter__(self):
+            raise ExceptionGroup('TaskGroup failures', [
+                RuntimeError('ERROR_UNAUTHORIZED permission denied'),
+                RuntimeError(f'invalid parameter for {private_asin} at https://example.invalid/mcp?secret-key=sk-private-credential'),
+            ])
+        async def __aexit__(self,*args):return False
+
+    monkeypatch.setattr(mcp_client,'streamable_http_client',lambda *args,**kwargs:FailedStream())
+    log=CallLog(tmp_path/'call_log.json')
+    client=MCPClient('https://example.invalid/mcp?secret-key=sk-private-credential',
+                     RateLimiter(max_calls=100,window_seconds=60.0,min_interval=0.0),log,
+                     max_temp_retries=1)
+    with pytest.raises(MCPError) as raised:
+        asyncio.run(client.call('traffic_extend',{},'safe scope'))
+    message=str(raised.value)
+    assert 'ERROR_UNAUTHORIZED' in message and 'invalid parameter' in message
+    assert private_asin not in message
+    assert 'example.invalid' not in message and 'sk-private-credential' not in message
+    assert raised.value.retryable is False and raised.value.unauthorized is True
+    calls=log.load()['calls']
+    assert len(calls)==1 and calls[0]['status']=='failed'
+    assert private_asin not in json.dumps(calls)
+    assert 'example.invalid' not in json.dumps(calls)
+    assert 'sk-private-credential' not in json.dumps(calls)

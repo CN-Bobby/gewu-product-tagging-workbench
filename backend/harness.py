@@ -14,8 +14,8 @@ import tomllib
 from pathlib import Path
 from .db import ROOT, STORAGE
 
-DEFAULT_MODEL='deepseek/deepseek-v4-flash'
-VISION_MODEL='deepseek/deepseek-v4-flash-vision-exp'
+DEFAULT_MODEL='deepseek/deepseek-flash'
+VISION_MODEL='deepseek/deepseek-flash'
 
 # Reasonix bounds a single MCP call at 300s by default; the workbench writes its own explicit bound
 # into the generated configuration instead of inheriting the vendor default.

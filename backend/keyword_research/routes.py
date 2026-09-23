@@ -67,7 +67,9 @@ def _selection(body):
 @router.get('/meta')
 def meta():
     """站点与取数口径来自后端常量：前端不许自己硬编码一份。"""
-    return {'marketplaces': sorted(MARKETPLACES), 'node_top_n_options': [50, 100],
+    priority = ('US', 'UK', 'DE', 'CA', 'FR')
+    marketplaces = [*priority, *sorted(MARKETPLACES.difference(priority))]
+    return {'marketplaces': marketplaces, 'node_top_n_options': [50, 100],
             'matrix_default': True, 'credential': credentials.status()}
 
 

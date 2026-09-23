@@ -227,19 +227,23 @@ def enqueue(run_ids, enable_dispatch=False):
     ids = list(dict.fromkeys(run_ids or []))
     if not ids:
         raise ValueError('请选择至少一个关键词任务')
-    for run_id in ids:
-        run_dir(run_id)
-        state = read(run_id)
-        if state is None:
-            raise ValueError('运行不存在：' + run_id)
-        if state.get('status') not in (CREATED, FAILED, CANCELLED, INTERRUPTED, SKIPPED):
-            raise ValueError('任务当前状态不可重新排队：' + str(state.get('display_name') or run_id))
     with _LOCK:
+        # Validate the whole selection against a stable filesystem/queue view before
+        # mutating any run or queue state. recycle-bin operations use this same lock.
+        states = {}
+        for run_id in ids:
+            run_dir(run_id)
+            state = read(run_id)
+            if state is None:
+                raise ValueError('运行不存在或已移入回收站：' + run_id)
+            if state.get('status') not in (CREATED, FAILED, CANCELLED, INTERRUPTED, SKIPPED):
+                raise ValueError('任务当前状态不可重新排队：' + str(state.get('display_name') or run_id))
+            states[run_id] = state
         queue = queue_state()
         for run_id in ids:
             if run_id in queue['items']:
                 queue['items'].remove(run_id)
-            state = read(run_id)
+            state = states[run_id]
             attempt = int(state.get('attempt') or 0)
             write(run_id, status=QUEUED, error='', message='等待队列执行')
             queue['items'].append(run_id)
@@ -396,36 +400,37 @@ def open_directory(run_id):
 
 def move_to_recycle_bin(run_id):
     """调用 Windows Shell 回收站；不支持/失败时抛错，绝不改为永久删除。"""
-    state = read(run_id)
-    if state is None:
-        raise ValueError('运行不存在')
-    if state.get('status') in ACTIVE or queue_state().get('current') == run_id:
-        raise ValueError('运行中的任务不可移入回收站')
-    path = run_dir(run_id).resolve()
-    root = ROOT.resolve()
-    if path.parent != root or path.is_symlink() or not path.is_dir():
-        raise ValueError('任务目录路径校验失败')
-    if os.name != 'nt':
-        raise OSError('当前平台不支持 Windows 回收站操作')
-    import ctypes
-    from ctypes import wintypes
+    with _LOCK:
+        state = read(run_id)
+        if state is None:
+            raise ValueError('运行不存在或已移入回收站')
+        if state.get('status') in ACTIVE or queue_state().get('current') == run_id:
+            raise ValueError('运行中的任务不可移入回收站')
+        path = run_dir(run_id).resolve()
+        root = ROOT.resolve()
+        if path.parent != root or path.is_symlink() or not path.is_dir():
+            raise ValueError('任务目录路径校验失败')
+        if os.name != 'nt':
+            raise OSError('当前平台不支持 Windows 回收站操作')
+        import ctypes
+        from ctypes import wintypes
 
-    class SHFILEOPSTRUCTW(ctypes.Structure):
-        _fields_ = [('hwnd', wintypes.HWND), ('wFunc', wintypes.UINT),
-                    ('pFrom', wintypes.LPCWSTR), ('pTo', wintypes.LPCWSTR),
-                    ('fFlags', wintypes.WORD), ('fAnyOperationsAborted', wintypes.BOOL),
-                    ('hNameMappings', wintypes.LPVOID), ('lpszProgressTitle', wintypes.LPCWSTR)]
+        class SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [('hwnd', wintypes.HWND), ('wFunc', wintypes.UINT),
+                        ('pFrom', wintypes.LPCWSTR), ('pTo', wintypes.LPCWSTR),
+                        ('fFlags', wintypes.WORD), ('fAnyOperationsAborted', wintypes.BOOL),
+                        ('hNameMappings', wintypes.LPVOID), ('lpszProgressTitle', wintypes.LPCWSTR)]
 
-    FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO = 0x0004, 0x0010, 0x0040
-    source_path = ctypes.create_unicode_buffer(str(path) + '\0\0')
-    operation = SHFILEOPSTRUCTW(None, 3, ctypes.cast(source_path, wintypes.LPCWSTR), None,
-                                FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO,
-                                False, None, None)
-    result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(operation))
-    if result != 0 or operation.fAnyOperationsAborted:
-        raise OSError(f'移入 Windows 回收站失败（错误码 {result}）')
-    remove_from_queue(run_id)
-    return {'run_id': run_id, 'recycled': True}
+        FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO = 0x0004, 0x0010, 0x0040
+        source_path = ctypes.create_unicode_buffer(str(path) + '\0\0')
+        operation = SHFILEOPSTRUCTW(None, 3, ctypes.cast(source_path, wintypes.LPCWSTR), None,
+                                    FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO,
+                                    False, None, None)
+        result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(operation))
+        if result != 0 or operation.fAnyOperationsAborted:
+            raise OSError(f'移入 Windows 回收站失败（错误码 {result}）')
+        remove_from_queue(run_id)
+        return {'run_id': run_id, 'recycled': True}
 
 
 def append_event(run_id, event_type, payload=None):

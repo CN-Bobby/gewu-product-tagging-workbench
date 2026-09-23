@@ -26,7 +26,7 @@ from .input_validator import validate_task
 from .llm_analysis import LLMAnalyzer
 from .llm_client import LLMClient
 from .llm_label import LLMLabeler
-from .mcp_client import MCPClient, MCPError
+from .mcp_client import MCPClient, MCPError, diagnostic_for_exception
 from .rate_limiter import RateLimiter
 
 OnEvent = Optional[Callable[[dict], None]]
@@ -131,10 +131,11 @@ class Pipeline:
             self._phase("canceled", "任务已取消（已完成的 raw/cache 保留，可重试续跑）")
             return {"status": "canceled"}
         except Exception as exc:  # noqa: BLE001
-            self._log(f"任务失败: {exc}")
-            self._phase("failed", str(exc)[:300])
-            self._emit("pipeline_error", error=str(exc))
-            raise
+            message=diagnostic_for_exception(exc)
+            self._log(f"任务失败: {message}")
+            self._phase("failed", message[:300])
+            self._emit("pipeline_error", error=message)
+            raise RuntimeError(message) from None
 
     async def _run_async(self) -> dict:
         input_data = self._load_input()
@@ -209,7 +210,8 @@ class Pipeline:
                     self._log(f"警告: Node {node_id} 未返回路径，跳过榜单取样")
                     continue
                 self._log(f"Node {node_id} 路径: {path}")
-                pool.extend(await self._node_products(mp, node_id, path, month))
+                pool.extend(await self._node_products(mp, node_id, path, month,
+                                                      g.get("node_top_n", NODE_TOP_N)))
         return pool
 
     def _extract_node_path(self, node_data: dict, node_id: str) -> str | None:
@@ -232,14 +234,13 @@ class Pipeline:
         return None
 
     async def _node_products(self, mp: str, node_id: str, path: str,
-                             month: str | None) -> list[dict]:
+                             month: str | None, top_n: int = NODE_TOP_N) -> list[dict]:
         """product_research 榜单取样：本地复核子类 BSR，取前 node_top_n。"""
         out: list[dict] = []
-        top_n = NODE_TOP_N
-        needed = top_n
+        top_n = top_n if top_n in (50, 100) else NODE_TOP_N
         page = 1
         # 固定最多 2 页（Top50 一页即可；不主动翻页过度消耗）
-        while needed > 0 and page <= 2:
+        while len(out) < top_n and page <= (top_n + PAGE_SIZE - 1) // PAGE_SIZE:
             self._check_cancel()
             fname = f"products_{mp}_{node_id}_p{page}.json"
             fpath = self.task_dir / "raw" / fname
@@ -335,7 +336,7 @@ class Pipeline:
                     fname = f"traffic_batch_{batch_no}_p{page}.json"
                     fpath = self.task_dir / "raw" / fname
                     if fpath.exists():
-                        self._log(f"复用缓存: {fname}")
+                        self._log("复用已缓存的流量反查结果")
                         continue
                     self._log(f"反查 {mp} 批次{batch_no}（{len(asins)} ASIN）第{page}/3页")
                     data = await self.mcp.traffic_extend(
@@ -383,10 +384,10 @@ class Pipeline:
                 fname = f"traffic_keyword_current_{asin}_p1.json"
                 fpath = self.task_dir / "raw" / fname
                 if fpath.exists():
-                    self._log(f"复用缓存: {fname}")
+                    self._log("复用已缓存的流量矩阵")
                     continue
                 snap = f" {month}" if month else ""
-                self._log(f"当前流量矩阵 {mp}{snap} {asin}（前100词）")
+                self._log(f"当前流量矩阵 {mp}{snap}（前100词）")
                 data = await self.mcp.traffic_keyword(mp, asin, page=1, size=100,
                                                       month=month or None)
                 self._save_raw(fname, data, {

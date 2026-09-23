@@ -8,6 +8,7 @@ import asyncio
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -187,9 +188,82 @@ def test_stream_resumes_from_cursor():
 
 def test_meta_serves_backend_constants(client):
     body = client.get('/api/keyword-research/meta').json()
-    assert body['marketplaces'] == sorted(MARKETPLACES)
+    assert body['marketplaces'][:5] == ['US', 'UK', 'DE', 'CA', 'FR']
+    assert body['marketplaces'][5:] == sorted(MARKETPLACES.difference({'US','UK','DE','CA','FR'}))
     assert body['node_top_n_options'] == [50, 100]
     assert body['credential']['configured'] is False
+
+
+def test_explicit_asin_and_node_modes_are_exclusive(client):
+    asin='B0'+'SYN00001'
+    asin_group={'marketplace':'US','mode':'asin','asins':[asin],
+                'node_ids':[],'node_top_n':50}
+    assert client.post('/api/keyword-research/plan',json={'groups':[asin_group]}).status_code==200
+
+    node_group={'marketplace':'US','mode':'node','asins':[],
+                'node_ids':['12345'],'node_top_n':100}
+    assert client.post('/api/keyword-research/plan',json={'groups':[node_group]}).status_code==200
+
+    invalid=[
+        {**asin_group,'node_ids':['12345']},
+        {**node_group,'asins':[asin]},
+        {**node_group,'node_ids':['1','2']},
+        {**node_group,'node_top_n':None},
+    ]
+    for group in invalid:
+        response=client.post('/api/keyword-research/plan',json={'groups':[group]})
+        assert response.status_code==400
+
+    # Pre-mode snapshots retain the historical mixed-input interpretation.
+    legacy={'marketplace':'US','asins':[asin],'node_ids':['12345'],'node_top_n':50}
+    assert client.post('/api/keyword-research/plan',json={'groups':[legacy]}).status_code==200
+
+
+def test_explicit_asin_mode_never_requests_node_ranking(tmp_path):
+    from backend.keyword_research.pipeline import Pipeline
+
+    class MCP:
+        def product_node(self,*args):pytest.fail('ASIN mode must not validate a Node')
+        def product_research(self,*args,**kwargs):pytest.fail('ASIN mode must not fetch a Node ranking')
+    class Store:
+        def log(self,*args):pass
+
+    pipeline=Pipeline.__new__(Pipeline)
+    pipeline.task_dir=tmp_path
+    (tmp_path/'raw').mkdir()
+    pipeline._cancel=threading.Event();pipeline.store=Store();pipeline.on_event=None
+    pipeline.mcp=MCP()
+    asin='B0'+'SYN00002'
+    pool=asyncio.run(pipeline._step_nodes_and_pool({'groups':[{
+        'marketplace':'US','mode':'asin','asins':[asin],'node_ids':[]}], 'options':{}}))
+    assert [item['asin'] for item in pool]==[asin]
+
+
+@pytest.mark.parametrize(('top_n', 'expected_pages'),[(50,1),(100,2)])
+def test_node_ranking_fetches_pages_for_selected_top_n(tmp_path,top_n,expected_pages):
+    from backend.keyword_research.pipeline import Pipeline
+
+    class MCP:
+        def __init__(self):self.pages=[]
+        async def product_node(self,*args):return {'data':{'nodeIdPath':'canonical/path'}}
+        async def product_research(self,marketplace,path,month,page):
+            self.pages.append(page)
+            start=(page-1)*50
+            return {'data':{'items':[{'asin':f'item-{rank}','subBsrRank':rank}
+                                     for rank in range(start+1,start+51)]}}
+    class Store:
+        def log(self,*args):pass
+
+    pipeline=Pipeline.__new__(Pipeline)
+    pipeline.task_dir=tmp_path
+    (tmp_path/'raw').mkdir()
+    pipeline._cancel=threading.Event();pipeline.store=Store();pipeline.on_event=None
+    pipeline.mcp=MCP()
+    result=asyncio.run(pipeline._step_nodes_and_pool({'groups':[{
+        'marketplace':'US','mode':'node','asins':[],'node_ids':['node-1'],
+        'node_top_n':top_n}], 'options':{}}))
+    assert len(result)==top_n
+    assert pipeline.mcp.pages==list(range(1,expected_pages+1))
 
 
 def test_plan_reports_every_problem_at_once(client):

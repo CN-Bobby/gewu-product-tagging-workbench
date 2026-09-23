@@ -9,7 +9,7 @@ import React,{useEffect,useReducer,useRef,useState}from'react';
 import{Download,Play,Plus,RefreshCw,Trash2,X}from'lucide-react';
 import './keywordResearch.css';
 import{ENDPOINTS,SSE_EVENT_NAME,buildRunRequest,initialKeywordForm,initialKeywordState,
-  isActiveStatus,isTerminalEvent,isTerminalStatus,keywordReducer,parseAsins,parseNodeIds}
+  isActiveStatus,isTerminalEvent,isTerminalStatus,keywordReducer,parseAsins,parseNodeIds,pendingQueueCount,validQueueSelection}
   from'./keywordState';
 
 // The shared workbench helper turns a failed response into a plain Error, which flattens a
@@ -39,6 +39,7 @@ const LABEL={
   created:'已创建',queued:'排队中',running:'执行中',cancelling:'正在取消',done:'已完成',
   failed:'失败',cancelled:'已取消',interrupted:'已中断',skipped:'已跳过',idle:'尚未发起',
 };
+const QUEUE_STATE_LABEL={idle:'待命',running:'执行中',stopped:'已暂停'};
 const canQueueStatus=status=>['created','failed','cancelled','interrupted','skipped'].includes(status);
 
 const bytesText=value=>{
@@ -50,6 +51,7 @@ const bytesText=value=>{
 function GroupFields({group,index,meta,onChange,onRemove,canRemove}){
   const parsed=parseAsins(group.asinsText);
   const nodes=parseNodeIds(group.nodeIdsText);
+  const mode=group.mode==='node'?'node':'asin';
   return <fieldset className="keyword-group">
     <legend>站点组 {index+1}</legend>
     <div className="keyword-group-grid">
@@ -60,26 +62,29 @@ function GroupFields({group,index,meta,onChange,onRemove,canRemove}){
         </select>
         <small className="field-help">站点列表由后端下发，前端不自行维护一份。</small>
       </label>
+    </div>
+    <fieldset className="keyword-input-mode"><legend>取数方式</legend>
+      <label><input type="radio" name={'input-mode-'+group.key} checked={mode==='asin'} onChange={()=>onChange({mode:'asin'})}/>自定义 ASIN 范围</label>
+      <label><input type="radio" name={'input-mode-'+group.key} checked={mode==='node'} onChange={()=>onChange({mode:'node'})}/>Node 榜单</label>
+    </fieldset>
+    {mode==='asin'?<label className="settings-field"><span className="field-label">ASIN</span>
+      <textarea aria-label={'站点组 '+(index+1)+' ASIN'} value={group.asinsText} placeholder="每行一个，或用逗号、分号、顿号分隔"
+        onChange={event=>onChange({asinsText:event.target.value})}/>
+      <small className="field-help">只按这些 ASIN 反查，不触发 Node 验证或榜单取数。已识别 {parsed.valid.length} 个（去重后）；单站点组最多 20 个。{parsed.invalid.length>0?' 未识别：'+parsed.invalid.join('、'):''}</small>
+    </label>:<div className="keyword-group-grid keyword-node-fields">
+      <label className="settings-field"><span className="field-label">Node ID</span>
+        <input aria-label={'站点组 '+(index+1)+' Node ID'} value={group.nodeIdsText} placeholder="输入一个类目节点 ID"
+          onChange={event=>onChange({nodeIdsText:event.target.value})}/>
+        <small className="field-help">每个站点组填写一个 Node；需要多个 Node 时新增站点组。已识别 {nodes.length} 个。</small>
+      </label>
       <label className="settings-field"><span className="field-label">榜单取数条数</span>
         <select aria-label={'站点组 '+(index+1)+' 榜单取数条数'} value={group.nodeTopN} onChange={event=>onChange({nodeTopN:Number(event.target.value)})}>
           {(meta?meta.node_top_n_options:[]).map(value=><option key={value} value={value}>Top {value}</option>)}
         </select>
-        <small className="field-help">仅在有 Node ID 时生效。</small>
+        <small className="field-help">只对这个 Node 取对应数量。</small>
       </label>
-    </div>
-    <label className="settings-field"><span className="field-label">ASIN</span>
-      <textarea aria-label={'站点组 '+(index+1)+' ASIN'} value={group.asinsText} placeholder="每行一个，或用逗号、分号、顿号分隔"
-        onChange={event=>onChange({asinsText:event.target.value})}/>
-      <small className="field-help">
-        已识别 {parsed.valid.length} 个（去重后）；单个站点组最多 20 个。
-        {parsed.invalid.length>0?' 已忽略：'+parsed.invalid.join('、'):''}
-      </small>
-    </label>
-    <label className="settings-field"><span className="field-label">Node ID</span>
-      <textarea aria-label={'站点组 '+(index+1)+' Node ID'} value={group.nodeIdsText} placeholder="可选，每行一个类目节点"
-        onChange={event=>onChange({nodeIdsText:event.target.value})}/>
-      <small className="field-help">已识别 {nodes.length} 个类目节点；ASIN 与 Node 至少要有一个。</small>
-    </label>
+    </div>}
+    {mode==='node'&&nodes.length>1&&<p className="keyword-input-warning" role="alert">一个站点组只能有一个 Node ID，请拆分为多个站点组。</p>}
     {canRemove&&<div className="button-row"><button type="button" onClick={onRemove}><Trash2 size={13}/>移除这个站点组</button></div>}
   </fieldset>;
 }
@@ -104,56 +109,14 @@ function BudgetCard({plan}){
   </section>;
 }
 
-function RunCard({state,form,onStart,onCancel,onDownload,onRefresh,busy}){
-  const active=isActiveStatus(state.status);
-  const progress=state.progress;
-  return <section className="keyword-card">
-    <h3>运行进度</h3>
-    <div className="keyword-run-head">
-        <span className={'keyword-state '+state.status}>{LABEL[state.status]||state.status}</span>
-      <span>{state.runId?state.runId.slice(0,12)+'…':'尚未发起'}</span>
-      {state.stage&&<span>阶段 {state.stage}</span>}
-      {state.plannedCalls!=null&&<span>计划调用 {state.plannedCalls} 次</span>}
-    </div>
-    {state.message&&<p>{state.message}</p>}
-    {progress&&<div className="keyword-progress">
-      <div className="keyword-progress-line"><b>{progress.stage}</b>
-        <span>{progress.done}{progress.total?' / '+progress.total:''}{progress.unit?' '+progress.unit:''}</span></div>
-      {progress.total>0&&<div className="keyword-bar"><i style={{width:Math.min(100,Math.round(progress.done/progress.total*100))+'%'}}/></div>}
-      {progress.message&&<small className="field-help">{progress.message}</small>}
-    </div>}
-    {state.error&&<p className="keyword-error">运行失败：{state.error}</p>}
-    <div className="button-row">
-        <button className="primary" disabled={!form.planHash||busy==='start'} onClick={onStart}>
-        <Play size={14}/>创建任务</button>
-      <button disabled={!active||busy==='cancel'||!state.runId} onClick={onCancel}>取消运行</button>
-      <button disabled={!state.runId} onClick={onRefresh}><RefreshCw size={13}/>刷新快照</button>
-    </div>
-    {state.artifacts.length>0&&<div className="keyword-artifacts">
-      <h4>产出文件</h4>
-      {state.artifacts.map(item=><div className="keyword-artifact" key={item.name}>
-        <span>{item.name}</span>
-        <small>{bytesText(item.bytes)}{item.sha256?' · SHA256 '+item.sha256.slice(0,12)+'…':''}</small>
-        <button className="primary" onClick={()=>onDownload(item.name)}><Download size={14}/>下载</button>
-      </div>)}
-    </div>}
-    <details className="keyword-log" open={active}>
-      <summary>过程记录 {state.log.length} 条</summary>
-      {state.log.length?state.log.map(item=><p key={item.sequence}><span>{item.sequence}</span>{item.line}</p>)
-        :<small className="field-help">还没有事件。</small>}
-    </details>
-  </section>;
-}
-
 export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSettings=()=>{}}){
   const [meta,setMeta]=useState(null);
   const [credential,setCredential]=useState(null);
-  const [secret,setSecret]=useState('');
   const [form,setForm]=useState(initialKeywordForm);
   const [state,dispatch]=useReducer(keywordReducer,initialKeywordState);
   const [plan,setPlan]=useState(null);
   const [errors,setErrors]=useState([]);
-  const [recent,setRecent]=useState([]),[queue,setQueue]=useState({items:[],state:'idle',dispatch_enabled:false}),[cursor,setCursor]=useState(''),[nextCursor,setNextCursor]=useState(null),[showHidden,setShowHidden]=useState(false),[view,setView]=useState(selectedRunId?'detail':location.hash.startsWith('#/keyword/queue')?'queue':'new'),[selected,setSelected]=useState([]),[displayName,setDisplayName]=useState(''),[models,setModels]=useState(null),[modelRef,setModelRef]=useState(''),[credentialId,setCredentialId]=useState('');
+  const [recent,setRecent]=useState([]),[queue,setQueue]=useState({items:[],state:'idle',dispatch_enabled:false}),[nextCursor,setNextCursor]=useState(null),[showHidden,setShowHidden]=useState(false),[view,setView]=useState(selectedRunId?'detail':location.hash.startsWith('#/keyword/queue')?'queue':'new'),[selected,setSelected]=useState([]),[displayName,setDisplayName]=useState(''),[models,setModels]=useState(null),[modelRef,setModelRef]=useState(''),[credentialId,setCredentialId]=useState('');
   const [busy,setBusy]=useState('');
   const stream=useRef(null),latest=useRef(state);
   latest.current=state;
@@ -174,11 +137,18 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
     return()=>{cancelled=true};
   },[]);
 
-  const refreshRecent=(next=cursor)=>api(`${ENDPOINTS.runs()}?limit=50${next?'&cursor='+encodeURIComponent(next):''}${showHidden?'&hidden=true':''}`,undefined,'GET')
-    .then(data=>{setRecent(data.runs||[]);setNextCursor(data.next_cursor||null)}).catch(()=>{});
+  const refreshRecent=(next='',append=false)=>api(`${ENDPOINTS.runs()}?limit=50${next?'&cursor='+encodeURIComponent(next):''}${showHidden?'&hidden=true':''}`,undefined,'GET')
+    .then(data=>{setRecent(current=>append?[...current,...(data.runs||[])]:data.runs||[]);setNextCursor(data.next_cursor||null);return data.runs||[]})
+    .catch(error=>{setErrors([error.message]);return null});
 
-  const refreshQueue=()=>api(ENDPOINTS.queue(),undefined,'GET').then(value=>setQueue({...value,items:value.items||value.queue||[]})).catch(error=>setErrors([error.message]));
+  const refreshQueue=()=>api(ENDPOINTS.queue(),undefined,'GET').then(value=>{
+    const normalized={...value,items:value.items||value.queue||[]};setQueue(normalized);return normalized;
+  }).catch(error=>{setErrors([error.message]);return null});
   useEffect(()=>{refreshRecent('');refreshQueue()},[showHidden]);
+  useEffect(()=>{
+    const eligible=new Set([...recent,...queue.items].filter(item=>canQueueStatus(item.status)).map(item=>item.run_id||item.id));
+    setSelected(current=>current.filter(id=>eligible.has(id)));
+  },[recent,queue.items]);
   useEffect(()=>{if(selectedRunId){setView('detail');readSnapshot(selectedRunId)}else if(view==='detail')setView('queue')},[selectedRunId]);
 
   // One stream per run. It is opened from the sequence this page has already folded in, and after a
@@ -195,16 +165,17 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
         let event=null;
         try{event=JSON.parse(message.data)}catch{return}
         dispatch({type:'run_event',event});
-        if(isTerminalEvent(event&&event.event_type)){source.close();refreshRecent()}
+        if(isTerminalEvent(event&&event.event_type)){
+          source.close();
+          readSnapshot(state.runId);
+        }
       });
       source.onerror=()=>{
         if(closed||source===null)return;
         const dropped=source;source=null;dropped.close();
-        api(ENDPOINTS.run(state.runId),undefined,'GET').then(snapshot=>{
-          if(closed)return;
-          dispatch({type:'snapshot',snapshot});
-          if(!isTerminalStatus(snapshot.status))connect();
-        }).catch(()=>{});
+        readSnapshot(state.runId).then(snapshot=>{
+          if(!closed&&snapshot&&!isTerminalStatus(snapshot.status))connect();
+        });
       };
     };
     connect();
@@ -218,7 +189,7 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
     setForm(current=>({...current,...mutator(current),planHash:''}));
   };
   const editGroup=(key,mutator)=>edit(current=>({
-    groups:current.groups.map(group=>group.key===key?{...group,...mutator}:group),
+    groups:current.groups.map(group=>group.key===key?{...group,...(typeof mutator==='function'?mutator(group):mutator)}:group),
   }));
 
   const countBudget=async()=>{
@@ -231,20 +202,32 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
     finally{setBusy('')}
   };
 
-  const start=async()=>{
+  const start=async(dispatchMode='enqueue')=>{
     setBusy('start');
     try{
       if(!plan?.plan_hash||!form.planHash)throw Error('请先核算预算');
       const name=displayName.trim()||`关键词调研 ${new Date().toLocaleString()}`;
-      if(!window.confirm(`确认创建任务“${name}”？预算约 ${plan.budget?.planned_total??0} 次调用。此操作只保存任务，不开始 SellerSprite 取数。`))return;
+      const immediate=dispatchMode==='enqueue';
+      if(!window.confirm(immediate
+        ?`即将创建并开始任务“${name}”。预计 ${plan.budget?.planned_total??0} 次 SellerSprite 调用。确认后会立即进入队列并开始取数。`
+        :`确认仅保存任务“${name}”？预算约 ${plan.budget?.planned_total??0} 次调用。保存后不会开始取数。`))return;
       const chosen=plan.selected||plan;
-      const created=await callJson(ENDPOINTS.runs(),{...buildRunRequest(form),dispatch:'create',display_name:name,model_ref:chosen.model_ref||modelRef,credential_id:chosen.credential_id||credentialId});
-      dispatch({type:'run_created',runId:created.run_id});setErrors([]);refreshRecent('');refreshQueue();onSelectRun(created.run_id);setView('detail');await readSnapshot(created.run_id);
+      const created=await callJson(ENDPOINTS.runs(),{...buildRunRequest(form),dispatch:dispatchMode,display_name:name,model_ref:chosen.model_ref||modelRef,credential_id:chosen.credential_id||credentialId});
+      dispatch({type:'run_created',runId:created.run_id,status:created.status});setErrors([]);await Promise.all([refreshRecent(''),refreshQueue()]);onSelectRun(created.run_id);setView('detail');await readSnapshot(created.run_id);
     }catch(error){setErrors(error.errors||[error.message])}
     finally{setBusy('')}
   };
 
-  const enqueue=async ids=>{if(!ids.length)return;const lookup=new Map([...recent,...queue.items].map(item=>[item.run_id||item.id,item]));const items=ids.map(id=>lookup.get(id)).filter(Boolean);const invalid=items.filter(item=>!canQueueStatus(item.status));if(invalid.length){setErrors(['已完成或已在队列中的任务不能重复排队。']);return}const names=items.map(item=>item.display_name||item.name||item.run_id||item.id);const total=items.reduce((sum,item)=>sum+Number(item.budget?.planned_total??item.planned_total??item.planned_calls??0),0);if(!window.confirm(`确认按当前顺序排队以下 ${ids.length} 项任务？\n${names.map((name,index)=>(index+1)+'. '+name).join('\n')}\n合计预算：${total} 次取数调用。`))return;setBusy('queue');try{await callJson(ENDPOINTS.queue(),{run_ids:ids});setErrors([]);setSelected([]);await Promise.all([refreshQueue(),refreshRecent('')]);if(state.runId&&ids.includes(state.runId))await readSnapshot(state.runId);}catch(error){setErrors(error.errors||[error.message])}finally{setBusy('')}};
+  const enqueue=async ids=>{
+    const selection=validQueueSelection(ids,[...recent,...queue.items]);
+    if(selection.stale.length){setSelected(selection.valid);setErrors(['任务列表已变化，已移除失效勾选项。请检查后再排队。']);return}
+    if(!selection.valid.length)return;
+    const validIds=selection.valid,items=selection.items;
+    const names=items.map(item=>item.display_name||item.name||item.run_id||item.id);
+    const total=items.reduce((sum,item)=>sum+Number(item.budget?.planned_total??item.planned_total??item.planned_calls??0),0);
+    if(!window.confirm(`确认立即按当前顺序开始以下 ${validIds.length} 项任务？\n${names.map((name,index)=>(index+1)+'. '+name).join('\n')}\n合计预算：${total} 次取数调用。已在运行的任务结束后，后续任务依次执行。`))return;
+    setBusy('queue');try{await callJson(ENDPOINTS.queue(),{run_ids:validIds});setErrors([]);setSelected([]);await Promise.all([refreshQueue(),refreshRecent('')]);if(state.runId&&validIds.includes(state.runId))await readSnapshot(state.runId);}catch(error){setErrors(error.errors||[error.message])}finally{setBusy('')}
+  };
 
   const cancel=async()=>{
     setBusy('cancel');
@@ -254,8 +237,17 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
   };
 
   const readSnapshot=async runId=>{
-    try{dispatch({type:'snapshot',snapshot:await api(ENDPOINTS.run(runId),undefined,'GET')})}
-    catch(error){setErrors([error.message])}
+    try{
+      const snapshot=await api(ENDPOINTS.run(runId),undefined,'GET');
+      dispatch({type:'snapshot',snapshot});
+      if(isTerminalStatus(snapshot?.status)){
+        const[,latestQueue]=await Promise.all([refreshRecent(''),refreshQueue()]);
+        // The run can emit its terminal snapshot just before the scheduler releases `current`.
+        // One bounded follow-up reconciles that narrow window without reconnecting SSE or polling.
+        if(latestQueue?.current===runId)setTimeout(()=>{refreshRecent('');refreshQueue()},500);
+      }
+      return snapshot;
+    }catch(error){setErrors([error.message]);return null}
   };
 
   const modelOptions=(models?.providers||[]).flatMap(provider=>(provider.model_refs||[]).map(ref=>({ref,provider}))),selectedProvider=(models?.providers||[]).find(provider=>provider.name===modelRef.split('/')[0]),credentialOptions=selectedProvider?.credentials?.filter(item=>item.enabled&&item.authorized)||[];
@@ -265,7 +257,7 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
   const continueQueue=async()=>{try{await api(ENDPOINTS.queueContinue(),{});await Promise.all([refreshQueue(),refreshRecent('')]);if(state.runId)await readSnapshot(state.runId)}catch(error){setErrors([error.message])}};
   const rename=async item=>{const id=item.run_id||item.id,name=window.prompt('任务名称',item.display_name||item.name||'关键词调研');if(!name?.trim())return;try{await api(ENDPOINTS.run(id),{display_name:name.trim()},'PATCH');await refreshRecent('')}catch(error){setErrors([error.message])}};
   const hide=async(item,hidden)=>{const id=item.run_id||item.id;try{await api(hidden?ENDPOINTS.runUnhide(id):ENDPOINTS.runHide(id),{});await Promise.all([refreshRecent(''),refreshQueue()])}catch(error){setErrors([error.message])}};
-  const trash=async item=>{const id=item.run_id||item.id;if(isActiveStatus(item.status)||['created','queued'].includes(item.status)&&queue.items.some(q=>(q.run_id||q.id)===id&&q.current))return setErrors(['运行中的任务不能移入回收站']);const contents=item.artifacts?.length?item.artifacts.map(file=>file.name).join('、'):'任务输入、缓存、日志与已生成产物';if(!window.confirm(`确认将“${item.display_name||item.name||id}”及其运行目录移入 Windows 回收站？范围：${contents}。失败时会保留任务。`))return;try{await callJson(ENDPOINTS.run(id),{},'DELETE');await Promise.all([refreshRecent(''),refreshQueue()])}catch(error){setErrors(error.errors||[error.message])}};
+  const trash=async item=>{const id=item.run_id||item.id;if(isActiveStatus(item.status)||['created','queued'].includes(item.status)&&queue.items.some(q=>(q.run_id||q.id)===id&&q.current))return setErrors(['运行中的任务不能移入回收站']);const contents=item.artifacts?.length?item.artifacts.map(file=>file.name).join('、'):'任务输入、缓存、日志与已生成产物';if(!window.confirm(`确认将“${item.display_name||item.name||id}”及其运行目录移入 Windows 回收站？范围：${contents}。失败时会保留任务。`))return;try{await callJson(ENDPOINTS.run(id),{},'DELETE');setSelected(current=>current.filter(value=>value!==id));await Promise.all([refreshRecent(''),refreshQueue()])}catch(error){setErrors(error.errors||[error.message])}};
   const openDirectory=async item=>{try{await api(ENDPOINTS.runDirectory(item.run_id||item.id),{});}catch(error){setErrors([error.message])}};
 
   const download=async name=>{
@@ -279,19 +271,24 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
     }catch(error){setErrors([error.message])}
   };
 
-  const parsedTotal=form.groups.reduce((sum,group)=>sum+parseAsins(group.asinsText).valid.length,0);
-  const nodeTotal=form.groups.reduce((sum,group)=>sum+parseNodeIds(group.nodeIdsText).length,0);
+  const parsedTotal=form.groups.reduce((sum,group)=>sum+(group.mode==='node'?0:parseAsins(group.asinsText).valid.length),0);
+  const nodeTotal=form.groups.reduce((sum,group)=>sum+(group.mode==='node'?parseNodeIds(group.nodeIdsText).length:0),0);
+  const invalidNodeGroups=form.groups.filter(group=>group.mode==='node'&&parseNodeIds(group.nodeIdsText).length!==1);
+  const resumableQueue=queue.items.some(item=>['queued','interrupted'].includes(item.status));
+  const queueStateLabel=QUEUE_STATE_LABEL[queue.state]||'待命';
+  const pendingQueueItems=pendingQueueCount(queue.items);
+  const showProgress=state.progress&&['running','cancelling'].includes(state.status);
   const activityText=item=>{const payload=item?.payload||{};return [item?.event_type?.replaceAll('_',' '),payload.stage,payload.message||payload.line].filter(Boolean).join(' · ')};
 
   return <div className="keyword-page">
     <header className="keyword-heading">
       <div>
         <div className="eyebrow">KEYWORD RESEARCH</div>
-        <h1>关键词调研<span>创建任务、编排队列、追踪执行过程</span></h1>
+        <h1>关键词调研<span>输入范围、确认预算，然后开始执行</span></h1>
       </div>
       <div className="button-row"><span className="keyword-summary">{form.groups.length} 个站点组 · {parsedTotal} 个 ASIN · {nodeTotal} 个 Node</span><button onClick={()=>{refreshRecent('');refreshQueue()}}><RefreshCw size={13}/>刷新</button></div>
     </header>
-    <nav className="keyword-tabs"><button className={view==='new'?'active':''} onClick={()=>{setView('new');onSelectRun('')}}>新建任务</button><button className={view==='queue'?'active':''} onClick={()=>{setView('queue');onSelectRun('')}}>任务列表与队列</button>{state.runId&&<button className={view==='detail'?'active':''} onClick={()=>{setView('detail');onSelectRun(state.runId)}}>任务详情</button>}<span>{queue.state||'队列待命'} · {queue.items.length} 项</span></nav>
+    <nav className="keyword-tabs"><button className={view==='new'?'active':''} onClick={()=>{setView('new');onSelectRun('')}}>新建任务</button><button className={view==='queue'?'active':''} onClick={()=>{setView('queue');onSelectRun('')}}>任务列表与队列</button>{state.runId&&<button className={view==='detail'?'active':''} onClick={()=>{setView('detail');onSelectRun(state.runId)}}>任务详情</button>}<span>队列{queueStateLabel} · {pendingQueueItems} 个待执行</span></nav>
 
     {errors.length>0&&<div role="alert" className="keyword-errors">
       <div className="keyword-errors-head"><strong>有 {errors.length} 处需要处理</strong>
@@ -308,7 +305,7 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
           onRemove={()=>edit(current=>({groups:current.groups.filter(item=>item.key!==group.key)}))}/>)}
         <div className="button-row">
           <button onClick={()=>edit(current=>({groups:[...current.groups,{key:'g'+Date.now(),
-            marketplace:(meta&&meta.marketplaces&&meta.marketplaces[0])||'',asinsText:'',nodeIdsText:'',
+            marketplace:(meta&&meta.marketplaces&&meta.marketplaces[0])||'',mode:'asin',asinsText:'',nodeIdsText:'',
             nodeTopN:(meta&&meta.node_top_n_options&&meta.node_top_n_options[0])||50}]}))}>
             <Plus size={14}/>再加一个站点组</button>
         </div>
@@ -329,24 +326,27 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
         <div className="keyword-group-grid"><label className="settings-field"><span className="field-label">任务文本模型</span><select value={modelRef} onChange={event=>selectModel(event.target.value)}>{modelOptions.map(item=><option key={item.ref} value={item.ref}>{item.ref}</option>)}</select></label><label className="settings-field"><span className="field-label">模型 Key</span><select value={credentialId} onChange={event=>{setCredentialId(event.target.value);setPlan(null);setForm(current=>({...current,planHash:''}))}}>{credentialOptions.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div>
         <small className="field-help">任务冻结所选模型和凭据编号；选择变化后须重新核算。<button className="text-link" onClick={onSettings}>全局默认设置</button></small>
         <div className="button-row">
-          <button className="primary" disabled={busy==='plan'} onClick={countBudget}>
+          <button className="primary" disabled={busy==='plan'||invalidNodeGroups.length>0} onClick={countBudget}>
             {busy==='plan'?'正在核算…':'核算预算'}</button>
           <span className="field-help">核算只计算调用量，不发起任何取数。</span>
+          {invalidNodeGroups.length>0&&<small className="keyword-input-warning">Node 榜单模式下每个站点组必须填写且只填写一个 Node ID。</small>}
         </div>
       </section>}
 
       <div className="keyword-column">
-        {view==='new'&&<RunCard state={state} form={form} busy={busy} onStart={start} onCancel={cancel}
-          onDownload={download} onRefresh={()=>readSnapshot(state.runId)}/>}
         {view==='new'&&<BudgetCard plan={plan}/>}
+        {view==='new'&&plan?.plan_hash&&plan.plan_hash===form.planHash&&<section className="keyword-card keyword-confirm-card">
+          <h3>预算已确认</h3><p>预计 {plan.budget?.planned_total??0} 次 SellerSprite 调用。开始后将立即进入队列并执行。</p>
+          <div className="button-row"><button className="primary" disabled={busy||invalidNodeGroups.length>0} onClick={()=>start('enqueue')}><Play size={14}/>确认并开始</button><button disabled={busy||invalidNodeGroups.length>0} onClick={()=>start('create')}>仅保存任务</button></div>
+        </section>}
         {view==='new'&&<section className="keyword-card">
           <h3>SellerSprite 连接</h3><p>{credential?.configured?'凭据已配置':'尚未配置'} · 密钥只在总设置中管理。</p><button onClick={onSettings}>管理 SellerSprite 凭据</button>
         </section>}
-    {view==='queue'&&<section className="keyword-card keyword-list"><div className="list-heading"><div><h3>持久任务队列</h3><p>逐项执行；失败或取消后继续。重启后需要手动继续。</p></div><button onClick={continueQueue}>开始 / 继续队列</button><button onClick={stopQueue}>停止队列</button></div>{queue.items.map((item,index)=>{const id=item.run_id||item.id;return <div className="queue-item" key={id}><b>{index+1}</b><span>{item.display_name||id}</span><small>{item.status||'created'} · {item.stage||'等待执行'}</small><button disabled={!['created','queued'].includes(item.status)||id===queue.current} onClick={()=>reorder(id,-1)}>↑</button><button disabled={!['created','queued'].includes(item.status)||id===queue.current} onClick={()=>reorder(id,1)}>↓</button><button onClick={()=>{setView('detail');onSelectRun(id);readSnapshot(id)}}>详情</button></div>})}<h3>所有任务 <label className="checkline"><input type="checkbox" checked={showHidden} onChange={event=>setShowHidden(event.target.checked)}/>显示隐藏任务</label></h3><button disabled={!selected.length} onClick={()=>enqueue(selected)}>将所选任务排队（{selected.length}）</button>{recent.map((item,index)=>{const id=item.run_id||item.id;return <article className="keyword-task-row" key={id}><input type="checkbox" checked={selected.includes(id)} disabled={!canQueueStatus(item.status)} onChange={()=>setSelected(xs=>xs.includes(id)?xs.filter(x=>x!==id):[...xs,id])}/><span className={'keyword-state '+item.status}>{LABEL[item.status]||item.status}</span><button onClick={()=>{setView('detail');onSelectRun(id);readSnapshot(id)}}>{item.display_name||id}</button><small>{item.marketplaces?.join('、')||item.marketplace||'—'} · {item.asin_count??0} ASIN / {item.node_count??0} Node · {item.created_at||'—'} · 队列 {item.queue_position??'—'} · 尝试 {item.attempt??0}</small><div className="task-actions"><button onClick={()=>rename(item)}>重命名</button><button onClick={()=>hide(item,!!item.hidden)}>{item.hidden?'恢复':'隐藏'}</button><button onClick={()=>openDirectory(item)}>打开目录</button><button disabled={isActiveStatus(item.status)} onClick={()=>trash(item)}>移入回收站</button></div>{['failed','cancelled','interrupted'].includes(item.status)&&<button onClick={()=>enqueue([id])}>缓存续跑</button>}</article>})}{nextCursor&&<button onClick={()=>{setCursor(nextCursor);refreshRecent(nextCursor)}}>加载更多</button>}</section>}
+    {view==='queue'&&<section className="keyword-card keyword-list"><div className="list-heading"><div><h3>任务与队列</h3><p>{queue.current?'当前任务正在执行；其他任务会依次开始。':queue.dispatch_enabled?'队列已启动，任务会依次自动执行。':'入队后会自动开始；工作台重启后需手动继续。'}</p></div>{!queue.dispatch_enabled&&!queue.current&&resumableQueue&&<button onClick={continueQueue}>继续待执行任务</button>}{queue.dispatch_enabled&&<button onClick={stopQueue}>停止队列</button>}</div>{queue.items.map((item,index)=>{const id=item.run_id||item.id;return <div className="queue-item" key={id}><b>{index+1}</b><span>{item.display_name||id}</span><small>{LABEL[item.status]||item.status} · {item.stage||'等待执行'}</small><button disabled={!['created','queued'].includes(item.status)||id===queue.current} onClick={()=>reorder(id,-1)}>↑</button><button disabled={!['created','queued'].includes(item.status)||id===queue.current} onClick={()=>reorder(id,1)}>↓</button><button onClick={()=>{setView('detail');onSelectRun(id);readSnapshot(id)}}>详情</button></div>})}<h3>所有任务 <label className="checkline"><input type="checkbox" checked={showHidden} onChange={event=>setShowHidden(event.target.checked)}/>显示隐藏任务</label></h3><button disabled={!selected.length||busy==='queue'} onClick={()=>enqueue(selected)}>确认并开始所选任务（{selected.length}）</button>{recent.map((item,index)=>{const id=item.run_id||item.id;return <article className="keyword-task-row" key={id}><input type="checkbox" checked={selected.includes(id)} disabled={!canQueueStatus(item.status)} onChange={()=>setSelected(xs=>xs.includes(id)?xs.filter(x=>x!==id):[...xs,id])}/><span className={'keyword-state '+item.status}>{LABEL[item.status]||item.status}</span><button onClick={()=>{setView('detail');onSelectRun(id);readSnapshot(id)}}>{item.display_name||id}</button><small>{item.marketplaces?.join('、')||item.marketplace||'—'} · {item.asin_count??0} ASIN / {item.node_count??0} Node · {item.created_at||'—'} · 队列 {item.queue_position??'—'} · 尝试 {item.attempt??0}</small><div className="task-actions"><button onClick={()=>rename(item)}>重命名</button><button onClick={()=>hide(item,!!item.hidden)}>{item.hidden?'恢复':'隐藏'}</button><button onClick={()=>openDirectory(item)}>打开目录</button><button disabled={isActiveStatus(item.status)} onClick={()=>trash(item)}>移入回收站</button></div>{['failed','cancelled','interrupted'].includes(item.status)&&<button onClick={()=>enqueue([id])}>缓存续跑</button>}</article>})}{nextCursor&&<button onClick={()=>refreshRecent(nextCursor,true)}>加载更多任务</button>}</section>}
         {view==='detail'&&<section className="keyword-card">
           <h3>{recent.find(x=>(x.run_id||x.id)===state.runId)?.display_name||'任务详情'} · {LABEL[state.status]||state.status}</h3>
           <p>阶段：{state.stage||'—'} · 队列位置：{state.queuePosition??'—'} · 尝试：{state.attempt??0}</p>
-          {state.progress ? <div className="keyword-progress"><b>{state.progress.stage||state.stage}</b><span>{state.progress.done}{state.progress.total!==null&&state.progress.total!==undefined?' / '+state.progress.total:''} {state.progress.unit||''}</span>{state.progress.total>0 ? <div className="keyword-bar"><i style={{width:Math.min(100,Math.round(state.progress.done/state.progress.total*100))+'%'}}/></div> : null}<small>{state.progress.message||'当前阶段活动中'}</small></div> : null}
+          {showProgress ? <div className="keyword-progress"><b>{state.progress.stage||state.stage||'执行中'}</b><span>{state.progress.done}{state.progress.total!==null&&state.progress.total!==undefined?' / '+state.progress.total:''} {state.progress.unit||''}</span>{state.progress.total>0 ? <div className="keyword-bar"><i style={{width:Math.min(100,Math.round(state.progress.done/state.progress.total*100))+'%'}}/></div> : null}{state.progress.message&&<small>{state.progress.message}</small>}</div> : null}
           <h4>最近活动</h4><div className="recent-activity">{state.recentActivity.length?state.recentActivity.map((item,index)=><p key={item.sequence||index}><time>{item.at?new Date(item.at).toLocaleTimeString():''}</time>{activityText(item)}</p>):<p>{state.progress?.message||state.message||'暂无活动记录'}</p>}</div>
           {state.error&&<p className="keyword-error">{state.error}</p>}
           <div className="button-row"><button onClick={()=>readSnapshot(state.runId)}>刷新详情</button><button disabled={!isActiveStatus(state.status)} onClick={cancel}>取消任务</button><button disabled={!['failed','cancelled','interrupted'].includes(state.status)} onClick={()=>enqueue([state.runId])}>缓存续跑</button><button onClick={()=>openDirectory(recent.find(x=>(x.run_id||x.id)===state.runId)||{run_id:state.runId})}>打开目录</button></div>
