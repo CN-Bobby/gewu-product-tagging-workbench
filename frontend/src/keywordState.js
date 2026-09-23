@@ -8,7 +8,7 @@
 // The run projection is driven by the event stream and never by a polling loop: the snapshot from
 // GET /runs/{id} is authoritative, and every streamed event is folded in by sequence.
 
-export const PAGE={HOME:'home',KEYWORD:'keyword'};
+export const PAGE={HOME:'home',TAGGING:'tagging',KEYWORD:'keyword',SETTINGS:'settings'};
 export const PAGE_HOME=PAGE.HOME;
 
 const ASIN_PATTERN=/^B0[A-Z0-9]{8}$/;
@@ -83,11 +83,11 @@ export function buildRunRequest(form){
 
 export const RUN_STATUS={
   QUEUED:'queued',RUNNING:'running',CANCELLING:'cancelling',DONE:'done',
-  FAILED:'failed',CANCELLED:'cancelled',INTERRUPTED:'interrupted',
+  FAILED:'failed',CANCELLED:'cancelled',INTERRUPTED:'interrupted',SKIPPED:'skipped',
 };
 
 export const ACTIVE_RUN_STATUSES=[RUN_STATUS.QUEUED,RUN_STATUS.RUNNING,RUN_STATUS.CANCELLING];
-export const TERMINAL_RUN_STATUSES=[RUN_STATUS.DONE,RUN_STATUS.FAILED,RUN_STATUS.CANCELLED,RUN_STATUS.INTERRUPTED];
+export const TERMINAL_RUN_STATUSES=[RUN_STATUS.DONE,RUN_STATUS.FAILED,RUN_STATUS.CANCELLED,RUN_STATUS.INTERRUPTED,RUN_STATUS.SKIPPED];
 export const isActiveStatus=status=>ACTIVE_RUN_STATUSES.includes(status);
 export const isTerminalStatus=status=>TERMINAL_RUN_STATUSES.includes(status);
 
@@ -105,9 +105,10 @@ export const RUN_EVENT={
   FINISHED:'run_finished',
   FAILED:'run_failed',
   CANCELLED:'run_cancelled',
+  SKIPPED:'run_skipped',
 };
 export const RUN_EVENT_TYPES=Object.values(RUN_EVENT);
-export const TERMINAL_EVENT_TYPES=[RUN_EVENT.FINISHED,RUN_EVENT.FAILED,RUN_EVENT.CANCELLED];
+export const TERMINAL_EVENT_TYPES=[RUN_EVENT.FINISHED,RUN_EVENT.FAILED,RUN_EVENT.CANCELLED,RUN_EVENT.SKIPPED];
 export const isTerminalEvent=eventType=>TERMINAL_EVENT_TYPES.includes(eventType);
 
 // Every path this page calls, in one place, so a route rename breaks in one file.
@@ -121,11 +122,18 @@ export const ENDPOINTS={
   runEvents:(runId,afterSequence)=>`${API_PREFIX}/runs/${runId}/events?after_sequence=${afterSequence}`,
   runCancel:runId=>`${API_PREFIX}/runs/${runId}/cancel`,
   runArtifact:(runId,name)=>`${API_PREFIX}/runs/${runId}/artifacts/${encodeURIComponent(name)}`,
+  queue:()=>`${API_PREFIX}/queue`,
+  queueOrder:()=>`${API_PREFIX}/queue/order`,
+  queueStop:()=>`${API_PREFIX}/queue/stop`,
+  queueContinue:()=>`${API_PREFIX}/queue/continue`,
+  runHide:runId=>`${API_PREFIX}/runs/${runId}/hide`,
+  runUnhide:runId=>`${API_PREFIX}/runs/${runId}/unhide`,
+  runDirectory:runId=>`${API_PREFIX}/runs/${runId}/open-directory`,
 };
 
 // --- the run projection -----------------------------------------------------
 
-export const MAX_LOG_LINES=200;
+export const MAX_LOG_LINES=Infinity;
 
 export const initialKeywordState={
   runId:null,
@@ -137,6 +145,11 @@ export const initialKeywordState={
   progress:null,      // {stage,done,total,unit,message} of the stage currently running
   artifacts:[],       // {name,bytes,sha256}
   log:[],             // {sequence,line}, oldest first, capped
+  timeline:[],
+  recentActivity:[],
+  attempt:null,
+  queuePosition:null,
+  lastActivity:null,
   lastSequence:0,
   finished:false,
 };
@@ -173,7 +186,8 @@ export function applyRunEvent(state,event){
   if(!Number.isFinite(sequence)||sequence<=state.lastSequence)return state;
   const eventType=String(event.event_type||'');
   const payload=event.payload&&typeof event.payload==='object'?event.payload:{};
-  const next={...state,lastSequence:sequence,runId:state.runId||event.run_id||null};
+  const next={...state,lastSequence:sequence,runId:state.runId||event.run_id||null,
+    recentActivity:state.recentActivity.concat([event]).slice(-20)};
   switch(eventType){
     case RUN_EVENT.STARTED:{
       const planned=Number(payload.planned_calls);
@@ -182,24 +196,28 @@ export function applyRunEvent(state,event){
     }
     case RUN_EVENT.STAGE_STARTED:
       return {...next,status:RUN_STATUS.RUNNING,stage:String(payload.stage||''),
-        message:String(payload.message||''),progress:null};
+        message:String(payload.message||''),progress:null,
+        timeline:state.timeline.concat([{stage:String(payload.stage||''),status:'running',at:event.at||null,message:String(payload.message||'')}])};
     case RUN_EVENT.STAGE_PROGRESS:{
       const stage=String(payload.stage||state.stage);
-      const done=Number(payload.done),total=Number(payload.total);
-      const previous=state.progress&&state.progress.stage===stage?state.progress.done:0;
+      const done=payload.done==null?null:Number(payload.done),total=payload.total==null?null:Number(payload.total);
+      const previous=state.progress&&state.progress.stage===stage?state.progress.done:null;
       return {...next,stage,status:RUN_STATUS.RUNNING,progress:{
         stage,
-        done:Number.isFinite(done)?Math.max(previous,done):previous,
-        total:Number.isFinite(total)?total:(state.progress?state.progress.total:null),
+        done:done!==null&&Number.isFinite(done)?Math.max(previous??0,done):previous,
+        total:total!==null&&Number.isFinite(total)?total:(payload.total==null?null:(state.progress?state.progress.total:null)),
         unit:String(payload.unit||''),
         message:String(payload.message||''),
       }};
     }
-    case RUN_EVENT.STAGE_FINISHED:
-      return {...next,stage:String(payload.stage||state.stage)};
+    case RUN_EVENT.STAGE_FINISHED:{
+      const stage=String(payload.stage||state.stage),timeline=state.timeline.slice(),index=timeline.map(item=>item.stage).lastIndexOf(stage);
+      if(index>=0)timeline[index]={...timeline[index],status:'done',finished_at:event.at||null};
+      else timeline.push({stage,status:'done',finished_at:event.at||null});
+      return {...next,stage,timeline};}
     case RUN_EVENT.LOG:{
       const log=state.log.concat([{sequence,line:String(payload.line==null?'':payload.line)}]);
-      return {...next,log:log.length>MAX_LOG_LINES?log.slice(log.length-MAX_LOG_LINES):log};
+      return {...next,log};
     }
     case RUN_EVENT.ARTIFACT_READY:
       return {...next,artifacts:mergeArtifacts(state.artifacts,payload)};
@@ -210,6 +228,8 @@ export function applyRunEvent(state,event){
       return {...next,status:RUN_STATUS.FAILED,finished:true,error:String(payload.error||'运行失败')};
     case RUN_EVENT.CANCELLED:
       return {...next,status:RUN_STATUS.CANCELLED,message:'已取消',finished:true};
+    case RUN_EVENT.SKIPPED:
+      return {...next,status:RUN_STATUS.SKIPPED,message:'已跳过',finished:true};
     default:
       // An event type this build does not know still advances the cursor; the status stays as the
       // snapshot reported it rather than being invented from the payload.
@@ -225,6 +245,14 @@ export function applySnapshot(state,snapshot){
   const runId=snapshot.run_id||state.runId;
   const switched=runId!==state.runId;
   const status=String(snapshot.status||state.status);
+  const snapshotLog=Array.isArray(snapshot.log)?snapshot.log:Array.isArray(snapshot.logs)?snapshot.logs:[];
+  const log=snapshotLog.map((item,index)=>typeof item==='string'?{sequence:index+1,line:item}:{sequence:Number(item.sequence)||index+1,line:String(item.line??item.message??'')});
+  const timeline=Array.isArray(snapshot.timeline)?snapshot.timeline.map(item=>{
+    if(item.stage)return item;
+    const payload=item.payload&&typeof item.payload==='object'?item.payload:{};
+    const kind=String(item.event_type||'event');
+    return {stage:String(payload.stage||kind.replaceAll('_',' ')),status:kind==='stage_started'?'running':kind==='stage_finished'?'done':kind,message:String(payload.message||payload.line||''),at:item.at||null,sequence:item.sequence};
+  }):null;
   return {...state,
     runId,
     status,
@@ -232,8 +260,15 @@ export function applySnapshot(state,snapshot){
     message:String(snapshot.message==null?'':snapshot.message),
     error:String(snapshot.error==null?'':snapshot.error),
     artifacts:mergeArtifacts([],snapshot.artifacts||[]),
-    log:switched?[]:state.log,
-    lastSequence:switched?0:state.lastSequence,
+    timeline:timeline|| (switched?[]:state.timeline),
+    recentActivity:Array.isArray(snapshot.recent_activity)?snapshot.recent_activity.slice(-20):switched?[]:state.recentActivity,
+    log:log.length?log:switched?[]:state.log,
+    lastSequence:Math.max(switched?0:state.lastSequence,Number(snapshot.latest_sequence??snapshot.last_sequence)||0),
+    progress:snapshot.progress&&typeof snapshot.progress==='object'?{stage:String(snapshot.progress.stage||snapshot.stage||''),done:snapshot.progress.done==null?null:Number(snapshot.progress.done),total:snapshot.progress.total==null?null:Number(snapshot.progress.total),unit:String(snapshot.progress.unit||''),message:String(snapshot.progress.message||'')}:null,
+    attempt:snapshot.attempt??null,
+    queuePosition:snapshot.queue_position??null,
+    plannedCalls:snapshot.planned_calls??state.plannedCalls,
+    lastActivity:snapshot.last_activity||snapshot.recent_activity?.at(-1)||null,
     finished:isTerminalStatus(status),
   };
 }
@@ -241,7 +276,7 @@ export function applySnapshot(state,snapshot){
 export function keywordReducer(state,action){
   switch(action&&action.type){
     case 'run_created':
-      return {...initialKeywordState,runId:action.runId||null,status:RUN_STATUS.QUEUED,message:'已排队'};
+      return {...initialKeywordState,runId:action.runId||null,status:RUN_STATUS.QUEUED,message:'已提交'};
     case 'run_event':return applyRunEvent(state,action.event);
     case 'snapshot':return applySnapshot(state,action.snapshot);
     default:return state;

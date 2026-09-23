@@ -114,6 +114,15 @@ test('progress within one stage never moves backwards and the log carries lines'
   assert.deepEqual(logged.log,[{sequence:5,line:'取数 1 完成'}]);
 });
 
+test('unknown progress denominator stays unknown instead of rendering as zero',()=>{
+  const progress=applyRunEvent(initialKeywordState,event(1,'stage_progress',{stage:'annotate',done:8,total:null,unit:'keywords'}));
+  assert.equal(progress.progress.done,8);
+  assert.equal(progress.progress.total,null);
+  const inactive=applySnapshot(initialKeywordState,{run_id:'example',status:'created',progress:{stage:'',done:null,total:null,unit:null,message:''}});
+  assert.equal(inactive.progress.done,null);
+  assert.equal(inactive.progress.total,null);
+});
+
 test('a replayed frame is dropped whole, so a reconnect cannot print or count twice',()=>{
   const seen=reduce([event(1,'run_started',{}),event(2,'log',{line:'a'}),event(3,'log',{line:'b'})]);
   for(const sequence of [1,2,3]){
@@ -174,10 +183,10 @@ test('an event type this build does not know advances the cursor without inventi
   assert.equal(unknown.stage,started.stage);
 });
 
-test('the log is capped so a long run cannot grow without bound',()=>{
+test('the complete event log remains available for the run detail',()=>{
   const events=[];for(let index=0;index<260;index+=1)events.push(event(index+1,'log',{line:'line '+index}));
   const long=reduce(events);
-  assert.equal(long.log.length,200);
+  assert.equal(long.log.length,260);
   assert.equal(long.log.at(-1).line,'line 259');
   assert.equal(long.lastSequence,260);
 });
@@ -192,6 +201,21 @@ test('the snapshot wins over events, including a status no event reports',()=>{
   assert.equal(recovered.finished,true);
   assert.equal(recovered.error,'工作台重启，运行已中断');
   assert.equal(recovered.lastSequence,2,'the cursor must survive a snapshot');
+});
+
+test('a reopened detail restores progress, attempt, queue position, log, timeline, and SSE cursor',()=>{
+  const restored=applySnapshot(initialKeywordState,{run_id:'r1',status:'running',stage:'annotate',
+    latest_sequence:28,attempt:2,queue_position:1,progress:{stage:'annotate',done:17,total:null,unit:'keywords',message:'标注第 17 项'},
+    logs:[{sequence:27,line:'收到模型结果'}],timeline:[{event_type:'stage_started',at:'2026-09-23T00:00:00Z',sequence:26,payload:{stage:'annotate',message:'开始模型标注'}}],
+    recent_activity:[{event_type:'stage_progress',sequence:28,at:'2026-09-23T00:00:01Z',payload:{stage:'annotate',done:17,total:null,unit:'keywords',message:'标注第 17 项'}}],artifacts:[]});
+  assert.equal(restored.lastSequence,28);
+  assert.equal(restored.progress.total,null);
+  assert.equal(restored.progress.done,17);
+  assert.equal(restored.attempt,2);
+  assert.equal(restored.queuePosition,1);
+  assert.deepEqual(restored.log,[{sequence:27,line:'收到模型结果'}]);
+  assert.deepEqual(restored.timeline,[{stage:'annotate',status:'running',message:'开始模型标注',at:'2026-09-23T00:00:00Z',sequence:26}]);
+  assert.equal(restored.recentActivity[0].event_type,'stage_progress');
 });
 
 test('the snapshot is the truth about artifacts, and switching runs resets cursor and log',()=>{

@@ -57,8 +57,11 @@ def _task_input():
 
 
 def _make_run(**plan_extra):
-    return registry.create(_task_input(), {'confirmed': True, 'budget': {'planned_total': 15},
-                                           **plan_extra})
+    run_id = registry.create(_task_input(), {'confirmed': True, 'budget': {'planned_total': 15},
+                                              **plan_extra})
+    # Unit-level runner fixture starts from the old queued state without exercising queue events.
+    registry.write(run_id, status=registry.QUEUED)
+    return run_id
 
 
 # --- 运行登记 -------------------------------------------------------------
@@ -114,6 +117,7 @@ def test_artifact_path_only_serves_registered_names():
 def test_recover_marks_active_runs_interrupted_only():
     active = _make_run()
     finished = _make_run()
+    registry.write(active, status=registry.RUNNING)
     registry.write(finished, status=registry.DONE)
     registry.recover()
     assert registry.read(active)['status'] == registry.INTERRUPTED
@@ -278,6 +282,7 @@ def test_execute_records_stages_artifacts_and_terminal_event(monkeypatch, tmp_pa
     assert runner.execute(run_id, threading.Event())['status'] == registry.DONE
     state = registry.read(run_id)
     assert state['status'] == registry.DONE
+    assert state['attempt'] == 1  # only a real execution increments attempts
     assert state['stage'] == 'done'
     assert state['model'] == {'base_url': 'https://fake.invalid', 'model': 'm1'}
     assert state['engine']['sha256'] and state['engine']['files'] > 0
@@ -298,7 +303,7 @@ def test_execute_records_stages_artifacts_and_terminal_event(monkeypatch, tmp_pa
     assert types.count('stage_finished') == 2
     assert 'artifact_ready' in types
     progress = [event for event in events if event['event_type'] == 'stage_progress']
-    assert progress[0]['payload'] == {'stage': 'collecting', 'done': 1, 'total': 15,
+    assert progress[0]['payload'] == {'stage': 'collecting', 'done': 1, 'total': None,
                                       'unit': 'mcp_call', 'message': '取数 1 完成: traffic_extend → 20 条'}
 
 
@@ -328,6 +333,7 @@ def test_execute_honours_a_preset_cancel(monkeypatch, tmp_path):
 
 def test_cancel_requires_this_process_to_own_the_run():
     run_id = _make_run()
+    registry.write(run_id, status=registry.RUNNING)
     with pytest.raises(ValueError):
         runner.cancel(run_id)  # 本进程没有它的执行记录
     runner.RUNNING[run_id] = (threading.Event(), None)

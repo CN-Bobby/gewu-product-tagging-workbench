@@ -36,8 +36,9 @@ def _task_input(body):
         _refuse(*exc.errors)
 
 
-def _plan_hash(task_input):
-    canonical = json.dumps(task_input, sort_keys=True, ensure_ascii=False)
+def _plan_hash(task_input, selection=None):
+    canonical = json.dumps({'input': task_input, 'selection': selection or {}},
+                           sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
@@ -49,7 +50,18 @@ def _snapshot(run_id):
     state = registry.read(run_id)
     if state is None:
         raise HTTPException(status_code=404, detail='运行不存在')
+    state = registry.public_summary(state)
+    state['queue_position'] = registry.queue_position(run_id)
+    state.setdefault('attempt', 0)
+    state.setdefault('progress', {'stage': state.get('stage') or '', 'done': None,
+                                  'total': None, 'unit': None, 'message': state.get('message') or ''})
+    state.setdefault('latest_sequence', registry.latest_sequence(run_id))
     return state
+
+
+def _selection(body):
+    return credentials.model_selection((body or {}).get('model_ref'),
+                                       (body or {}).get('credential_id'))
 
 
 @router.get('/meta')
@@ -77,31 +89,144 @@ def credential_clear():
 @router.post('/plan')
 def plan(body: dict):
     task_input = _task_input(body)
-    return {'plan_hash': _plan_hash(task_input), 'budget': _budget_of(task_input)}
+    selection = _selection(body)
+    return {'plan_hash': _plan_hash(task_input, selection), 'selected': selection,
+            'model_ref': selection['model_ref'], 'credential_id': selection['credential_id'],
+            'budget': _budget_of(task_input)}
 
 
 @router.post('/runs')
 def create_run(body: dict):
     task_input = _task_input(body)
-    running = [item for item in registry.list_runs(limit=200) if item['status'] in registry.ACTIVE]
-    if running:
-        _refuse('已有一次调研在运行（%s），请等它结束或先取消' % running[0]['run_id'])
-    if str((body or {}).get('plan_hash') or '') != _plan_hash(task_input):
+    selection = _selection(body)
+    if str((body or {}).get('plan_hash') or '') != _plan_hash(task_input, selection):
         _refuse('预算已变化，请重新核算后再发起')
+    dispatch = (body or {}).get('dispatch') or 'enqueue'  # legacy clients execute after confirmation
+    if dispatch not in ('create', 'enqueue'):
+        _refuse('dispatch 只能是 create 或 enqueue')
     run_id = registry.create(task_input, {'confirmed': True, 'created_at': now(),
-                                          'budget': _budget_of(task_input)})
-    runner.launch(run_id)
-    return {'run_id': run_id, 'status': registry.QUEUED}
+                                          'budget': _budget_of(task_input),
+                                          'selection': selection,
+                                          'plan_hash': _plan_hash(task_input, selection)},
+                             display_name=(body or {}).get('display_name'))
+    if dispatch == 'enqueue':
+        runner.start_queue([run_id])
+    state = registry.read(run_id)
+    return {'run_id': run_id, 'status': state['status'], 'attempt': state.get('attempt', 0)}
 
 
 @router.get('/runs')
-def list_runs():
-    return {'runs': registry.list_runs()}
+def list_runs(limit: int = 50, cursor: str | None = None, hidden: bool = False):
+    runs, next_cursor = registry.list_runs(limit=limit, cursor=cursor, hidden=hidden)
+    for index, item in enumerate(runs):
+        runs[index] = item = registry.public_summary(item)
+        item['queue_position'] = registry.queue_position(item['run_id'])
+        item.setdefault('attempt', 0)
+        item.setdefault('progress', {'stage': item.get('stage') or '', 'done': None,
+                                     'total': None, 'unit': None, 'message': item.get('message') or ''})
+    return {'runs': runs, 'next_cursor': next_cursor}
+
+
+def _queue_response():
+    state = registry.queue_state()
+    items = []
+    for index, run_id in enumerate(state['items'], start=1):
+        run = registry.read(run_id)
+        if run:
+            run = registry.public_summary(run)
+            run['queue_position'] = index if run.get('status') in (registry.QUEUED, registry.RUNNING, registry.CANCELLING) else None
+            run.setdefault('attempt', 0)
+            run.setdefault('progress', {'stage': run.get('stage') or '', 'done': None,
+                                         'total': None, 'unit': None,
+                                         'message': run.get('message') or ''})
+            run.setdefault('latest_sequence', registry.latest_sequence(run_id))
+            items.append(run)
+    return {'items': items, 'current': state.get('current'), 'state': state.get('state'),
+            'dispatch_enabled': bool(state.get('dispatch_enabled')),
+            'last_completed': state.get('last_completed'), 'updated_at': state.get('updated_at')}
+
+
+@router.get('/queue')
+def queue_get():
+    return _queue_response()
+
+
+@router.post('/queue')
+def queue_post(body: dict):
+    try:
+        runner.start_queue((body or {}).get('run_ids') or [])
+    except ValueError as exc:
+        _refuse(str(exc))
+    return _queue_response()
+
+
+@router.put('/queue/order')
+def queue_order(body: dict):
+    try:
+        registry.reorder((body or {}).get('run_ids') or [])
+    except ValueError as exc:
+        _refuse(str(exc))
+    return _queue_response()
+
+
+@router.post('/queue/stop')
+def queue_stop():
+    runner.stop_queue()
+    return _queue_response()
+
+
+@router.post('/queue/continue')
+def queue_continue():
+    try:
+        runner.continue_queue()
+    except ValueError as exc:
+        _refuse(str(exc))
+    return _queue_response()
+
+
+@router.patch('/runs/{run_id}')
+def run_rename(run_id: str, body: dict):
+    _snapshot(run_id)
+    return registry.rename(run_id, (body or {}).get('display_name'))
+
+
+@router.post('/runs/{run_id}/hide')
+def run_hide(run_id: str):
+    _snapshot(run_id)
+    return registry.set_hidden(run_id, True)
+
+
+@router.post('/runs/{run_id}/unhide')
+def run_unhide(run_id: str):
+    _snapshot(run_id)
+    return registry.set_hidden(run_id, False)
+
+
+@router.delete('/runs/{run_id}')
+def run_recycle(run_id: str):
+    _snapshot(run_id)
+    return registry.move_to_recycle_bin(run_id)
+
+
+@router.post('/runs/{run_id}/open-directory')
+def run_open_directory(run_id: str):
+    _snapshot(run_id)
+    return {'path': registry.open_directory(run_id)}
 
 
 @router.get('/runs/{run_id}')
 def run_detail(run_id: str):
-    return _snapshot(run_id)
+    state = _snapshot(run_id)
+    events = registry.event_history(run_id)
+    state['timeline'] = [event for event in events if event.get('event_type') in
+                         ('run_created', 'run_queued', 'run_started', 'run_finished',
+                          'run_failed', 'run_cancelled', 'run_skipped', 'stage_started',
+                          'stage_finished', 'stage_progress', 'artifact_ready')]
+    state['logs'] = [{'sequence': event.get('sequence'),
+                      'line': event.get('payload', {}).get('line', '')} for event in events
+                     if event.get('event_type') == 'log']
+    state['recent_activity'] = events[-20:]
+    return state
 
 
 @router.get('/runs/{run_id}/events')

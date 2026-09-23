@@ -68,6 +68,41 @@ async def validation_error(request,e):return JSONResponse({'detail':str(e)},stat
 @app.get('/api/health')
 def health():return {'status':'ok','application':'product-tagging-workbench','storage':str(STORAGE),'capabilities':capabilities.public(),**build_info()}
 
+@app.get('/api/home/summary')
+def home_summary():
+    """Small landing-page snapshot; configuration summaries never include secret values."""
+    settings=model_settings.read()
+    providers=[]
+    for provider in settings.get('providers',[]):
+        providers.append({'name':provider.get('name'),'models':provider.get('model_refs',[]),
+            'credentials':[{'id':item.get('id'),'name':item.get('name'),
+                'enabled':item.get('enabled',True),'authorized':item.get('authorized',False)}
+                for item in provider.get('credentials',[])]})
+    with Session() as s:
+        tagging=[]
+        for job in s.scalars(select(BatchJob).order_by(BatchJob.created_at.desc()).limit(5)):
+            dataset=s.get(Dataset,job.dataset_id)
+            tagging.append({'id':job.id,'dataset_id':job.dataset_id,
+                'dataset_name':dataset.name if dataset else '', 'status':job.status,
+                'created_at':job.created_at,'kind':(job.spec or {}).get('kind','labels')})
+        recent_runs=[]
+        for run in s.scalars(select(Run).order_by(Run.created_at.desc()).limit(5)):
+            dataset=s.get(Dataset,run.dataset_id)
+            recent_runs.append({'id':run.id,'dataset_id':run.dataset_id,
+                'dataset_name':dataset.name if dataset else '', 'status':run.status,
+                'created_at':run.created_at,'kind':run.kind})
+    keywords=[]
+    for item in keyword_registry.list_runs(limit=5)[0]:
+        summary=keyword_registry.public_summary(item)
+        keywords.append({'run_id':item['run_id'],'display_name':item.get('display_name') or '',
+            'status':item.get('status'),'stage':item.get('stage'),'created_at':item.get('created_at'),
+            'input_summary':summary['input_summary'],'budget':summary['budget']})
+    return {'configuration':{'models_configured':bool(settings.get('configured')),
+        'default_model':settings.get('default_model'),'providers':providers,
+        'sellersprite':keyword_research_routes.credentials.status()},
+        'recent_tagging_tasks':tagging,'recent_keyword_tasks':keywords,
+        'recent_tagging_runs':recent_runs}
+
 @app.get('/api/settings/models')
 def settings_models():return {**model_settings.read(),'defaults':model_settings.defaults()}
 

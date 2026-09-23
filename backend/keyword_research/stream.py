@@ -14,7 +14,7 @@ SSE_HEARTBEAT_SECONDS = 15
 SSE_POLL_INTERVAL = 0.5
 SSE_BATCH_LIMIT = 200
 CURSOR_PATTERN = re.compile(r'[0-9]+')
-TERMINAL_EVENT_TYPES = frozenset({'run_finished', 'run_failed', 'run_cancelled'})
+TERMINAL_EVENT_TYPES = frozenset({'run_finished', 'run_failed', 'run_cancelled', 'run_skipped'})
 
 
 def resolve_cursor(query_value=None, header_value=None):

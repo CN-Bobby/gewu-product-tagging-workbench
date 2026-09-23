@@ -108,6 +108,9 @@ def model_target(model_ref=None, credential_id=None):
     model = local_model_name(name, model)
     if not model:
         raise CredentialUnavailable('模型引用缺少具体模型名称')
+    declared_models = [local_model_name(name, value) for value in provider.get('models', [])]
+    if declared_models and model not in declared_models:
+        raise CredentialUnavailable(f'模型 {reference} 不在服务的已配置模型列表中')
     if provider.get('kind', 'openai') != 'openai':
         raise CredentialUnavailable('关键词调研只支持 OpenAI 兼容的模型服务')
 
@@ -121,3 +124,30 @@ def model_target(model_ref=None, credential_id=None):
     if not base.startswith('https://'):
         raise CredentialUnavailable('模型服务需使用已配置的 HTTPS 端点')
     return base, key, model
+
+
+def model_selection(model_ref=None, credential_id=None):
+    """Resolve the stable model/key identity used by plan fingerprints and run snapshots.
+
+    The returned object has identifiers only. Secrets remain in the existing provider .env file.
+    """
+    import tomllib
+    from ..model_settings import _canonical_config, defaults, normalize_reference
+    from ..runtime_isolation import _effective_credential, provider_home
+
+    home = provider_home()
+    config_path = home / 'config.toml'
+    if not config_path.exists():
+        return {'model_ref': str(model_ref or defaults()[0]), 'credential_id': credential_id}
+    config, _ = _canonical_config(tomllib.loads(config_path.read_text(encoding='utf-8-sig')))
+    reference = normalize_reference(str(model_ref or config.get('default_model') or defaults()[0]))
+    provider_name = reference.partition('/')[0]
+    provider = next((p for p in config.get('providers', []) if p.get('name') == provider_name), None)
+    if provider is None:
+        raise CredentialUnavailable(f'模型服务 {provider_name} 未在模型设置中配置')
+    local = reference.partition('/')[2]
+    declared_models = [str(x) for x in provider.get('models', [])]
+    if local and declared_models and local not in declared_models:
+        raise CredentialUnavailable(f'模型 {reference} 不在服务的已配置模型列表中')
+    selected = _effective_credential(provider, credential_id)
+    return {'model_ref': reference, 'credential_id': (selected or {}).get('id')}

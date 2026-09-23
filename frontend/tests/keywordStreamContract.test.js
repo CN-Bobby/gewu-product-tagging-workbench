@@ -18,6 +18,7 @@ const state=read('../src/keywordState.js');
 const page=read('../src/keywordResearch.jsx');
 const streamModule=read('../../backend/keyword_research/stream.py');
 const runnerModule=read('../../backend/keyword_research/runner.py');
+const registryModule=read('../../backend/keyword_research/registry.py');
 const routesModule=read('../../backend/keyword_research/routes.py');
 
 function pythonConstant(source,name){
@@ -48,7 +49,7 @@ function declaredRoutes(){
   const prefix=(routesModule.match(/APIRouter\(prefix='([^']+)'\)/)||[])[1];
   assert.ok(prefix,'routes.py must declare its prefix');
   const routes=[];
-  const pattern=/@router\.(get|post|delete)\('([^']+)'\)/g;
+  const pattern=/@router\.(get|post|delete|put|patch)\('([^']+)'\)/g;
   let match=pattern.exec(routesModule);
   while(match){routes.push(normalize(prefix+match[2]));match=pattern.exec(routesModule)}
   return routes;
@@ -71,8 +72,10 @@ test('the page and the server agree on which event types end a run',()=>{
 test('every event type the page understands is one the runner sends',()=>{
   const types=RUN_EVENT_TYPES;
   assert.equal(new Set(types).size,types.length,'a duplicated type would be counted twice');
-  for(const eventType of types)
-    assert.ok(runnerModule.includes("'"+eventType+"'"),'runner.py must send '+eventType);
+  for(const eventType of types){
+    const sender=eventType==='run_skipped'?registryModule:runnerModule;
+    assert.ok(sender.includes("'"+eventType+"'"),eventType==='run_skipped'?'registry.py must record skipped queue events':'runner.py must send '+eventType);
+  }
   for(const eventType of TERMINAL_EVENT_TYPES)
     assert.ok(streamModule.includes("'"+eventType+"'"),'stream.py must end the stream on '+eventType);
   assert.equal(RUN_EVENT.STAGE_PROGRESS,'stage_progress');
@@ -82,7 +85,7 @@ test('every event type the page understands is one the runner sends',()=>{
 test('every path the page can call is a route the server declares',()=>{
   const routes=declaredRoutes();
   const called=frontendPaths();
-  assert.equal(called.length,8,'the endpoint table must declare every path the page uses');
+  assert.equal(called.length,15,'the endpoint table must declare every path the page uses');
   for(const path of called)
     assert.ok(routes.includes(path),'the server does not declare '+path);
   // and nothing on this page spells a keyword research path out by hand
