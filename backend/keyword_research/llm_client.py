@@ -10,19 +10,24 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Optional
 
 import httpx
 
 DEFAULT_TIMEOUT = 120.0
+CONNECT_ATTEMPTS = 4
+CONNECT_BACKOFF_SECONDS = 0.5
+_CONNECTION_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError)
 
 
 class LLMError(Exception):
     def __init__(self, message: str, *, retryable: bool = False,
-                 truncated: bool = False) -> None:
+                 truncated: bool = False, fallback_allowed: bool = True) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.truncated = truncated
+        self.fallback_allowed = fallback_allowed
 
 
 class LLMResult:
@@ -80,14 +85,26 @@ class LLMClient:
         }
 
     def _post(self, path: str, body: dict) -> httpx.Response:
-        try:
-            resp = httpx.post(
-                f"{self.base_url}{path}", json=body, headers=self._headers(),
-                timeout=self.timeout,
-            )
-        except httpx.HTTPError as exc:
-            raise LLMError(f"模型请求失败: {exc}", retryable=True) from exc
-        return resp
+        url = f"{self.base_url}{path}"
+        for attempt in range(CONNECT_ATTEMPTS):
+            try:
+                return httpx.post(
+                    url, json=body, headers=self._headers(), timeout=self.timeout,
+                )
+            except _CONNECTION_ERRORS as exc:
+                if attempt + 1 == CONNECT_ATTEMPTS:
+                    raise LLMError(
+                        f"模型连接失败（已尝试 {CONNECT_ATTEMPTS} 次）: {exc}",
+                        retryable=True, fallback_allowed=False,
+                    ) from exc
+                time.sleep(CONNECT_BACKOFF_SECONDS * (2 ** attempt))
+            except httpx.HTTPError as exc:
+                # Once a request may have reached the provider, retrying can bill
+                # twice. Transport failures also cannot establish API incompatibility.
+                raise LLMError(
+                    f"模型请求传输失败: {exc}", fallback_allowed=False,
+                ) from exc
+        raise AssertionError("unreachable")
 
     @staticmethod
     def _raise_for_status(resp: httpx.Response) -> None:
@@ -187,6 +204,8 @@ class LLMClient:
                 return result
             except LLMError as exc:
                 if mode == "responses":
+                    raise
+                if not exc.fallback_allowed:
                     raise
                 if exc.retryable:
                     # 传输/限流类错误不应回退协议，直接抛出让上层重试

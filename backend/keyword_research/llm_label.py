@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections import Counter
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -61,8 +62,7 @@ def build_batch_prompt(keywords: list[dict]) -> str:
     return json.dumps({"关键词列表": rows}, ensure_ascii=False)
 
 
-def parse_label_output(text: str) -> list[dict]:
-    """解析 LLM 输出数组；校验字段名与必填项。"""
+def _decode_label_array(text: str) -> list:
     text = text.strip()
     if text.startswith("```"):
         first_nl = text.find("\n")
@@ -71,25 +71,64 @@ def parse_label_output(text: str) -> list[dict]:
     data = json.loads(text)
     if not isinstance(data, list):
         raise ValueError("LLM 标注输出不是数组")
+    return data
+
+
+def _validate_label_row(row: dict) -> None:
+    """校验单行字段契约，并就地归一化购买意图。"""
     required = {"keyword", "translation_fixed", "translation_reason",
                 "translation_confidence", "family", "demand_tags",
                 "relevance", "relevance_reason", "purchase_intent"}
+    missing = required - set(row.keys())
+    if missing:
+        raise ValueError(f"LLM 标注行缺少字段: {sorted(missing)}")
+    if row.get("relevance") not in ("A", "B", "C", "D"):
+        raise ValueError(f"relevance 非法: {row.get('relevance')!r}")
+    # 购买意图归一化：容忍模型输出英文枚举（实测出现过 high/medium/low）
+    pi = str(row.get("purchase_intent") or "").strip().lower()
+    pi_map = {"高": "高", "中": "中", "低": "低",
+              "high": "高", "medium": "中", "low": "低"}
+    if pi not in pi_map:
+        raise ValueError(f"purchase_intent 非法: {row.get('purchase_intent')!r}")
+    row["purchase_intent"] = pi_map[pi]
+
+
+def parse_label_output(text: str) -> list[dict]:
+    """严格解析 LLM 输出数组；任一行不符合字段契约即拒绝。"""
+    data = _decode_label_array(text)
     for row in data:
         if not isinstance(row, dict):
             raise ValueError("LLM 标注行不是对象")
-        missing = required - set(row.keys())
-        if missing:
-            raise ValueError(f"LLM 标注行缺少字段: {sorted(missing)}")
-        if row.get("relevance") not in ("A", "B", "C", "D"):
-            raise ValueError(f"relevance 非法: {row.get('relevance')!r}")
-        # 购买意图归一化：容忍模型输出英文枚举（实测出现过 high/medium/low）
-        pi = str(row.get("purchase_intent") or "").strip().lower()
-        pi_map = {"高": "高", "中": "中", "低": "低",
-                  "high": "高", "medium": "中", "low": "低"}
-        if pi not in pi_map:
-            raise ValueError(f"purchase_intent 非法: {row.get('purchase_intent')!r}")
-        row["purchase_intent"] = pi_map[pi]
+        _validate_label_row(row)
     return data
+
+
+def _parse_recoverable_label_rows(text: str, batch_keys: list[str]
+                                  ) -> tuple[list[dict], list[str]]:
+    """提取严格有效、请求内且唯一的行；其余请求词保持未解析。"""
+    data = _decode_label_array(text)
+    requested = set(batch_keys)
+    counts = Counter(
+        row.get("keyword") for row in data
+        if isinstance(row, dict) and isinstance(row.get("keyword"), str)
+        and row.get("keyword") in requested
+    )
+    valid_rows = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        keyword = row.get("keyword")
+        if (not isinstance(keyword, str) or keyword not in requested
+                or counts[keyword] != 1):
+            continue
+        try:
+            _validate_label_row(row)
+        except ValueError:
+            continue
+        valid_rows.append(row)
+    valid_keys = {row["keyword"] for row in valid_rows}
+    unresolved = [key for key in batch_keys if key not in valid_keys]
+    return valid_rows, unresolved
 
 
 class LLMLabeler:
@@ -173,7 +212,7 @@ class LLMLabeler:
                      stats: dict, stats_lock: threading.Lock,
                      write_lock: threading.Lock,
                      bi: int, total_batches: int) -> None:
-        """标注一批；截断拆半递归，失败重试。stats 更新须持锁。"""
+        """标注一批；保留有效行，只递归重试未解析行。stats 更新须持锁。"""
         batch = [by_keyword[k] for k in batch_keys]
         self._emit("label_batch_start", batch_index=bi, total_batches=total_batches,
                    size=len(batch_keys))
@@ -182,34 +221,49 @@ class LLMLabeler:
             {"role": "user", "content": build_batch_prompt(batch)},
         ]
         last_error: Exception | None = None
+        unresolved_keys: list[str] | None = None
         for attempt in range(self.max_batch_retries + 1):
             try:
                 result = self.llm.complete(messages, json_mode=True)
                 if result.truncated:
                     raise LLMError("输出截断（finish_reason=length）", retryable=True)
-                rows = parse_label_output(result.text)
-                if len(rows) < len(batch_keys):
-                    # 部分缺失：允许少 1 条（保守），否则视为失败
-                    if len(rows) < len(batch_keys) - 1:
-                        raise ValueError(
-                            f"返回 {len(rows)} 条，期望 {len(batch_keys)} 条")
-                with stats_lock:
-                    stats["labeled"] += len(rows)
-                self._apply_rows(rows, batch_keys, by_keyword, write_lock)
-                self._emit("label_batch_done", batch_index=bi, size=len(batch_keys))
-                return
+                rows, unresolved = _parse_recoverable_label_rows(
+                    result.text, batch_keys)
+                if rows:
+                    row_keys = [row["keyword"] for row in rows]
+                    self._apply_rows(rows, row_keys, by_keyword, write_lock)
+                    with stats_lock:
+                        stats["labeled"] += len(rows)
+                if not unresolved:
+                    self._emit("label_batch_done", batch_index=bi,
+                               size=len(batch_keys))
+                    return
+                if rows:
+                    unresolved_keys = unresolved
+                    break
+                raise ValueError(
+                    f"返回中没有可接受的请求行，未解析 {len(unresolved)} 个关键词")
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
-                with stats_lock:
-                    stats["retries"] += 1
-                self._emit("label_batch_retry", batch_index=bi, attempt=attempt + 1,
-                           error=str(exc)[:200])
                 is_truncated = isinstance(exc, LLMError) and exc.truncated
-                if is_truncated and len(batch_keys) > MIN_SPLIT_SIZE:
-                    # 截断 → 拆半递归，各自独立失败不影响另一半
+                is_shape_error = isinstance(exc, ValueError)
+                should_split = (
+                    (is_truncated and len(batch_keys) > MIN_SPLIT_SIZE)
+                    or (is_shape_error and len(batch_keys) > 1)
+                )
+                if should_split:
+                    # 截断批次按容量阈值拆分；结构/校验错误直接二分到可恢复的子批，
+                    # 避免对同一坏形状响应重复付费，且单关键词是递归终点。
                     with stats_lock:
+                        stats["retries"] += 1
                         stats["split_batches"] += 1
+                    self._emit("label_batch_retry", batch_index=bi,
+                               attempt=attempt + 1, error=str(exc)[:200])
                     mid = len(batch_keys) // 2
+                    split_reason = "truncated" if is_truncated else "invalid_output"
+                    self._emit("label_batch_split", batch_index=bi,
+                               total_batches=total_batches, size=len(batch_keys),
+                               reason=split_reason)
                     failures: list[str] = []
                     for half in (batch_keys[:mid], batch_keys[mid:]):
                         try:
@@ -220,9 +274,40 @@ class LLMLabeler:
                     if not failures:
                         return
                     last_error = RuntimeError("；".join(failures))
+                    # 子批已统计各自失败的终端批次；父批只传播失败，不能再重复计数。
+                    raise RuntimeError(
+                        f"标签批次 {bi} 拆分后仍有失败: {last_error}"
+                    ) from last_error
+                if is_shape_error:
+                    # 重复发送相同的单关键词结构错误不会再缩小问题，也不会改善输出。
                     break
+                is_terminal_llm_error = (
+                    isinstance(exc, LLMError)
+                    and (not exc.retryable or not exc.fallback_allowed)
+                )
+                if is_terminal_llm_error:
+                    # 不重试不可重试错误；client 标记的终止传输错误也已耗尽内部退避。
+                    break
+                if attempt < self.max_batch_retries:
+                    with stats_lock:
+                        stats["retries"] += 1
+                    self._emit("label_batch_retry", batch_index=bi,
+                               attempt=attempt + 1, error=str(exc)[:200])
+        if unresolved_keys is not None:
+            with stats_lock:
+                stats["retries"] += 1
+            self._emit("label_batch_partial", batch_index=bi,
+                       resolved=len(batch_keys) - len(unresolved_keys),
+                       unresolved=len(unresolved_keys))
+            self._emit("label_batch_retry", batch_index=bi, attempt=1,
+                       error=f"仅重试未解析关键词: {len(unresolved_keys)}")
+            self._label_batch(unresolved_keys, by_keyword, stats, stats_lock,
+                              write_lock, bi, total_batches)
+            return
         with stats_lock:
             stats["failed_batches"] += 1
+        self._emit("label_batch_failed", batch_index=bi, size=len(batch_keys),
+                   error=str(last_error)[:200])
         raise RuntimeError(f"标签批次 {bi} 标注失败: {last_error}") from last_error
 
     def _apply_rows(self, rows: list[dict], batch_keys: list[str],
