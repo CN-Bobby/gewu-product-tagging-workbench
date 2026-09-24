@@ -2,7 +2,7 @@
 """任务流水线：skill v1.6.2 总流程 14 步的脚本化编排。
 
 设计约束：
-- 所有 SellerSprite 调用经全局限流器（默认60次/滚动60s、间隔至少1秒）与 call_log；
+- 所有 SellerSprite 调用经全局限流器（默认30次/滚动60s、间隔至少1秒）与 call_log；
 - MCP 返回先原样落盘 raw/ 再解析（skill 契约），raw/cache 即断点：产物存在则跳过；
 - LLM 两步（标注、分析）在 llm_label.py / llm_analysis.py 中分批/分段执行；
 - run() 为同步入口，供作业线程调用；取消通过 cancel() 置位（可被其它线程调用）。

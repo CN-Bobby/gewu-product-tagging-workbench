@@ -66,7 +66,7 @@
 - 原始返回保存为 `raw/traffic_keyword_current_<ASIN>_p1.json`，附 `_meta={asin,marketplace,observed_at,page:1,page_size:100,snapshot_type:"current"}`。
 - 字段映射：`rankPosition.page/index/position`、`adPosition.page/index/position`、`trafficPercentage`。报告排名只用 `page/index` 格式化为 `P页-页内位`；缺失保持空白，不填0，不从 `position` 反推页码。
 - 旧版 `traffic_keyword_<ASIN>_p*.json` 为历史/多页缓存，聚合器必须忽略，不能静默冒充当前数据。
-- **本地限流默认值**：真实滑动窗口每60秒最多60次调用，相邻调用至少间隔1秒。达到窗口上限时持续等待并显示倒计时，任务不得因限流等待而停止。SellerSprite 服务端自己的限流仍生效；服务端限流后按配置等待再重试。
+- **本地限流默认值**：真实滑动窗口每60秒最多30次调用，相邻调用至少间隔1秒。达到窗口上限时持续等待并显示倒计时，任务不得因限流等待而停止。SellerSprite 服务端自己的限流仍生效；服务端限流后按配置等待再重试。
 
 纪律重申：新计划默认基准外自动重试上限10次；单次 MCP 调用最多自动重试1次。超出任务额度时，在发起下一次网络请求前停止。旧计划未记录重试额度时沿用2次。权限、额度、参数错误不重试。`ERROR_UNAUTHORIZED` 只能记录为“授权或额度拒绝”，不得仅凭错误码断言密钥无权限。
 

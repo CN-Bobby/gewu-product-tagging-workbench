@@ -383,7 +383,7 @@ def test_mcp_connection(endpoint: str, timeout: float = 60.0,
                         rate_limiter: RateLimiter | None = None) -> dict:
     """设置页“测试连接”：list_tools 验证凭据与连通性（不产生业务调用）。
 
-    连接测试也走限流器（默认模块级限流器，60次/滚动60秒，间隔至少1秒）。
+    连接测试也走限流器（默认模块级限流器，30次/滚动60秒，间隔至少1秒）。
     """
     import asyncio
 

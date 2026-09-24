@@ -30,9 +30,9 @@ def test_engine_and_rate_limiter_defaults() -> None:
     limiter = RateLimiter()
 
     assert (config.window_max_calls, config.window_seconds,
-            config.min_call_interval) == (60, 60.0, 1.0)
+            config.min_call_interval) == (30, 60.0, 1.0)
     assert (limiter.max_calls, limiter.window_seconds,
-            limiter.min_interval) == (60, 60.0, 1.0)
+            limiter.min_interval) == (30, 60.0, 1.0)
 
 
 def test_default_limiter_enforces_one_second_between_calls(
