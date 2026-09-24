@@ -8,8 +8,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import{RUN_STATUS,applyRunEvent,applySnapshot,buildRunRequest,initialKeywordForm,
-  initialKeywordState,isActiveStatus,isTerminalEvent,isTerminalStatus,keywordReducer,parseAsins,
-  parseNodeIds,pendingQueueCount,validQueueSelection}from'../src/keywordState.js';
+  initialKeywordState,isActiveStatus,isCurrentRunSnapshot,isTerminalEvent,isTerminalStatus,keywordReducer,parseAsins,
+  parseNodeIds,pendingQueueCount,summarizeActivity,validQueueSelection}from'../src/keywordState.js';
 
 const event=(sequence,event_type,payload={})=>({run_id:'r1',sequence,event_type,at:'2026-09-23T00:00:00Z',payload});
 const reduce=(events,start=initialKeywordState)=>events.reduce(applyRunEvent,start);
@@ -88,6 +88,46 @@ test('pending queue count ignores terminal history rows',()=>{
     {status:'failed'},{status:'done'},{status:'skipped'},
   ]),3);
   assert.equal(pendingQueueCount([]),0);
+});
+
+test('queue selection uses the fresh run list, deduplicates IDs, and excludes newly queued tasks',()=>{
+  const result=validQueueSelection(['run-a','run-a','run-old','run-b'],[
+    {run_id:'run-a',status:'failed',display_name:'可续跑'},
+    {run_id:'run-b',status:'created',display_name:'新建'},
+  ],[{run_id:'run-b',status:'queued'}]);
+  assert.deepEqual(result.valid,['run-a']);
+  assert.deepEqual(result.stale,['run-old','run-b']);
+  assert.deepEqual(result.items.map(item=>item.display_name),['可续跑']);
+});
+
+test('selecting another run resets the previous run projection before its snapshot arrives',()=>{
+  const previous=applySnapshot(initialKeywordState,{run_id:'run-a',status:'running',latest_sequence:8,
+    log:[{sequence:8,line:'previous run'}],progress:{stage:'annotate',done:4,total:9}});
+  const selected=keywordReducer(previous,{type:'run_selected',runId:'run-b'});
+  assert.equal(selected.runId,'run-b');
+  assert.equal(selected.status,'created');
+  assert.equal(selected.lastSequence,0);
+  assert.deepEqual(selected.log,[]);
+  assert.equal(selected.progress,null);
+});
+
+test('a late snapshot is ignored after selection moves to another run or clears',()=>{
+  assert.equal(isCurrentRunSnapshot('run-a','run-b'),false);
+  assert.equal(isCurrentRunSnapshot('run-a',''),false);
+  assert.equal(isCurrentRunSnapshot('run-b','run-b'),true);
+});
+
+test('activity summary removes duplicate machine notices and keepalives',()=>{
+  const items=[
+    event(1,'stage_started',{stage:'discover',message:'开始取数'}),
+    event(2,'log',{line:'重试请求'}),event(3,'log',{line:'重试请求'}),
+    event(4,'log',{line:'heartbeat'}),event(5,'stage_progress',{stage:'discover',message:'读取第 2 页'}),
+  ];
+  const summary=summarizeActivity(items);
+  assert.equal(summary.length,3);
+  assert.match(summary[0].text,/开始取数/);
+  assert.equal(summary.filter(item=>item.text.includes('重试请求')).length,1);
+  assert.ok(summary.every(item=>!item.text.includes('heartbeat')));
 });
 
 test('an empty month is sent as null and the matrix month is dropped when the matrix is off',()=>{

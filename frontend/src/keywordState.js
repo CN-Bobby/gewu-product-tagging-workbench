@@ -84,14 +84,39 @@ export function buildRunRequest(form){
   return body;
 }
 
-export function validQueueSelection(ids,runs){
+export function validQueueSelection(ids,runs,queueItems=[]){
   const eligible=new Map((runs||[]).map(item=>[item.run_id||item.id,item]));
+  // The queue snapshot is independently authoritative for work already submitted to dispatch.
+  for(const item of queueItems||[]){
+    const id=item.run_id||item.id;
+    if(id&&['queued','running','cancelling'].includes(item.status))eligible.set(id,item);
+  }
   const selected=[...new Set(ids||[])];
   const valid=selected.filter(id=>{
     const item=eligible.get(id);
     return item&&['created','failed','cancelled','interrupted','skipped'].includes(item.status);
   });
   return {valid,stale:selected.filter(id=>!valid.includes(id)),items:valid.map(id=>eligible.get(id))};
+}
+
+export const isCurrentRunSnapshot=(requestedRunId,selectedRunId)=>Boolean(requestedRunId&&requestedRunId===selectedRunId);
+
+// Keep the activity panel useful when runners repeat progress or retry notices. Exact repeated
+// machine messages are collapsed, while distinct user-facing stages and errors remain visible.
+export function summarizeActivity(items){
+  const seen=new Set(),result=[];
+  for(const item of items||[]){
+    const type=String(item?.event_type||'');
+    const payload=item?.payload&&typeof item.payload==='object'?item.payload:{};
+    const text=[type.replaceAll('_',' '),payload.stage,payload.message||payload.line].filter(Boolean).join(' · ');
+    if(!text)continue;
+    const normalized=text.trim().replace(/\s+/g,' ').toLowerCase();
+    if(type==='log'&&(/^(heartbeat|keepalive|polling?)(?:\b|$)/i.test(String(payload.line||''))))continue;
+    if(seen.has(normalized))continue;
+    seen.add(normalized);
+    result.push({sequence:item.sequence,at:item.at,text});
+  }
+  return result.slice(-12);
 }
 
 export function pendingQueueCount(items){
@@ -294,6 +319,8 @@ export function applySnapshot(state,snapshot){
 
 export function keywordReducer(state,action){
   switch(action&&action.type){
+    case 'run_selected':
+      return action.runId===state.runId?state:{...initialKeywordState,runId:action.runId||null,status:'created'};
     case 'run_created':
       return {...initialKeywordState,runId:action.runId||null,status:action.status||RUN_STATUS.QUEUED,
         message:action.status==='created'?'已保存，尚未开始':'已提交'};

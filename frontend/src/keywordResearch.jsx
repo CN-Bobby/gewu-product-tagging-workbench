@@ -9,7 +9,7 @@ import React,{useEffect,useReducer,useRef,useState}from'react';
 import{Download,Play,Plus,RefreshCw,Trash2,X}from'lucide-react';
 import './keywordResearch.css';
 import{ENDPOINTS,SSE_EVENT_NAME,buildRunRequest,initialKeywordForm,initialKeywordState,
-  isActiveStatus,isTerminalEvent,isTerminalStatus,keywordReducer,parseAsins,parseNodeIds,pendingQueueCount,validQueueSelection}
+  isActiveStatus,isCurrentRunSnapshot,isTerminalEvent,isTerminalStatus,keywordReducer,parseAsins,parseNodeIds,pendingQueueCount,summarizeActivity,validQueueSelection}
   from'./keywordState';
 
 // The shared workbench helper turns a failed response into a plain Error, which flattens a
@@ -114,9 +114,10 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
   const [credential,setCredential]=useState(null);
   const [form,setForm]=useState(initialKeywordForm);
   const [state,dispatch]=useReducer(keywordReducer,initialKeywordState);
+  const selectedRunRef=useRef(selectedRunId||'');
   const [plan,setPlan]=useState(null);
   const [errors,setErrors]=useState([]);
-  const [recent,setRecent]=useState([]),[queue,setQueue]=useState({items:[],state:'idle',dispatch_enabled:false}),[nextCursor,setNextCursor]=useState(null),[showHidden,setShowHidden]=useState(false),[view,setView]=useState(selectedRunId?'detail':location.hash.startsWith('#/keyword/queue')?'queue':'new'),[selected,setSelected]=useState([]),[displayName,setDisplayName]=useState(''),[models,setModels]=useState(null),[modelRef,setModelRef]=useState(''),[credentialId,setCredentialId]=useState('');
+  const [recent,setRecent]=useState([]),[queue,setQueue]=useState({items:[],state:'idle',dispatch_enabled:false}),[nextCursor,setNextCursor]=useState(null),[showHidden,setShowHidden]=useState(false),[view,setView]=useState(selectedRunId?'queue':location.hash.startsWith('#/keyword/queue')?'queue':'new'),[selected,setSelected]=useState([]),[queueConfirmation,setQueueConfirmation]=useState(null),[selectedTaskId,setSelectedTaskId]=useState(selectedRunId||''),[notice,setNotice]=useState(''),[displayName,setDisplayName]=useState(''),[models,setModels]=useState(null),[modelRef,setModelRef]=useState(''),[credentialId,setCredentialId]=useState('');
   const [busy,setBusy]=useState('');
   const stream=useRef(null),latest=useRef(state);
   latest.current=state;
@@ -138,7 +139,7 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
   },[]);
 
   const refreshRecent=(next='',append=false)=>api(`${ENDPOINTS.runs()}?limit=50${next?'&cursor='+encodeURIComponent(next):''}${showHidden?'&hidden=true':''}`,undefined,'GET')
-    .then(data=>{setRecent(current=>append?[...current,...(data.runs||[])]:data.runs||[]);setNextCursor(data.next_cursor||null);return data.runs||[]})
+    .then(data=>{const runs=data.runs||[];setRecent(current=>append?[...new Map([...current,...runs].map(item=>[item.run_id||item.id,item])).values()]:runs);setNextCursor(data.next_cursor||null);return runs})
     .catch(error=>{setErrors([error.message]);return null});
 
   const refreshQueue=()=>api(ENDPOINTS.queue(),undefined,'GET').then(value=>{
@@ -146,10 +147,27 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
   }).catch(error=>{setErrors([error.message]);return null});
   useEffect(()=>{refreshRecent('');refreshQueue()},[showHidden]);
   useEffect(()=>{
+    if(view!=='queue')return undefined;
+    const refreshVisible=()=>{if(document.visibilityState!=='hidden'){refreshRecent('');refreshQueue()}};
+    const timer=setInterval(refreshVisible,5000);
+    window.addEventListener('focus',refreshVisible);
+    return()=>{clearInterval(timer);window.removeEventListener('focus',refreshVisible)};
+  },[view,showHidden]);
+  useEffect(()=>{
     const eligible=new Set([...recent,...queue.items].filter(item=>canQueueStatus(item.status)).map(item=>item.run_id||item.id));
+    for(const item of queue.items)if(['queued','running','cancelling'].includes(item.status))eligible.delete(item.run_id||item.id);
     setSelected(current=>current.filter(id=>eligible.has(id)));
   },[recent,queue.items]);
-  useEffect(()=>{if(selectedRunId){setView('detail');readSnapshot(selectedRunId)}else if(view==='detail')setView('queue')},[selectedRunId]);
+  useEffect(()=>{
+    if(selectedRunId){selectedRunRef.current=selectedRunId;setView('queue');setSelectedTaskId(selectedRunId);dispatch({type:'run_selected',runId:selectedRunId});readSnapshot(selectedRunId)}
+    else{selectedRunRef.current='';setSelectedTaskId('');dispatch({type:'run_selected',runId:null})}
+  },[selectedRunId]);
+  useEffect(()=>{
+    if(view!=='queue'||selectedTaskId||selectedRunId)return;
+    const latest=recent[0],running=queue.items.find(item=>item.run_id===queue.current||item.id===queue.current);
+    const id=queue.current||latest?.run_id||latest?.id||running?.run_id||running?.id;
+    if(id){setSelectedTaskId(id);onSelectRun(id)}
+  },[view,recent,queue.items,queue.current,selectedTaskId,selectedRunId]);
 
   // One stream per run. It is opened from the sequence this page has already folded in, and after a
   // drop the snapshot is read again before resuming: the snapshot can say interrupted after a
@@ -207,26 +225,55 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
     try{
       if(!plan?.plan_hash||!form.planHash)throw Error('请先核算预算');
       const name=displayName.trim()||`关键词调研 ${new Date().toLocaleString()}`;
-      const immediate=dispatchMode==='enqueue';
-      if(!window.confirm(immediate
-        ?`即将创建并开始任务“${name}”。预计 ${plan.budget?.planned_total??0} 次 SellerSprite 调用。确认后会立即进入队列并开始取数。`
-        :`确认仅保存任务“${name}”？预算约 ${plan.budget?.planned_total??0} 次调用。保存后不会开始取数。`))return;
       const chosen=plan.selected||plan;
       const created=await callJson(ENDPOINTS.runs(),{...buildRunRequest(form),dispatch:dispatchMode,display_name:name,model_ref:chosen.model_ref||modelRef,credential_id:chosen.credential_id||credentialId});
-      dispatch({type:'run_created',runId:created.run_id,status:created.status});setErrors([]);await Promise.all([refreshRecent(''),refreshQueue()]);onSelectRun(created.run_id);setView('detail');await readSnapshot(created.run_id);
+      selectedRunRef.current=created.run_id;
+      dispatch({type:'run_created',runId:created.run_id,status:created.status});setSelectedTaskId(created.run_id);setNotice(`“${name}”${dispatchMode==='create'?'已保存':'已创建并提交队列'} · ${LABEL[created.status]||created.status}`);setErrors([]);setView('queue');await Promise.all([refreshRecent(''),refreshQueue()]);onSelectRun(created.run_id);await readSnapshot(created.run_id);
     }catch(error){setErrors(error.errors||[error.message])}
     finally{setBusy('')}
   };
 
+  const freshQueueSelection=async ids=>{
+    const selectedIds=[...new Set(ids||[])];
+    const query=cursor=>`${ENDPOINTS.runs()}?limit=50${cursor?'&cursor='+encodeURIComponent(cursor):''}${showHidden?'&hidden=true':''}`;
+    const [first,freshQueue]=await Promise.all([api(query(''),undefined,'GET'),api(ENDPOINTS.queue(),undefined,'GET')]);
+    const normalized={...freshQueue,items:freshQueue.items||freshQueue.queue||[]};
+    const allRuns=[...(first.runs||[])];let cursor=first.next_cursor||null,firstCursor=cursor,passes=0;
+    while(cursor&&selectedIds.some(id=>!allRuns.some(item=>(item.run_id||item.id)===id))){
+      if(++passes>100)throw Error('任务列表分页过多，已中止排队；请缩小选择范围后重试。');
+      const page=await api(query(cursor),undefined,'GET');allRuns.push(...(page.runs||[]));
+      if(page.next_cursor===cursor)throw Error('任务列表游标未前进，已中止排队。');
+      cursor=page.next_cursor||null;
+    }
+    const firstRuns=first.runs||[],firstIds=new Set(firstRuns.map(item=>item.run_id||item.id));
+    const refreshedById=new Map([...allRuns,...normalized.items].map(item=>[item.run_id||item.id,item]));
+    setRecent(current=>[...firstRuns,...current.filter(item=>!firstIds.has(item.run_id||item.id)).map(item=>refreshedById.get(item.run_id||item.id)||item)]);
+    setNextCursor(firstCursor);setQueue(normalized);
+    return validQueueSelection(selectedIds,allRuns,normalized.items);
+  };
+
   const enqueue=async ids=>{
-    const selection=validQueueSelection(ids,[...recent,...queue.items]);
-    if(selection.stale.length){setSelected(selection.valid);setErrors(['任务列表已变化，已移除失效勾选项。请检查后再排队。']);return}
-    if(!selection.valid.length)return;
-    const validIds=selection.valid,items=selection.items;
-    const names=items.map(item=>item.display_name||item.name||item.run_id||item.id);
-    const total=items.reduce((sum,item)=>sum+Number(item.budget?.planned_total??item.planned_total??item.planned_calls??0),0);
-    if(!window.confirm(`确认立即按当前顺序开始以下 ${validIds.length} 项任务？\n${names.map((name,index)=>(index+1)+'. '+name).join('\n')}\n合计预算：${total} 次取数调用。已在运行的任务结束后，后续任务依次执行。`))return;
-    setBusy('queue');try{await callJson(ENDPOINTS.queue(),{run_ids:validIds});setErrors([]);setSelected([]);await Promise.all([refreshQueue(),refreshRecent('')]);if(state.runId&&validIds.includes(state.runId))await readSnapshot(state.runId);}catch(error){setErrors(error.errors||[error.message])}finally{setBusy('')}
+    setBusy('queue');setErrors([]);setQueueConfirmation(null);
+    try{
+      const selection=await freshQueueSelection(ids);
+      if(selection.stale.length){setSelected(selection.valid);throw Error('任务状态已变化，失效或已排队的勾选项已移除。请检查列表后重试。')}
+      if(!selection.valid.length)return;
+      const names=selection.items.map(item=>item.display_name||item.name||item.run_id||item.id);
+      const total=selection.items.reduce((sum,item)=>sum+Number(item.budget?.planned_total??item.planned_total??item.planned_calls??0),0);
+      setQueueConfirmation({ids:selection.valid,names,total});
+    }catch(error){setErrors(error.errors||[error.message])}finally{setBusy('')}
+  };
+
+  const confirmEnqueue=async()=>{
+    if(!queueConfirmation)return;
+    setBusy('queue');setErrors([]);
+    try{
+      const latest=await freshQueueSelection(queueConfirmation.ids);
+      if(latest.stale.length){setSelected(latest.valid);setQueueConfirmation(null);throw Error('确认期间任务状态已变化，已移除失效勾选项；请检查后重新确认。')}
+      if(!latest.valid.length){setQueueConfirmation(null);return}
+      await callJson(ENDPOINTS.queue(),{run_ids:latest.valid});setQueueConfirmation(null);setErrors([]);setSelected([]);await Promise.all([refreshQueue(),refreshRecent('')]);
+      if(state.runId&&latest.valid.includes(state.runId))await readSnapshot(state.runId);
+    }catch(error){setErrors(error.errors||[error.message])}finally{setBusy('')}
   };
 
   const cancel=async()=>{
@@ -239,6 +286,7 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
   const readSnapshot=async runId=>{
     try{
       const snapshot=await api(ENDPOINTS.run(runId),undefined,'GET');
+      if(!isCurrentRunSnapshot(runId,selectedRunRef.current))return null;
       dispatch({type:'snapshot',snapshot});
       if(isTerminalStatus(snapshot?.status)){
         const[,latestQueue]=await Promise.all([refreshRecent(''),refreshQueue()]);
@@ -250,14 +298,20 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
     }catch(error){setErrors([error.message]);return null}
   };
 
+  const selectTask=id=>{
+    if(!id)return;
+    selectedRunRef.current=id;
+    setSelectedTaskId(id);setView('queue');setNotice('');onSelectRun(id);
+  };
+
   const modelOptions=(models?.providers||[]).flatMap(provider=>(provider.model_refs||[]).map(ref=>({ref,provider}))),selectedProvider=(models?.providers||[]).find(provider=>provider.name===modelRef.split('/')[0]),credentialOptions=selectedProvider?.credentials?.filter(item=>item.enabled&&item.authorized)||[];
   const selectModel=value=>{setModelRef(value);const provider=(models?.providers||[]).find(item=>item.name===value.split('/')[0]);setCredentialId(provider?.primary_credential_id||'');setPlan(null);setForm(current=>({...current,planHash:''}))};
   const reorder=async(id,offset)=>{const items=(queue.items||[]).filter(item=>['created','queued'].includes(item.status)&&item.run_id!==queue.current&&item.id!==queue.current),index=items.findIndex(item=>(item.run_id||item.id)===id),next=index+offset;if(index<0||next<0||next>=items.length)return;const ids=items.map(item=>item.run_id||item.id);[ids[index],ids[next]]=[ids[next],ids[index]];try{await api(ENDPOINTS.queueOrder(),{run_ids:ids},'PUT');await refreshQueue()}catch(error){setErrors([error.message])}};
   const stopQueue=async()=>{if(!window.confirm('停止当前关键词队列？当前任务将取消，尚未开始的任务标记为跳过并保留输入与缓存。'))return;try{await api(ENDPOINTS.queueStop(),{});await refreshQueue();await refreshRecent('')}catch(error){setErrors([error.message])}};
   const continueQueue=async()=>{try{await api(ENDPOINTS.queueContinue(),{});await Promise.all([refreshQueue(),refreshRecent('')]);if(state.runId)await readSnapshot(state.runId)}catch(error){setErrors([error.message])}};
   const rename=async item=>{const id=item.run_id||item.id,name=window.prompt('任务名称',item.display_name||item.name||'关键词调研');if(!name?.trim())return;try{await api(ENDPOINTS.run(id),{display_name:name.trim()},'PATCH');await refreshRecent('')}catch(error){setErrors([error.message])}};
-  const hide=async(item,hidden)=>{const id=item.run_id||item.id;try{await api(hidden?ENDPOINTS.runUnhide(id):ENDPOINTS.runHide(id),{});await Promise.all([refreshRecent(''),refreshQueue()])}catch(error){setErrors([error.message])}};
-  const trash=async item=>{const id=item.run_id||item.id;if(isActiveStatus(item.status)||['created','queued'].includes(item.status)&&queue.items.some(q=>(q.run_id||q.id)===id&&q.current))return setErrors(['运行中的任务不能移入回收站']);const contents=item.artifacts?.length?item.artifacts.map(file=>file.name).join('、'):'任务输入、缓存、日志与已生成产物';if(!window.confirm(`确认将“${item.display_name||item.name||id}”及其运行目录移入 Windows 回收站？范围：${contents}。失败时会保留任务。`))return;try{await callJson(ENDPOINTS.run(id),{},'DELETE');setSelected(current=>current.filter(value=>value!==id));await Promise.all([refreshRecent(''),refreshQueue()])}catch(error){setErrors(error.errors||[error.message])}};
+  const hide=async(item,hidden)=>{const id=item.run_id||item.id;try{await api(hidden?ENDPOINTS.runUnhide(id):ENDPOINTS.runHide(id),{});if(!hidden){setRecent(current=>current.filter(value=>(value.run_id||value.id)!==id));setSelected(current=>current.filter(value=>value!==id));setQueueConfirmation(null)}await Promise.all([refreshRecent(''),refreshQueue()])}catch(error){setErrors([error.message])}};
+  const trash=async item=>{const id=item.run_id||item.id;if(isActiveStatus(item.status)||['created','queued'].includes(item.status)&&queue.items.some(q=>(q.run_id||q.id)===id&&q.current))return setErrors(['运行中的任务不能移入回收站']);const contents=item.artifacts?.length?item.artifacts.map(file=>file.name).join('、'):'任务输入、缓存、日志与已生成产物';if(!window.confirm(`确认将“${item.display_name||item.name||id}”及其运行目录移入 Windows 回收站？范围：${contents}。失败时会保留任务。`))return;try{await callJson(ENDPOINTS.run(id),{},'DELETE');setRecent(current=>current.filter(value=>(value.run_id||value.id)!==id));setSelected(current=>current.filter(value=>value!==id));setQueueConfirmation(null);await Promise.all([refreshRecent(''),refreshQueue()])}catch(error){setErrors(error.errors||[error.message])}};
   const openDirectory=async item=>{try{await api(ENDPOINTS.runDirectory(item.run_id||item.id),{});}catch(error){setErrors([error.message])}};
 
   const download=async name=>{
@@ -288,13 +342,14 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
       </div>
       <div className="button-row"><span className="keyword-summary">{form.groups.length} 个站点组 · {parsedTotal} 个 ASIN · {nodeTotal} 个 Node</span><button onClick={()=>{refreshRecent('');refreshQueue()}}><RefreshCw size={13}/>刷新</button></div>
     </header>
-    <nav className="keyword-tabs"><button className={view==='new'?'active':''} onClick={()=>{setView('new');onSelectRun('')}}>新建任务</button><button className={view==='queue'?'active':''} onClick={()=>{setView('queue');onSelectRun('')}}>任务列表与队列</button>{state.runId&&<button className={view==='detail'?'active':''} onClick={()=>{setView('detail');onSelectRun(state.runId)}}>任务详情</button>}<span>队列{queueStateLabel} · {pendingQueueItems} 个待执行</span></nav>
+    <nav className="keyword-tabs"><button className={view==='new'?'active':''} onClick={()=>{selectedRunRef.current='';setSelectedTaskId('');dispatch({type:'run_selected',runId:null});setView('new');onSelectRun('')}}>新建任务</button><button className={view==='queue'?'active':''} onClick={()=>setView('queue')}>队列与任务</button><span>队列{queueStateLabel} · {pendingQueueItems} 个待执行</span></nav>
 
     {errors.length>0&&<div role="alert" className="keyword-errors">
       <div className="keyword-errors-head"><strong>有 {errors.length} 处需要处理</strong>
         <button onClick={()=>setErrors([])}><X size={15}/></button></div>
       <ul>{errors.map((message,index)=><li key={index}>{message}</li>)}</ul>
     </div>}
+    {notice&&<p className="keyword-success" role="status">{notice}</p>}
 
     <div className={'keyword-grid keyword-view-'+view}>
       {view==='new'&&<section className="keyword-card">
@@ -309,6 +364,7 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
             nodeTopN:(meta&&meta.node_top_n_options&&meta.node_top_n_options[0])||50}]}))}>
             <Plus size={14}/>再加一个站点组</button>
         </div>
+        <details className="keyword-advanced"><summary>高级选项 · 月份、矩阵、模型与凭据</summary>
         <div className="keyword-group-grid">
           <label className="settings-field"><span className="field-label">数据月份</span>
             <input aria-label="数据月份" placeholder="202607（留空为执行当月）" value={form.dataMonth}
@@ -325,6 +381,7 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
           onChange={event=>edit(()=>({matrixEnabled:event.target.checked}))}/>生成 ASIN × 关键词矩阵</label>
         <div className="keyword-group-grid"><label className="settings-field"><span className="field-label">任务文本模型</span><select value={modelRef} onChange={event=>selectModel(event.target.value)}>{modelOptions.map(item=><option key={item.ref} value={item.ref}>{item.ref}</option>)}</select></label><label className="settings-field"><span className="field-label">模型 Key</span><select value={credentialId} onChange={event=>{setCredentialId(event.target.value);setPlan(null);setForm(current=>({...current,planHash:''}))}}>{credentialOptions.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div>
         <small className="field-help">任务冻结所选模型和凭据编号；选择变化后须重新核算。<button className="text-link" onClick={onSettings}>全局默认设置</button></small>
+        </details>
         <div className="button-row">
           <button className="primary" disabled={busy==='plan'||invalidNodeGroups.length>0} onClick={countBudget}>
             {busy==='plan'?'正在核算…':'核算预算'}</button>
@@ -336,31 +393,53 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
       <div className="keyword-column">
         {view==='new'&&<BudgetCard plan={plan}/>}
         {view==='new'&&plan?.plan_hash&&plan.plan_hash===form.planHash&&<section className="keyword-card keyword-confirm-card">
-          <h3>预算已确认</h3><p>预计 {plan.budget?.planned_total??0} 次 SellerSprite 调用。开始后将立即进入队列并执行。</p>
-          <div className="button-row"><button className="primary" disabled={busy||invalidNodeGroups.length>0} onClick={()=>start('enqueue')}><Play size={14}/>确认并开始</button><button disabled={busy||invalidNodeGroups.length>0} onClick={()=>start('create')}>仅保存任务</button></div>
+          <h3>预算与执行</h3><p>任务：<b>{displayName.trim()||'关键词调研（自动命名）'}</b> · 预计 {plan.budget?.planned_total??0} 次 SellerSprite 调用。</p>
+          <p className="field-help">选择下方动作后立即创建。开始执行会提交队列；仅保存会保持“已创建”状态。</p>
+          <div className="button-row"><button className="primary" disabled={busy||invalidNodeGroups.length>0} onClick={()=>start('enqueue')}><Play size={14}/>创建并开始执行</button><button disabled={busy||invalidNodeGroups.length>0} onClick={()=>start('create')}>仅保存任务</button></div>
         </section>}
         {view==='new'&&<section className="keyword-card">
           <h3>SellerSprite 连接</h3><p>{credential?.configured?'凭据已配置':'尚未配置'} · 密钥只在总设置中管理。</p><button onClick={onSettings}>管理 SellerSprite 凭据</button>
         </section>}
-    {view==='queue'&&<section className="keyword-card keyword-list"><div className="list-heading"><div><h3>任务与队列</h3><p>{queue.current?'当前任务正在执行；其他任务会依次开始。':queue.dispatch_enabled?'队列已启动，任务会依次自动执行。':'入队后会自动开始；工作台重启后需手动继续。'}</p></div>{!queue.dispatch_enabled&&!queue.current&&resumableQueue&&<button onClick={continueQueue}>继续待执行任务</button>}{queue.dispatch_enabled&&<button onClick={stopQueue}>停止队列</button>}</div>{queue.items.map((item,index)=>{const id=item.run_id||item.id;return <div className="queue-item" key={id}><b>{index+1}</b><span>{item.display_name||id}</span><small>{LABEL[item.status]||item.status} · {item.stage||'等待执行'}</small><button disabled={!['created','queued'].includes(item.status)||id===queue.current} onClick={()=>reorder(id,-1)}>↑</button><button disabled={!['created','queued'].includes(item.status)||id===queue.current} onClick={()=>reorder(id,1)}>↓</button><button onClick={()=>{setView('detail');onSelectRun(id);readSnapshot(id)}}>详情</button></div>})}<h3>所有任务 <label className="checkline"><input type="checkbox" checked={showHidden} onChange={event=>setShowHidden(event.target.checked)}/>显示隐藏任务</label></h3><button disabled={!selected.length||busy==='queue'} onClick={()=>enqueue(selected)}>确认并开始所选任务（{selected.length}）</button>{recent.map((item,index)=>{const id=item.run_id||item.id;return <article className="keyword-task-row" key={id}><input type="checkbox" checked={selected.includes(id)} disabled={!canQueueStatus(item.status)} onChange={()=>setSelected(xs=>xs.includes(id)?xs.filter(x=>x!==id):[...xs,id])}/><span className={'keyword-state '+item.status}>{LABEL[item.status]||item.status}</span><button onClick={()=>{setView('detail');onSelectRun(id);readSnapshot(id)}}>{item.display_name||id}</button><small>{item.marketplaces?.join('、')||item.marketplace||'—'} · {item.asin_count??0} ASIN / {item.node_count??0} Node · {item.created_at||'—'} · 队列 {item.queue_position??'—'} · 尝试 {item.attempt??0}</small><div className="task-actions"><button onClick={()=>rename(item)}>重命名</button><button onClick={()=>hide(item,!!item.hidden)}>{item.hidden?'恢复':'隐藏'}</button><button onClick={()=>openDirectory(item)}>打开目录</button><button disabled={isActiveStatus(item.status)} onClick={()=>trash(item)}>移入回收站</button></div>{['failed','cancelled','interrupted'].includes(item.status)&&<button onClick={()=>enqueue([id])}>缓存续跑</button>}</article>})}{nextCursor&&<button onClick={()=>refreshRecent(nextCursor,true)}>加载更多任务</button>}</section>}
-        {view==='detail'&&<section className="keyword-card">
-          <h3>{recent.find(x=>(x.run_id||x.id)===state.runId)?.display_name||'任务详情'} · {LABEL[state.status]||state.status}</h3>
+    {view==='queue'&&<div className="keyword-workbench-split">
+      <section className="keyword-task-list-pane keyword-card keyword-list">
+        <div className="list-heading"><div><h3>队列</h3><p>{queue.current?'当前任务正在执行；其他任务会依次开始。':queue.dispatch_enabled?'队列已启动，任务会依次自动执行。':'入队后会自动开始；工作台重启后需手动继续。'}</p></div>{!queue.dispatch_enabled&&!queue.current&&resumableQueue&&<button onClick={continueQueue}>继续待执行任务</button>}{queue.dispatch_enabled&&<button onClick={stopQueue}>停止队列</button>}</div>
+        {queue.items.length?queue.items.map((item,index)=>{const id=item.run_id||item.id;return <div className={'queue-item '+(selectedTaskId===id?'selected':'')} key={id} onClick={()=>selectTask(id)}><b>{index+1}</b><button onClick={event=>{event.stopPropagation();selectTask(id)}}>{item.display_name||id}</button><small>{LABEL[item.status]||item.status} · {item.stage||'等待执行'}</small><button disabled={!['created','queued'].includes(item.status)||id===queue.current} onClick={event=>{event.stopPropagation();reorder(id,-1)}}>↑</button><button disabled={!['created','queued'].includes(item.status)||id===queue.current} onClick={event=>{event.stopPropagation();reorder(id,1)}}>↓</button></div>}):<p className="field-help">队列为空。</p>}
+        <h3>任务 <label className="checkline"><input type="checkbox" checked={showHidden} onChange={event=>setShowHidden(event.target.checked)}/>显示隐藏任务</label></h3>
+        <button disabled={!selected.length||busy==='queue'} onClick={()=>enqueue(selected)}>核对所选任务</button>
+        {queueConfirmation&&<section className="keyword-confirm-card" role="group" aria-label="排队确认">
+          <h4>确认开始 {queueConfirmation.ids.length} 项任务</h4><ol>{queueConfirmation.names.map((name,index)=><li key={queueConfirmation.ids[index]}>{name}</li>)}</ol>
+          <p>合计预算：{queueConfirmation.total} 次取数调用。确认后按当前队列顺序执行。</p>
+          <div className="button-row"><button className="primary" disabled={busy==='queue'} onClick={confirmEnqueue}>确认并开始执行</button><button disabled={busy==='queue'} onClick={()=>setQueueConfirmation(null)}>取消</button></div>
+        </section>}
+        {recent.map(item=>{const id=item.run_id||item.id;return <article className={'keyword-task-row '+(selectedTaskId===id?'selected':'')} key={id} onClick={()=>selectTask(id)}>
+          <input type="checkbox" aria-label={'选择任务 '+(item.display_name||id)} checked={selected.includes(id)} disabled={!canQueueStatus(item.status)} onClick={event=>event.stopPropagation()} onChange={()=>{setQueueConfirmation(null);setSelected(xs=>xs.includes(id)?xs.filter(x=>x!==id):[...xs,id])}}/>
+          <span className={'keyword-state '+item.status}>{LABEL[item.status]||item.status}</span><button onClick={event=>{event.stopPropagation();selectTask(id)}}>{item.display_name||id}</button>
+          <small>{item.marketplaces?.join('、')||item.marketplace||'—'} · {item.asin_count??0} ASIN / {item.node_count??0} Node · {item.created_at||'—'} · 队列 {item.queue_position??'—'} · 尝试 {item.attempt??0}</small>
+          <div className="task-actions"><button onClick={event=>{event.stopPropagation();rename(item)}}>重命名</button><button onClick={event=>{event.stopPropagation();hide(item,!!item.hidden)}}>{item.hidden?'恢复':'隐藏'}</button><button onClick={event=>{event.stopPropagation();openDirectory(item)}}>打开目录</button><button disabled={isActiveStatus(item.status)} onClick={event=>{event.stopPropagation();trash(item)}}>移入回收站</button></div>
+          {['failed','cancelled','interrupted'].includes(item.status)&&<button onClick={event=>{event.stopPropagation();enqueue([id])}}>缓存续跑</button>}
+        </article>})}{nextCursor&&<button onClick={()=>refreshRecent(nextCursor,true)}>加载更多任务</button>}
+      </section>
+      <section className="keyword-process-pane keyword-card">
+        {state.runId?<>
+          <h3>{recent.find(x=>(x.run_id||x.id)===state.runId)?.display_name||queue.items.find(x=>(x.run_id||x.id)===state.runId)?.display_name||'任务详情'} · {LABEL[state.status]||state.status}</h3>
           <p>阶段：{state.stage||'—'} · 队列位置：{state.queuePosition??'—'} · 尝试：{state.attempt??0}</p>
-          {showProgress ? <div className="keyword-progress"><b>{state.progress.stage||state.stage||'执行中'}</b><span>{state.progress.done}{state.progress.total!==null&&state.progress.total!==undefined?' / '+state.progress.total:''} {state.progress.unit||''}</span>{state.progress.total>0 ? <div className="keyword-bar"><i style={{width:Math.min(100,Math.round(state.progress.done/state.progress.total*100))+'%'}}/></div> : null}{state.progress.message&&<small>{state.progress.message}</small>}</div> : null}
-          <h4>最近活动</h4><div className="recent-activity">{state.recentActivity.length?state.recentActivity.map((item,index)=><p key={item.sequence||index}><time>{item.at?new Date(item.at).toLocaleTimeString():''}</time>{activityText(item)}</p>):<p>{state.progress?.message||state.message||'暂无活动记录'}</p>}</div>
+          {showProgress ? <div className="keyword-progress"><b>{state.progress.stage||state.stage||'执行中'}</b><span>{state.progress.done??'—'}{state.progress.total!==null&&state.progress.total!==undefined?' / '+state.progress.total:''} {state.progress.unit||''}</span>{state.progress.total>0 ? <div className="keyword-bar"><i style={{width:Math.min(100,Math.round(state.progress.done/state.progress.total*100))+'%'}}/></div> : null}{state.progress.message&&<small>{state.progress.message}</small>}</div> : <p>当前阶段：{state.stage||state.message||'等待任务更新'}</p>}
+          <h4>最近活动</h4><div className="recent-activity">{summarizeActivity(state.recentActivity).length?summarizeActivity(state.recentActivity).map((item,index)=><p key={item.sequence||index}><time>{item.at?new Date(item.at).toLocaleTimeString():''}</time>{item.text}</p>):<p>{state.progress?.message||state.message||'暂无活动记录'}</p>}</div>
           {state.error&&<p className="keyword-error">{state.error}</p>}
           <div className="button-row"><button onClick={()=>readSnapshot(state.runId)}>刷新详情</button><button disabled={!isActiveStatus(state.status)} onClick={cancel}>取消任务</button><button disabled={!['failed','cancelled','interrupted'].includes(state.status)} onClick={()=>enqueue([state.runId])}>缓存续跑</button><button onClick={()=>openDirectory(recent.find(x=>(x.run_id||x.id)===state.runId)||{run_id:state.runId})}>打开目录</button></div>
+          <h4>产物</h4>{state.artifacts.length?state.artifacts.map(item=><div className="keyword-artifact" key={item.name}><span>{item.name}</span><small>{bytesText(item.bytes)}</small><button onClick={()=>download(item.name)}><Download size={14}/>下载</button></div>):<p className="field-help">暂无产物。</p>}
           <ol className="keyword-timeline">{state.timeline.map((item,index)=><li key={index} className={item.status}><b>{item.stage}</b><span>{item.message||item.status}</span><small>{item.at||item.finished_at||''}</small></li>)}</ol>
-          {state.artifacts.map(item=><div className="keyword-artifact" key={item.name}><span>{item.name}</span><small>{bytesText(item.bytes)}</small><button onClick={()=>download(item.name)}><Download size={14}/>下载</button></div>)}
-          <details className="keyword-log" open={isActiveStatus(state.status)}><summary>完整过程日志 · {state.log.length} 条</summary>{state.log.map(item=><p key={item.sequence}><span>{item.sequence}</span>{item.line}</p>)}</details>
-        </section>}
+          <details className="keyword-log"><summary>完整过程日志 · {state.log.length} 条</summary>{state.log.map(item=><p key={item.sequence}><span>{item.sequence}</span>{item.line}</p>)}</details>
+        </>:<><h3>选择一个任务</h3><p className="field-help">点击左侧队列或任务查看状态、进度、活动和产物。</p></>}
+      </section>
+    </div>}
         {view==='new'&&<section className="keyword-card">
           <h3>历史运行</h3>
           {recent.length?recent.map(item=><div className="keyword-recent" key={item.run_id}>
             <span className={'keyword-state '+item.status}>{LABEL[item.status]||item.status}</span>
             <span>{item.run_id.slice(0,12)}…</span>
             <small>{item.stage||'—'}{item.created_at?' · '+item.created_at:''}</small>
-            <button onClick={()=>readSnapshot(item.run_id)}>查看</button>
+            <button onClick={()=>selectTask(item.run_id)}>查看</button>
           </div>):<p className="field-help">还没有运行记录。</p>}
         </section>}
       </div>
