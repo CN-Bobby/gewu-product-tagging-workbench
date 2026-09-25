@@ -1,0 +1,71 @@
+{
+  "source": "本地寻龙诀 v4 Python 源码",
+  "version": "4.2.0-beta.3",
+  "copied_at": "2026-09-25T14:56:02.5017910Z",
+  "files": [
+    {
+      "path": "references/workflow.md",
+      "sha256": "80891626534fc9d45fc161b27fa0554033397b6b6ee571fd9d5b98113887d4d5"
+    },
+    {
+      "path": "templates/report_template.html",
+      "sha256": "08041d667e97421959cf5ec7d025f4e7be57b489a8d05186a23b6cae3a14ec6f"
+    },
+    {
+      "path": "VERSION",
+      "sha256": "6ff8b8ab06708d02a054cd84cfb82ba7a7580f2d23e6224b8b8584237dd0ae24"
+    },
+    {
+      "path": "xlj_core/__init__.py",
+      "sha256": "70c333d6e83aec04b82e9d447c11ba76e79c6df606fd6e976d437076f4f95ba9"
+    },
+    {
+      "path": "xlj_core/cli.py",
+      "sha256": "526da4c5965023d843951be50fd8dc2fb4cc21060e5b2fda7111dd64178669ea"
+    },
+    {
+      "path": "xlj_core/db.py",
+      "sha256": "eb0599603085de2b92cc903fece65971d1540fffc282d74b24d4ebb3e3cc7c2b"
+    },
+    {
+      "path": "xlj_core/engine.py",
+      "sha256": "3757d8e305acc2d2077305ef94c864dcab393e2955a795f67893ad7e65a00bfa"
+    },
+    {
+      "path": "xlj_core/insights.py",
+      "sha256": "63f89d7944de8197cc31469b47e97c5b4904c98ebc83b76a990b504a6d2d2fc1"
+    },
+    {
+      "path": "xlj_core/ledger.py",
+      "sha256": "597e6bb6b9e09376f006dc5afa329d6fd03cdcbc25f1d935ec58851508190032"
+    },
+    {
+      "path": "xlj_core/migration.py",
+      "sha256": "682abd231a517757da495e391798741a84e9173c18e08851c30ecde06ca4ce24"
+    },
+    {
+      "path": "xlj_core/outputs.py",
+      "sha256": "bf9c0d22a5f054a104ca1b057d376ff274d453bd4f5883950b86763a1eb1d15e"
+    },
+    {
+      "path": "xlj_core/panel.py",
+      "sha256": "5c00d2247d975e114d797282460144811ee594340b211b874e342d29d715da1f"
+    },
+    {
+      "path": "xlj_core/report_renderer.py",
+      "sha256": "ff51b4fc70115ff36a69de8812238ea916e5c966d304ec9de3344eb998c325c7"
+    },
+    {
+      "path": "xlj_core/site_profiles.py",
+      "sha256": "0c53193c92e33546df1fd9a0d36333baae44121b4a810750b752996e6152d407"
+    },
+    {
+      "path": "xlj_core/syncpack.py",
+      "sha256": "0402cdad3be1d8b8faaf4b6159333642d4a3422e5dc309ac8a207ecac543794c"
+    },
+    {
+      "path": "xlj_core/trend_judgment.py",
+      "sha256": "fd472c6063bda01580deaeb127421ceb39ae495bab872ce009ae5851ef180a6b"
+    }
+  ]
+}

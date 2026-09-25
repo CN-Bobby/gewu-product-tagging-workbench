@@ -16,6 +16,8 @@ from . import field_catalog,worksheet_query,task_control
 from . import knowledge,templates,storage_management,model_settings,capabilities
 from .keyword_research import routes as keyword_research_routes
 from .keyword_research import registry as keyword_registry, runner as keyword_runner
+from .xunlongjue import router as xunlongjue_router, home_summary as xunlongjue_home_summary
+from .xunlongjue import start as xunlongjue_start, recover as xunlongjue_recover, stop_all as xunlongjue_stop_all
 from .build_info import VERSION, build_info
 from .agent_http import router as agent_router
 from . import agent_application
@@ -26,7 +28,7 @@ from .runtime_isolation import CredentialUnavailable
 async def lifespan(app):
     app.state.stopping=False
     agent_application.start()
-    init_db();jobs.recover();batch.recover();keyword_registry.recover()
+    init_db();jobs.recover();batch.recover();keyword_registry.recover();xunlongjue_start();xunlongjue_recover()
     with Session() as s:ids=list(s.scalars(select(Dataset.id)))
     for did in ids:draft.migrate(did)
     yield
@@ -37,6 +39,7 @@ async def lifespan(app):
     for did in list(jobs.chats):jobs.stop_chat(did)
     for jid in list(batch.active):batch.stop(jid)
     keyword_runner.stop_all()
+    xunlongjue_stop_all()
 
 app=FastAPI(title='商品特征工程工作台',version=VERSION,lifespan=lifespan)
 
@@ -97,10 +100,13 @@ def home_summary():
         keywords.append({'run_id':item['run_id'],'display_name':item.get('display_name') or '',
             'status':item.get('status'),'stage':item.get('stage'),'created_at':item.get('created_at'),
             'input_summary':summary['input_summary'],'budget':summary['budget']})
+    xunlongjue=xunlongjue_home_summary()
     return {'configuration':{'models_configured':bool(settings.get('configured')),
         'default_model':settings.get('default_model'),'providers':providers,
-        'sellersprite':keyword_research_routes.credentials.status()},
+        'sellersprite':keyword_research_routes.credentials.status(),
+        'xunlongjue':{'key_configured':xunlongjue['key_configured']}},
         'recent_tagging_tasks':tagging,'recent_keyword_tasks':keywords,
+        'recent_xunlongjue_runs':xunlongjue['recent_runs'],
         'recent_tagging_runs':recent_runs}
 
 @app.get('/api/settings/models')
@@ -447,6 +453,7 @@ async def agent_events(session_id:str,request:Request,after_sequence:str|None=No
 
 app.include_router(agent_router)
 app.include_router(keyword_research_routes.router)
+app.include_router(xunlongjue_router)
 
 @app.get('/api/drafts/{did}/events')
 async def draft_events(did:str,request:Request,after:int=0):

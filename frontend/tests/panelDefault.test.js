@@ -49,9 +49,12 @@ test('the shared draft stream is still consumed for workbench state',()=>{
   assert.ok(!main.includes("if(ev.kind==='chat_chunk')return"),'the projection is no longer inlined');
 });
 
-test('the workbench has home, tagging, keyword, and settings routes',()=>{
+test('the workbench has home, tagging, keyword, Xunlongjue, and settings routes',()=>{
   assert.ok(main.includes("import {KeywordResearch} from './keywordResearch'"),'the page is imported');
   assert.ok(main.includes('routeFromHash'),'deep links resolve from the hash');
+  assert.ok(main.includes('PAGE.XUNLONGJUE'),'the Xunlongjue route is accepted');
+  assert.ok(main.includes("import {Xunlongjue} from './Xunlongjue'"),'the page is imported');
+  assert.ok(main.includes('page===PAGE.XUNLONGJUE?<Xunlongjue'),'the Xunlongjue route renders the module');
   assert.ok(main.includes('page===PAGE.HOME')&&main.includes('page===PAGE.SETTINGS'),'home and settings render independently');
   assert.ok(main.includes('page===PAGE.KEYWORD?<KeywordResearch'),'keyword route renders the keyword page');
   assert.ok(main.includes('page===PAGE.TAGGING&&data&&showHistory'),'tagging drawers are scoped to tagging');
@@ -60,4 +63,9 @@ test('the workbench has home, tagging, keyword, and settings routes',()=>{
 test('the topbar carries the entry to the keyword page',()=>{
   assert.ok(main.includes('关键词调研'),'the entry label is in the topbar');
   assert.match(main,/<button className=\{page===PAGE\.KEYWORD\?'active':''\} onClick=\{\(\)=>navigate\('keyword'\)\}>关键词调研<\/button>/,'the entry switches the page');
+});
+
+test('the topbar carries the entry to the Xunlongjue module',()=>{
+  assert.ok(main.includes('寻龙诀'),'the entry label is in the topbar');
+  assert.match(main,/<button className=\{page===PAGE\.XUNLONGJUE\?'active':''\} onClick=\{\(\)=>navigate\('xunlongjue'\)\}>寻龙诀<\/button>/,'the entry switches to the module');
 });
