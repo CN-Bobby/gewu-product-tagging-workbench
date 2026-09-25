@@ -2,6 +2,8 @@
 
 接力开发先阅读 [PROJECT_HANDOFF.md](PROJECT_HANDOFF.md)，其中汇总当前产品定义、用户决策、工程/安装状态、beta.6 实测缺陷和下一步验收门禁。
 
+Codex 接手项目时还必须遵循根目录 [AGENTS.md](AGENTS.md)：先核对工作区与交接资料；日常提交不递增客户版本，候选冻结时才更新版本号及发布台账。
+
 开发和交付状态以 [交付台账](docs/DELIVERY_STATUS.md) 为准；版本规则见 [发布管理](docs/RELEASE_GOVERNANCE.md)。根 `VERSION.json` 是唯一应用版本来源。开发分支版本不代表当前服务已部署或已通过发布验收。
 
 GitHub 接管、分支推送、Release 附件和本机丢失恢复见 [GitHub 接管与发布](docs/GITHUB接管与发布.md)；数据和凭据边界见 [安全说明](SECURITY.md)。

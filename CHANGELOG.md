@@ -1,5 +1,10 @@
 # 变更记录
 
+## 开发与版本治理（2026-09-25）
+- 明确日常开发提交和绿色测试构建不递增客户版本；候选冻结时才更新 `VERSION.json`、发布台账、变更记录和派生版本元数据。
+- 添加项目根目录 `AGENTS.md`，要求新任务先检查工作区并阅读交接、版本和发布资料。
+- 补记 `v0.5.0-beta.2` 历史源码标签与精确源码提交；此追溯标记不代表外部干净 Windows 验收通过，也不是 GitHub Release。
+
 ## 0.5.0-beta.7 — Agent 运行时切换与交付硬化候选
 - 生产运行时整体切换到 Agent 后端契约（UI Agent → AgentBridge → AgentBackend → ReasonixAdapter → Runtime → Reasonix → 工作台 MCP）；旧的网页聊天运行时、启动客户端、业务提问能力与已退役路由全部移除，只保留历史数据的读取面。
 - 进程归属硬化：Reasonix 进程树由 Windows Job Object 托管（匿名 job + `KILL_ON_JOB_CLOSE`，宿主不支持时显式降级并暴露事实）；关闭工作台时先为每个活动会话启动停止流程、再统一等待，一个不响应的会话不会拖住其它会话。

@@ -20,10 +20,11 @@
       "version": "0.5.0-beta.2",
       "status": "superseded",
       "artifact_kind": "external_candidate",
-      "commit": null,
-      "tag": null,
+      "commit": "383e8a51dc977b09d4c2aa5fa5f08c91007a3f4e",
+      "tag": "v0.5.0-beta.2",
+      "source_tag_url": "https://github.com/CN-Bobby/gewu-product-tagging-workbench/tree/v0.5.0-beta.2",
       "superseded_by": "0.5.0-beta.3",
-      "note": "第二次客户外测发现图形安装目录检查会误入升级备份流程，停止分发。"
+      "note": "用户指定保留的改版前可用基线源码；历史标签追溯指向已归档构建的源码提交。第二次客户外测发现图形安装目录检查会误入升级备份流程，故停止分发并由beta.3取代。该源码标签不代表干净Windows门禁通过，也不是GitHub Release。"
     },
     {
       "version": "0.5.0-beta.3",
