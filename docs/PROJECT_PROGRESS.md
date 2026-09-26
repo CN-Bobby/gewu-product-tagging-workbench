@@ -1,0 +1,105 @@
+# 格物工作台项目总进度
+
+快照时间：2026-09-26 20:16（Asia/Shanghai）
+
+仓库：`D:\数据打标项目`
+用途：项目内新对话的接力入口。无需用户转发旧对话；先读本文件，再按 `AGENTS.md` 对需要继续的部分做实时复核。
+
+> **事实口径：**“当前核实”来自本次 Git、健康接口和仓库文档检查；“历史记录”是旧交接或旧验收报告里的事实；“待验收”表示代码或设计已有记录，但没有当前验收证据。版本、部署、验收、分支和运行进程是不同事实，不能互相代替。
+
+## 1. 一分钟接手
+
+- 当前分支：`feature/0.5.0-delivery`；快照时 HEAD 为 `28412b4fec54db3c9e537ef079ea369de3a0d75a`（`Implement the proposed plan.`），上游为 `445205c`，本地领先 2 个提交，落后 0 个。
+- `0.5.0-beta.7` 是当前正式交付记录版本：`VERSION.json` 为 `released`；发布台账记录 GitHub prerelease、生产交付、技术验收 PASS、业务语义 sign-off PASS、17/17 人工值未变及可用回退备份。
+- 当前本机网页 `http://127.0.0.1:8895/` 是隔离测试数据的**脏开发构建**，不是正式生产实例：健康接口报告 `0.5.0-beta.7+28412b4fec54`、`dirty=true`、`build_mode=dev`、数据目录 `K:\GeWuTest\Data`。本次从本机探测 `8765` 被拒绝连接；不能据此推断生产安装状态改变，生产交付记录仍以版本台账和验收文件为准。
+- Amazon Listing 图片采集页已接入工作台，并加入 FIFO 任务组调度，最多同时运行 2 组。当前实现和 UI 已在 8895 开发构建中；自动回归及 3 组竞争、队列补位的专项验收尚未完成。它只抓 Listing 图片，未覆盖独立爬虫项目的 A+ / Brand Story 范围。
+- SellerSprite 关键词调研和寻龙诀 v4 代码都在项目中。关键词调研的真实运行状态需要按当前数据目录复核；寻龙诀 v4 已进入本地提交但未推送，本次未做运行或语义验收。
+- 本进度文档只记录状态，不是新客户候选或发布声明。本次仅计划提交交接文档；其它代码和文件变更继续留在工作区。
+
+## 2. 当前 Git 与工作区
+
+### 快照基线
+
+文档更新前的现场核对结果：
+
+| 项目 | 状态 |
+|---|---|
+| 分支 / HEAD | `feature/0.5.0-delivery` / `28412b4fec54db3c9e537ef079ea369de3a0d75a` |
+| 上游 | `origin/feature/0.5.0-delivery` = `445205c` |
+| ahead / behind | 2 / 0 |
+| staged | 无 |
+| 未提交 tracked 文件 | 14 个修改，包括 scraper 接入、开发启动/打包配置及交接文档 |
+| untracked 文件 | 7 个，包括 Amazon scraper 模块、页面、文档和专项测试 |
+
+Git 状态随新提交和后续工作改变；新对话必须重新运行 `git status -sb`、`git log -1` 和 `git diff --stat`。当前在建代码不得因本次交接提交而被覆盖、清理或误提交。
+
+本次交接只应提交 `PROJECT_HANDOFF.md` 与本文件；不推送远端。文档提交不代表 Amazon scraper 或寻龙诀的验收完成，也不递增 `VERSION.json`。
+
+### 近期提交
+
+- `28412b4`：加入寻龙诀 v4 模块和工作台入口等，含集成及来源测试文件；代码已提交本地，仍未推送。
+- `dd7fceb`：`接着这个会话，我们接力开发`。
+- `445205c`：当前上游 `origin/feature/0.5.0-delivery`。
+
+## 3. 产品与版本交付状态
+
+### 已交付基线：0.5.0-beta.7
+
+`VERSION.json`、`RELEASE_LEDGER.json`、`docs/DELIVERY_STATUS.md` 和 `docs/ACCEPTANCE-0.5.0-beta.7.md` 一致记录：
+
+- 版本：`0.5.0-beta.7`，schema 8，`release_status = released`；GitHub prerelease `v0.5.0-beta.7`。
+- 交付构建：`0.5.0-beta.7+82379d2cd6a9`，源码提交 `82379d2cd6a97229a1dbe48d94d581cee5ddd565`。
+- 台账记录的生产地址：8765；数据目录：`K:\Bobbytagging\Data`；技术验收和业务语义签字均 PASS；17 个已接入人工值逐项未变；回退备份已保留且回退验证通过。
+- 这些是该版本的历史交付证据，不代表当前本机 8765 正在运行，也不代表本地 HEAD `28412b4` 的后续开发增量已经验收或发布。
+
+## 4. 当前工作流与模块
+
+### A. Amazon Listing 图片采集（进行中，待验收）
+
+- 入口：工作台主导航“Amazon 图片采集”，当前测试页 `http://127.0.0.1:8895/#/amazon-scraper`。
+- 可粘贴 ASIN 或 Amazon 链接；按站点识别并去重；成功后生成含 ASIN、标题和内嵌 Listing 图片的 Excel，导入时新建工作表。任务数据落在配置数据目录的 `amazon-scraper/<job-id>/`，支持进度、取消、失败重试和重启后继续。
+- **队列规则：**全局最多 2 组采集任务同时执行，其他任务按 FIFO 等待；释放名额后自动补位；队列显示位置，等待任务可取消。组内页面并发另由 `stable` / `balanced` / `fast` 控制，分别为 1 / 2 / 最多 4 个页面。所以“最多两组”不是“最多两个网页请求”。
+- 有 CAPTCHA、429 或 503 时降至单并发并冷却；连续 3 次受限则暂停并保留检查点。不会自动解 CAPTCHA，也不持久化浏览器 Cookie/Profile。浏览器需使用系统 Edge/Chrome 或由用户手动运行 Playwright Chromium 准备脚本；代理配置在数据目录 `amazon-scraper/proxies.txt` 或环境变量。
+- 本轮读取 `/api/amazon-scraper/jobs` 得到空列表；当前 K 测试数据中没有留存采集任务。8895 `/api/health` 当前报告 dirty dev build 和隔离数据目录。
+- **已知验收缺口：**`tests/test_amazon_scraper.py` 已存在，但本轮没有运行自动化测试；还没有专项证明 3 组任务同时提交时前两组运行、第三组排队、槽位释放后按序启动。真实 Amazon 网络、重启恢复、取消和导入 Excel 也需按验收清单留证。
+- 之前对话曾报告美国站 5 个 ASIN 冒烟结果 5/5；当前数据目录没有可复查的运行记录，故只作历史会话记录，不算本地留存的验收证据。
+- 与参考的独立 Amazon 爬虫相比，当前集成范围明确限于 Listing 图；尚无 A+ / Brand Story 抓取。接下来如决定扩展，先对照 `docs/AMAZON_SCRAPER.md` 和独立项目能力清单，不默认宣称功能等价。
+- 文件入口：`backend/amazon_scraper.py`、`backend/app.py`、`frontend/src/amazonScraper.jsx`、`frontend/src/amazonScraper.css`、`docs/AMAZON_SCRAPER.md`、`tests/test_amazon_scraper.py`。
+
+### B. SellerSprite 关键词调研（代码已接入，真实结果需复核）
+
+- 作为工作台内与商品打标并列的独立工具页，代码位于 `backend/keyword_research/`，前端主要入口为 `frontend/src/keywordResearch.jsx` 与 `frontend/src/keywordState.js`；运行记录写入当前数据目录 `keyword-research/<run_id>/`。
+- `docs/关键词调研接入-交接.md` 是 9 月 23 日起的历史交接，记录了美国站 5 ASIN “矩阵关”成功生成 11 Sheet 报告；“矩阵开”当时没有成功真实产物。该记录还记有后续标注健壮性和连接重试修复、聚焦离线测试 10 passed。它的分支、提交数和运行结果没有在本次逐项重放，不可直接当作当前现场。
+- 新对话要先检查当前分支代码、`docs/关键词调研接入-交接.md`、最近运行目录及报告文件，再说明目前真实取数和矩阵状态；不要把离线测试等同于 SellerSprite / 模型真实端到端验收。密钥由用户在工作台设置，不要从其他目录复制或写入交接文档。
+
+### C. 寻龙诀 v4（本地已提交，未推送、待接续验收）
+
+- `28412b4` 加入 `backend/xunlongjue/`、前端 `Xunlongjue.jsx`、路由集成，以及 `tests/test_xunlongjue_integration.py` 和 `tests/test_xunlongjue_source_v4.py`。
+- 该提交领先远端，当前可确认的是代码进入本地 HEAD；本次没有执行这些专项测试，没有用真实 Sorftime MCP 跑完整任务，也没有用户语义验收或交付记录。后续继续前检查模块内说明、配置和依赖可用性，先确认隔离数据目录，再分开做离线和真实调用验收。不得把“有测试文件”说成“测试通过”。
+
+### D. 核心商品打标工作台
+
+- beta.7 已交付能力包括 Agent 运行时、任务执行与恢复、标签标准反推、人工值保护、文本/视觉批处理、Excel 图片导入导出及 Windows 打包；详见 beta.7 验收记录和 `CHANGELOG.md`。
+- beta.7 验收文件记录当时后端 596 项通过及 Phase A/B 真实模型和安装/升级/回退验证。那是绑定旧提交的历史证据，不是当前脏工作区的完整回归结果。
+- `docs/CODEX_HANDOFF.md`、较早的 `PROJECT_HANDOFF.md` 正文、关键词交接文档中含旧 HEAD、分支 ahead 数、测试数或 staged 状态。它们保留作历史背景；若与本文件或实时 Git/health 冲突，以根目录 `AGENTS.md` 的核验流程和本次最新实时证据为准。
+
+## 5. 本机运行状态（本次探测）
+
+| 地址 | 本次结果 | 可得结论 |
+|---|---|---|
+| `http://127.0.0.1:8895/api/health` | `status=ok`；build `0.5.0-beta.7+28412b4fec54`；commit `28412b4…`；`dirty=true`；`build_mode=dev`；`storage=K:\GeWuTest\Data`；schema 8 | 绿色隔离测试实例正在响应；它基于 beta.7 版本号的开发构建，不是干净 release 包。 |
+| `http://127.0.0.1:8895/api/amazon-scraper/jobs` | `[]` | 测试数据里当前没有已保存的 scraper job。 |
+| `http://127.0.0.1:8765/api/health` | TCP 连接被拒绝 | 本次没有取得生产健康信息；不能据此推断正式安装或生产数据状态。发布台账中的 beta.7 交付记录仍是历史确认状态。 |
+
+`K:\Bobbytagging\Data` 是正式数据目录，继续只读保护。任何后续测试、升级或取数须使用 `K:\GeWuTest\Data` 或另一个明确隔离副本，不要把生产目录作为测试数据源。
+
+## 6. 下一步建议
+
+1. 若接着当前 Amazon scraper：先做队列调度专项验收（3 组竞争、FIFO、完成/取消后补位、等待项取消），再运行相关测试和真实美国站小批量回归；保存运行记录及 Excel 哈希到隔离数据目录，明确人工验收状态。无需重新讨论反爬节奏设计，按项目内 scraper 参考与 `docs/AMAZON_SCRAPER.md` 执行。
+2. 复核 SellerSprite：从当前代码和当前数据目录确认运行记录，检查矩阵开/关真实产物与 API 调用账，避免沿用旧分支计数。
+3. 续验寻龙诀 v4：先查它自己的设置/配置和测试说明，在隔离目录验证离线测试；Sorftime 真实调用、成本或生产数据动作按既有授权边界单独处理。
+4. 之后若要冻结客户候选，再按 `docs/RELEASE_GOVERNANCE.md` 选择从未用过的新 beta 号，并更新版本、台账、变更记录和派生元数据；本次交接不做版本递增或推送。
+
+## 7. 新对话启动指引
+
+新对话从仓库目录开始，按 `AGENTS.md` 顺序核对 Git、交接文件、版本/台账、变更记录和本次任务材料。先读本文件的“当前 Git 与工作区”和对应模块状态；涉及运行程序时重读 health，不引用对话记忆替代核验。要继续项目而非重做背景梳理时，可直接把“按 `docs/PROJECT_PROGRESS.md` 接手当前进度”作为新任务说明。

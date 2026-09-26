@@ -1,10 +1,32 @@
 # 格物商品打标工作台：接力开发交接文档
 
-更新时间：2026-09-17（Asia/Shanghai）；上一版：2026-09-16（Agent 运行时迁移）
+更新时间：2026-09-26 20:16（Asia/Shanghai）
 
 工作目录：`D:\数据打标项目`
 
 当前开发分支：`feature/0.5.0-delivery`
+
+> **新对话接力入口：先读 [`docs/PROJECT_PROGRESS.md`](docs/PROJECT_PROGRESS.md)。** 该文档是当前总进度快照，记录本机现场、Git 状态、已交付版本、在建模块和未完成验收；项目内新建对话无需用户分享旧对话。每次继续工作仍须按根目录 `AGENTS.md` 重新检查 Git 和实时环境。本文后续旧交接内容保留作背景资料，其中过期的分支、构建、测试计数和运行状态不可当作当前事实。
+
+## 2026-09-26 Amazon Listing 图片采集
+
+- 新增主导航“Amazon 图片采集”：粘贴 ASIN/链接，预览后按站点去重并采集 Listing 图片，生成只含 ASIN、标题和内嵌图片的简化 Excel；导入时建立新工作表。
+- 采集任务和图片保存在配置的数据目录 `amazon-scraper/<job-id>/`，支持进度、取消、重试与重启后继续。默认 balanced（2 页面，2–5 秒间隔）；受限时单并发冷却，连续 3 次暂停。
+- 多组采集任务按入队时间 FIFO 排队，最多 2 组同时运行；完成或取消退出后自动补位，等待任务显示队列位置。每组内的页面并发仍由 stable/balanced/fast 档位控制。
+- 需人工准备 Playwright Chromium（若系统 Edge/Chrome 不可用）；工作台不静默安装浏览器。代理可通过数据目录 `amazon-scraper/proxies.txt` 配置。说明和设置见 `docs/AMAZON_SCRAPER.md`。
+- 此功能是普通开发增量，未递增客户版本；尚待自动化回归和真实 Amazon 网络人工验收。
+
+## 2026-09-24 本机版本归档与绿色测试环境（较早章节按历史记录阅读）
+
+- 本机交付分支已与`origin/feature/0.5.0-delivery`对齐到`35245440b9c2d7a8238035eb646a39fcfc0de17a`。之前本地额外提交`eaabf2e4f7f394d350592ccdddaa5e8e3ea7a453`保存在本地引用`archive/local-eaabf2e-css-fix`，没有推送。`docs/CODEX_HANDOFF.md`仍是本地未跟踪文件。
+- 正式安装仍为`K:\Bobbytagging\app` beta.7；正式数据为`K:\Bobbytagging\Data`，缓存为`K:\Bobbytagging\Cache`，正式端口8765。正式桌面和开始菜单快捷方式继续指向正式安装。该数据目录只读保护，归档与开发测试不得改动。
+- 固定绿色测试根目录为`K:\GeWuTest`：程序`Current\app`，数据`Data`，缓存`Cache`，单版回退`Rollback\Previous\app`。测试快捷方式为桌面“格物工作台（测试版）”，经`D:\数据打标项目\scripts\dev-launcher.ps1`启动，端口8895。
+- 2026-09-25 已将原E:\GeWuTest完整复制到K:\GeWuTest：5,334个文件、307,132,596字节，逐文件SHA-256一致。原E盘目录保留为迁移前快照，不再作为日常入口；E:\GeWuArchive继续作为历史归档。
+- 当前绿色构建`0.5.0-beta.7+35245440b9c2`来自干净提交`35245440b9c2d7a8238035eb646a39fcfc0de17a`，`build_mode=dev`、`dirty=false`。首次启动的健康信息必须报告`storage=K:\GeWuTest\Data`。日常升级使用干净开发构建、先验候选清单、停机后备份Current至Previous、只替换程序，绝不覆盖Data/Cache；启动失败时保留候选并恢复Previous。
+- 历史候选统一归档目标为`E:\GeWuArchive`，校验清单为`E:\GeWuArchive\ARCHIVE_MANIFEST.csv`。正式 beta.7 发布包留在仓库`releases\0.5.0-beta.7`；release beta.1–beta.6、旧 builds 和桌面旧安装包归档。只按完整 SHA-256 合并重复文件，保留每个原路径记录，不永久删除历史材料。
+- 本轮归档清单现有 126,174 行（含一份审计辅助文件），覆盖 126,173 个历史源文件路径；其中 126,164 个唯一目标通过 SHA-256 核验。已取代的 releases 86,291 个文件、开发 builds 39,863 个文件、桌面历史 19 个文件均已整理。原 Desktop beta.7 安装程序与正式 beta.7 包哈希相同，仍只保留项目 release 中的正式副本。说明见`E:\GeWuArchive\README-归档说明.md`。
+- 绿色测试版在8895的`/api/health`报告`0.5.0-beta.7+35245440b9c2`、提交`35245440b9c2d7a8238035eb646a39fcfc0de17a`、`dirty=false`和`storage=K:\GeWuTest\Data`。已逐文件比较 2,663 个`Current\app`与`Rollback\Previous\app`文件；使用无效测试 EXE 的启动失败注入后恢复 Previous，测试数据哨兵仍在。失败注入副本保留于`E:\GeWuArchive\rollback-simulation`。
+- Amazon Product Workbench、正式数据/缓存、`K:\Bobbytagging\Data-Test`及其`Cache-Test`不属于格物旧程序归档范围。
 
 ## 0. 文档用途与事实口径
 
