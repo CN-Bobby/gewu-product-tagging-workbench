@@ -1,5 +1,6 @@
 import React,{useEffect,useRef,useState}from'react';
 import{Activity,ArrowDownToLine,ArrowUpRight,CircleAlert,Map,Pause,Play,RefreshCw,Settings2}from'lucide-react';
+import './xunlongjueRecovery.css';
 
 const RUNS='/api/xunlongjue/runs';
 const statusNames={queued:'排队中',pending:'等待中',running:'运行中',paused:'已暂停',pausing:'正在暂停',resuming:'正在继续',completed:'已完成',done:'已完成',succeeded:'已完成',all_done:'全部完成',partial_done:'阶段完成，可继续',not_started:'尚未开始',waiting_retry:'等待重试',failed:'失败',cancelled:'已取消',interrupted:'已中断'};
@@ -33,6 +34,7 @@ export function Xunlongjue({api}){
  const[site,setSite]=useState('US'),[nodeId,setNodeId]=useState('');const[maxDepth,setMaxDepth]=useState(''),[maxNodes,setMaxNodes]=useState('');
  const[starting,setStarting]=useState(false),[startError,setStartError]=useState('');
  const[runs,setRuns]=useState([]),[runsLoading,setRunsLoading]=useState(true),[runsError,setRunsError]=useState('');
+ const[recoveryWarnings,setRecoveryWarnings]=useState(0);
  const[selectedId,setSelectedId]=useState(''),[detail,setDetail]=useState(null),[detailLoading,setDetailLoading]=useState(false),[detailError,setDetailError]=useState('');
  const[actionBusy,setActionBusy]=useState('');const listRequest=useRef(0),detailRequest=useRef(0);
  const refreshRuns=async({initial=false}={})=>{
@@ -43,6 +45,7 @@ export function Xunlongjue({api}){
    if(request!==listRequest.current)return;
    const rows=Array.isArray(result)?result:Array.isArray(result?.runs)?result.runs:[];
    setRuns(rows);setRunsError('');
+   setRecoveryWarnings(Math.max(0,Number(result?.recovery_warnings?.count)||0));
    setSelectedId(current=>current&&rows.some(item=>runIdOf(item)===current)?current:runIdOf(rows[0]));
   }catch(error){if(request===listRequest.current)setRunsError(errorText(error))}
   finally{if(request===listRequest.current&&initial)setRunsLoading(false)}
@@ -142,6 +145,7 @@ export function Xunlongjue({api}){
    </div>
    <section className="home-card xj-runs-card"><div className="home-card-head"><div><small>SCAN RUNS</small><h3><Activity size={16}/>运行任务</h3></div><span className="xj-run-count">{runs.length} 项</span></div>
     {runsError&&<div className="xj-error xj-list-error" role="alert"><CircleAlert size={15}/>{runsError}<button onClick={()=>void refreshRuns()}>重试</button></div>}
+    {recoveryWarnings>0&&<div className="xj-recovery-warning" role="status"><CircleAlert size={15}/><span>有 {recoveryWarnings} 条历史任务未能恢复，已跳过并保留原记录；其他任务仍可正常使用。</span></div>}
     {runsLoading&&!runs.length?<div className="xj-empty">正在读取运行记录…</div>:!runs.length?<div className="xj-empty">还没有扫描任务。填写站点与 Node ID 后开始。</div>:<div className="xj-run-layout">
       <div className="xj-run-list" aria-label="扫描任务列表">{runs.map(run=>{const id=runIdOf(run),status=runStatus(run),percent=progressOf(run),nodeId=run.node_id||run.root_node_id;return <button type="button" key={id||run.created_at} className={'xj-run-item '+(id===selectedId?'selected':'')} onClick={()=>id&&setSelectedId(id)}><span className={'xj-status '+status}>{statusNames[status]||status||'未知'}</span><b>{run.title||run.name||run.node_name||`Node ${nodeId||'—'}`}</b><small>{run.site||run.marketplace||'—'} · Node ID {nodeId||'—'}</small><div className="xj-run-item-foot"><small>{detailOf(run)||formatDate(run.created_at||run.started_at)}</small>{percent!=null&&<small>{Math.round(percent)}%</small>}</div></button>})}</div>
      <section className="xj-run-detail" aria-live="polite">

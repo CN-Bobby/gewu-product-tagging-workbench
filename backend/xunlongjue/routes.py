@@ -27,7 +27,8 @@ def put_settings(body: dict):
 
 @router.get('/runs')
 def get_runs():
-    return {'runs': service.list_runs()}
+    return {'runs': service.list_runs(),
+            'recovery_warnings': service.recovery_warnings()}
 
 
 @router.post('/runs')

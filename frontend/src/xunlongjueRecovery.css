@@ -1,0 +1,18 @@
+.xj-recovery-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #ead8a8;
+  border-radius: 7px;
+  background: #fff9e9;
+  color: #7e6528;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.xj-recovery-warning svg {
+  flex: none;
+  margin-top: 1px;
+}

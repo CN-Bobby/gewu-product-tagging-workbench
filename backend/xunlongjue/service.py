@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import re
 import threading
@@ -22,8 +23,11 @@ _QUEUE: list[str] = []
 _RESCHEDULE: set[str] = set()
 _BUSY_RUNS: set[str] = set()
 _CALLING_RUNS: set[str] = set()
+_RECOVERY_LOCK = threading.RLock()
+_RECOVERY_WARNINGS: list[dict[str, str]] = []
 _CLIENT_FACTORY = SorftimeClient
 _RUN_ID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+_LOGGER = logging.getLogger(__name__)
 
 
 def root() -> Path:
@@ -112,15 +116,75 @@ def start() -> None:
 
 def recover() -> None:
     """Mark active runs interrupted on startup. Explicit resume is required to call MCP again."""
-    base = root()
-    if not base.is_dir():
-        return
-    for run_dir in base.iterdir():
-        if not run_dir.is_dir() or not (run_dir / 'control.json').is_file():
-            continue
-        control = _read_control(run_dir.name)
-        if control.get('status') in ('running', 'paused', 'pausing', 'queued'):
-            _write_control(run_dir.name, status='interrupted', message='程序重启后已停止；需要显式恢复')
+    with _RECOVERY_LOCK:
+        _RECOVERY_WARNINGS.clear()
+        try:
+            base = root()
+            if not base.is_dir():
+                return
+            entries = iter(base.iterdir())
+        except Exception as exc:  # noqa: BLE001 - recovery must never prevent app startup.
+            _add_recovery_warning('', 'directory_scan_failed', exc)
+            return
+
+        while True:
+            try:
+                run_dir = next(entries)
+            except StopIteration:
+                break
+            except Exception as exc:  # noqa: BLE001 - a directory read can fail mid-iteration.
+                _add_recovery_warning('', 'directory_scan_failed', exc)
+                break
+
+            run_id = run_dir.name
+            # Ignore unrelated directories and unsafe links. They are not run records.
+            if not _RUN_ID.fullmatch(run_id):
+                continue
+            try:
+                safe_dir = _safe_run_dir(run_id)
+                if not safe_dir.is_dir():
+                    continue
+                control_path = safe_dir / 'control.json'
+                try:
+                    control = json.loads(control_path.read_text(encoding='utf-8'))
+                except FileNotFoundError:
+                    continue
+                except json.JSONDecodeError as exc:
+                    _add_recovery_warning(run_id, 'invalid_control', exc)
+                    continue
+                except (OSError, UnicodeError) as exc:
+                    _add_recovery_warning(run_id, 'read_failed', exc)
+                    continue
+                if not isinstance(control, dict):
+                    _add_recovery_warning(run_id, 'invalid_control', ValueError())
+                    continue
+                if control.get('status') in ('running', 'paused', 'pausing', 'queued'):
+                    try:
+                        _write_control(run_id, status='interrupted',
+                                       message='程序重启后已停止；需要显式恢复')
+                    except Exception as exc:  # noqa: BLE001 - preserve other recoverable runs.
+                        _add_recovery_warning(run_id, 'write_failed', exc)
+            except ValueError:
+                # Includes junctions and paths that fail the existing safety checks.
+                continue
+            except Exception as exc:  # noqa: BLE001 - isolate unexpected per-record failures.
+                _add_recovery_warning(run_id, 'read_failed', exc)
+
+
+def _add_recovery_warning(run_id: str, reason: str, error: Exception) -> None:
+    """Keep recovery diagnostics useful without logging paths, contents, or secrets."""
+    safe_id = run_id if _RUN_ID.fullmatch(run_id or '') else ''
+    warning = {'run_id': safe_id, 'reason': reason}
+    _RECOVERY_WARNINGS.append(warning)
+    _LOGGER.warning('寻龙诀历史任务恢复跳过一条记录 reason=%s error_type=%s',
+                    reason, type(error).__name__)
+
+
+def recovery_warnings() -> dict:
+    """Return a safe summary for the UI; raw paths and exception messages stay private."""
+    with _RECOVERY_LOCK:
+        items = [dict(item) for item in _RECOVERY_WARNINGS]
+    return {'count': len(items), 'items': items}
 
 
 def stop_all() -> None:

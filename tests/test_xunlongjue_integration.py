@@ -277,6 +277,56 @@ def test_recover_marks_running_as_interrupted_without_resuming_paid_work(xlj_hom
     assert calls == []
 
 
+def test_recover_skips_bad_records_and_reports_safe_warning_summary(xlj_home, monkeypatch, caplog):
+    corrupt_id = '11111111-1111-1111-1111-111111111111'
+    unreadable_id = '22222222-2222-2222-2222-222222222222'
+    write_failed_id = '33333333-3333-3333-3333-333333333333'
+    healthy_id = '44444444-4444-4444-4444-444444444444'
+
+    corrupt_dir = xlj_home / corrupt_id
+    corrupt_dir.mkdir(parents=True)
+    (corrupt_dir / 'control.json').write_text('{broken', encoding='utf-8')
+
+    unreadable_dir = xlj_home / unreadable_id
+    unreadable_dir.mkdir()
+    (unreadable_dir / 'control.json').mkdir()
+
+    for run_id in (write_failed_id, healthy_id):
+        (xlj_home / run_id).mkdir()
+        service._write_control(run_id, status='running', site='US', node_id='123')
+
+    original_write_control = service._write_control
+
+    def fail_one_control_write(run_id, **fields):
+        if run_id == write_failed_id:
+            raise PermissionError('secret path and private-key-value')
+        return original_write_control(run_id, **fields)
+
+    monkeypatch.setattr(service, '_write_control', fail_one_control_write)
+    service.recover()
+
+    assert (corrupt_dir / 'control.json').read_text(encoding='utf-8') == '{broken'
+    assert (xlj_home / write_failed_id / 'control.json').exists()
+    assert service._read_control(healthy_id)['status'] == 'interrupted'
+    assert service.recovery_warnings() == {
+        'count': 3,
+        'items': [
+            {'run_id': corrupt_id, 'reason': 'invalid_control'},
+            {'run_id': unreadable_id, 'reason': 'read_failed'},
+            {'run_id': write_failed_id, 'reason': 'write_failed'},
+        ],
+    }
+    assert 'private-key-value' not in caplog.text
+    assert 'secret path' not in caplog.text
+
+    test_app = FastAPI()
+    test_app.include_router(router)
+    with TestClient(test_app) as client:
+        response = client.get('/api/xunlongjue/runs')
+    assert response.status_code == 200
+    assert response.json()['recovery_warnings']['count'] == 3
+
+
 def test_http_contract_does_not_return_key(xlj_home, monkeypatch):
     settings.save('https://mcp.example.test/mcp', 'fake-key')
     test_app = FastAPI()
