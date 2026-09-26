@@ -1,0 +1,37 @@
+.amazon-scraper-page{min-height:calc(100vh - 64px);padding:32px clamp(18px,3.6vw,56px) 52px;background:radial-gradient(ellipse at 82% 8%,#e7efe4 0,transparent 35%),#f4f6f0;color:#263d32}
+.amazon-scraper-heading{display:flex;align-items:center;justify-content:space-between;gap:24px;max-width:1180px;margin:0 auto 26px}
+.amazon-scraper-eyebrow{font:600 10px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.18em;color:#7b8d7c}
+.amazon-scraper-heading h1{display:flex;align-items:baseline;flex-wrap:wrap;gap:14px;margin:7px 0 6px;font:500 clamp(25px,3vw,34px)/1.2 Georgia,'Microsoft YaHei',serif;letter-spacing:-.025em;color:#203d31}
+.amazon-scraper-heading h1 span{font:12px 'Microsoft YaHei',sans-serif;letter-spacing:0;color:#6d7e6f}
+.amazon-scraper-heading p{margin:0;font-size:13px;color:#627466}
+.amazon-runtime{display:flex;align-items:center;gap:10px;min-width:235px;max-width:340px;padding:11px 12px;border:1px solid #d7e2d5;border-radius:10px;background:#fbfcf8}
+.amazon-runtime b,.amazon-runtime small{display:block}.amazon-runtime b{font-size:12px;color:#3b5b45}.amazon-runtime small{margin-top:4px;font-size:10px;line-height:1.5;color:#768578}
+.runtime-dot{width:9px;height:9px;flex:none;border-radius:50%;background:#79a66e;box-shadow:0 0 0 4px #79a66e20}.amazon-runtime.missing .runtime-dot{background:#cf8059;box-shadow:0 0 0 4px #cf805920}
+.amazon-runtime button{margin-left:auto;padding:6px;border:0;background:transparent;color:#59715c}
+.amazon-scraper-layout{display:grid;grid-template-columns:minmax(330px,.88fr) minmax(420px,1.12fr);gap:18px;max-width:1180px;margin:0 auto;align-items:start}
+.amazon-scraper-card{min-width:0;padding:21px 23px;border:1px solid #dce4d9;border-radius:13px;background:#fffefa;box-shadow:0 8px 28px #293d2b0b}
+.card-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:19px;padding-bottom:13px;border-bottom:1px solid #edf0e9}
+.card-title>div{display:flex;align-items:center;gap:10px}.card-title h2{margin:0;font:500 16px Georgia,'Microsoft YaHei',serif;color:#2c503a}.card-title small{font-size:10px;color:#8a9789}
+.card-step{display:grid;place-items:center;width:25px;height:25px;border-radius:8px;background:#edf4e9;color:#42704f;font:600 10px ui-monospace,monospace}
+.amazon-label{display:block;margin-bottom:7px;font-size:11px;font-weight:700;color:#49634e}
+.amazon-input-card textarea{box-sizing:border-box;width:100%;min-height:145px;resize:vertical;padding:13px 14px;border:1px solid #cfdacf;border-radius:8px;background:#fbfcf8;color:#263c30;font:12px/1.8 ui-monospace,SFMono-Regular,Consolas,monospace;outline:none}
+.amazon-input-card textarea:focus{border-color:#62846a;box-shadow:0 0 0 3px #62846a1b}
+.amazon-form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
+.amazon-form-row label,.amazon-history label{font-size:10px;color:#6d7d70}
+.amazon-form-row select,.amazon-history select{display:block;width:100%;margin-top:6px;padding:9px 10px;border:1px solid #d5ded3;border-radius:7px;background:#fffefa;color:#304638;font-size:11px}
+.amazon-policy{display:flex;gap:8px;align-items:flex-start;margin-top:14px;padding:10px 11px;border:1px solid #e1eadb;border-radius:7px;background:#f4f8f0;color:#60755f;font-size:10px;line-height:1.6}.amazon-policy svg{flex:none;margin-top:1px;color:#5c8a5c}
+.amazon-actions,.amazon-job-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:15px}
+.amazon-scraper-page button,.amazon-download{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:34px;padding:7px 11px;border:1px solid #d2ddd1;border-radius:7px;background:#fffefa;color:#3c5d45;font-size:11px;text-decoration:none;cursor:pointer}
+.amazon-scraper-page button.primary{margin-left:auto;border-color:#28583e;background:#28583e;color:white}.amazon-scraper-page button:disabled{opacity:.48;cursor:not-allowed}
+.amazon-message{display:flex;gap:7px;align-items:center;margin-top:12px;padding:9px 10px;border-radius:7px;font-size:11px;line-height:1.5}.amazon-message.error{background:#fff0e9;color:#9b4d35}.amazon-message.notice{background:#f8f2df;color:#827039}
+.amazon-preview{display:flex;align-items:center;gap:11px;flex-wrap:wrap;margin-top:14px;padding:11px 12px;border-radius:8px;background:#f1f5ed;color:#586d58;font-size:10px}.amazon-preview b{font-size:11px;color:#355b40}.amazon-preview small{width:100%;font-size:10px}.amazon-preview .invalid-input{color:#a45437}
+.amazon-current-job{padding:12px 13px;border:1px solid #e4eae0;border-radius:9px;background:#f8faf5}.amazon-current-job>div:first-child{display:flex;align-items:center;gap:10px}.amazon-current-job b{font-size:11px;color:#425a47}.amazon-current-job>small{font-size:10px;color:#879386}
+.amazon-current-job>.amazon-queue-position{display:block;margin-top:5px;color:#4b7353}
+.amazon-state,.amazon-item-state{white-space:nowrap;font-size:10px}.amazon-state{padding:4px 7px;border-radius:5px;background:#edf0ea;color:#788574}.amazon-state.running,.amazon-state.queued{background:#e4efdf;color:#386344}.amazon-state.completed,.amazon-state.ready{background:#e2efdc;color:#3d6b40}.amazon-state.paused,.amazon-state.completed_with_errors,.amazon-state.needs_attention{background:#f8ecd7;color:#916e2d}.amazon-state.failed,.amazon-state.interrupted{background:#f8e2d8;color:#a8503a}
+.amazon-progress{height:5px;margin:12px 0 7px;border-radius:4px;background:#e6ebe2;overflow:hidden}.amazon-progress i{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,#53835b,#8caa68);transition:width .25s ease}
+.amazon-job-actions{margin:12px 0}.amazon-download{border-color:#b8cdb6;background:#eff6eb;color:#2f6847}
+.amazon-items{max-height:440px;overflow:auto;border-top:1px solid #edf0e9}.amazon-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 10px;padding:10px 2px;border-bottom:1px solid #edf0e9}.amazon-item>div b,.amazon-item>div small{display:block}.amazon-item>div b{font:600 11px ui-monospace,monospace;color:#334b38}.amazon-item>div small{overflow:hidden;margin-top:4px;color:#7c897d;font-size:10px;text-overflow:ellipsis;white-space:nowrap}.amazon-item-state{align-self:center;color:#71806f}.amazon-item-state.failed,.amazon-item-state.needs_attention{color:#a75038}.amazon-item p{grid-column:1/-1;margin:2px 0 0;color:#a45c40;font-size:10px;line-height:1.5}
+.amazon-empty{display:grid;justify-items:center;padding:55px 20px 65px;text-align:center}.empty-icon{display:grid;place-items:center;width:42px;height:42px;margin-bottom:12px;border:1px solid #d9e5d5;border-radius:12px;background:#f2f7ee;color:#608263}.amazon-empty b{font:500 15px Georgia,'Microsoft YaHei',serif;color:#395943}.amazon-empty p{max-width:250px;color:#7b897b;font-size:11px;line-height:1.7}
+.amazon-history{padding-top:13px;border-top:1px solid #edf0e9}.amazon-scraper-footer{max-width:1180px;margin:17px auto 0;color:#869286;font-size:10px;line-height:1.7}
+@media(max-width:860px){.amazon-scraper-layout{grid-template-columns:minmax(0,1fr)}.amazon-scraper-heading{align-items:flex-start;flex-direction:column}.amazon-runtime{width:calc(100% - 26px);max-width:none}}
+@media(max-width:520px){.amazon-scraper-page{padding:22px 13px 34px}.amazon-scraper-card{padding:17px 15px}.amazon-form-row{grid-template-columns:1fr}.amazon-scraper-heading h1{font-size:26px}.amazon-scraper-heading h1 span{width:100%}}

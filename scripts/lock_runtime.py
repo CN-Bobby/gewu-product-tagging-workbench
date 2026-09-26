@@ -4,7 +4,7 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
-pending=[Requirement(n) for n in ['fastapi','uvicorn','sqlalchemy','openpyxl','pillow','python-multipart','httpx','python-dotenv','mcp',
+pending=[Requirement(n) for n in ['fastapi','uvicorn','sqlalchemy','openpyxl','pillow','playwright','python-multipart','httpx','python-dotenv','mcp',
                                  'numpy','pandas','statsmodels']]
 found={};visited={}
 while pending:

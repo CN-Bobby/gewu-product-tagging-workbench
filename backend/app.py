@@ -16,6 +16,9 @@ from . import field_catalog,worksheet_query,task_control
 from . import knowledge,templates,storage_management,model_settings,capabilities
 from .keyword_research import routes as keyword_research_routes
 from .keyword_research import registry as keyword_registry, runner as keyword_runner
+from . import amazon_scraper
+from .amazon_scraper_http import (AmazonRequestBodyTooLarge, InvalidAmazonContentLength,
+                                  buffer_amazon_request_body)
 from .xunlongjue import router as xunlongjue_router, home_summary as xunlongjue_home_summary
 from .xunlongjue import start as xunlongjue_start, recover as xunlongjue_recover, stop_all as xunlongjue_stop_all
 from .build_info import VERSION, build_info
@@ -24,11 +27,13 @@ from . import agent_application
 from .model_settings import SettingsInUse
 from .runtime_isolation import CredentialUnavailable
 
+AMAZON_REQUEST_BODY_LIMIT = 256 * 1024
+
 @asynccontextmanager
 async def lifespan(app):
     app.state.stopping=False
     agent_application.start()
-    init_db();jobs.recover();batch.recover();keyword_registry.recover();xunlongjue_start();xunlongjue_recover()
+    init_db();jobs.recover();batch.recover();keyword_registry.recover();amazon_scraper.recover();xunlongjue_start();xunlongjue_recover()
     with Session() as s:ids=list(s.scalars(select(Dataset.id)))
     for did in ids:draft.migrate(did)
     yield
@@ -39,6 +44,7 @@ async def lifespan(app):
     for did in list(jobs.chats):jobs.stop_chat(did)
     for jid in list(batch.active):batch.stop(jid)
     keyword_runner.stop_all()
+    amazon_scraper.stop_all()
     xunlongjue_stop_all()
 
 app=FastAPI(title='商品特征工程工作台',version=VERSION,lifespan=lifespan)
@@ -49,6 +55,13 @@ async def localhost(request:Request,call_next):
     if host not in ('127.0.0.1','localhost','testserver'):return JSONResponse({'detail':'本工具仅用于本机'},status_code=403)
     origin=request.headers.get('origin')
     if origin and urlparse(origin).netloc!=request.headers.get('host'):return JSONResponse({'detail':'不接受跨站请求'},status_code=403)
+    if request.method=='POST' and request.url.path.startswith('/api/amazon-scraper/'):
+        try:
+            await buffer_amazon_request_body(request,AMAZON_REQUEST_BODY_LIMIT)
+        except InvalidAmazonContentLength:
+            return JSONResponse({'detail':'请求大小无效'},status_code=400)
+        except AmazonRequestBodyTooLarge:
+            return JSONResponse({'detail':'Amazon 请求内容过大：最多 256 KiB'},status_code=413)
     return await call_next(request)
 
 @app.exception_handler(ValueError)
@@ -70,6 +83,30 @@ async def validation_error(request,e):return JSONResponse({'detail':str(e)},stat
 
 @app.get('/api/health')
 def health():return {'status':'ok','application':'product-tagging-workbench','storage':str(STORAGE),'capabilities':capabilities.public(),**build_info()}
+
+@app.get('/api/amazon-scraper/runtime')
+def amazon_scraper_runtime():return amazon_scraper.runtime_status()
+
+@app.post('/api/amazon-scraper/preview')
+def amazon_scraper_preview(body:dict):return amazon_scraper.service.preview(body.get('input',''),body.get('marketplace','US'),body.get('profile','balanced'))
+
+@app.post('/api/amazon-scraper/jobs')
+def amazon_scraper_start(body:dict):return amazon_scraper.service.start(body.get('input',''),body.get('marketplace','US'),body.get('profile','balanced'))
+
+@app.get('/api/amazon-scraper/jobs')
+def amazon_scraper_jobs():return amazon_scraper.service.list_jobs()
+
+@app.get('/api/amazon-scraper/jobs/{job_id}')
+def amazon_scraper_job(job_id:str):return amazon_scraper.service.get(job_id)
+
+@app.post('/api/amazon-scraper/jobs/{job_id}/cancel')
+def amazon_scraper_cancel(job_id:str):return amazon_scraper.service.cancel(job_id)
+
+@app.post('/api/amazon-scraper/jobs/{job_id}/retry')
+def amazon_scraper_retry(job_id:str):return amazon_scraper.service.retry(job_id)
+
+@app.get('/api/amazon-scraper/jobs/{job_id}/download')
+def amazon_scraper_download(job_id:str):return FileResponse(amazon_scraper.service.output_path(job_id),filename='Amazon-Listing-图片.xlsx',media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 @app.get('/api/home/summary')
 def home_summary():
