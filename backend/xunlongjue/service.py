@@ -374,10 +374,10 @@ def _call_for_job(client, job: dict) -> dict:
     kind = job.get('type')
     if kind not in ('category_tree', 'category_trend'):
         raise ValueError('引擎返回未知任务类型')
-    arguments = {'nodeId': str(job.get('node_id') or ''),
-                 'amzSite': str(job.get('site') or '')}
+    arguments = {'nodeid': str(job.get('node_id') or ''),
+                 'amz_site': str(job.get('site') or '')}
     if kind == 'category_trend':
-        arguments['trendIndex'] = str(job.get('indicator') or '')
+        arguments['indicator'] = str(job.get('indicator') or '')
     return call_sync(client, kind, arguments)
 
 

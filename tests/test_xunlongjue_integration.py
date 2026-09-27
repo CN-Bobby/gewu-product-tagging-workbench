@@ -2,6 +2,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -55,11 +56,71 @@ def test_run_ids_are_validated_before_building_workspace_paths(xlj_home):
 
 def test_category_trend_uses_sorftime_tool_contract():
     client = FakeSorftime('https://mcp.example.test/mcp', 'fake-key')
-    service._call_for_job(client, {'type': 'category_trend', 'node_id': '123',
-                                   'site': 'US', 'indicator': 'SalesCount'})
+    # This is the shape returned by engine.lease_jobs. Keep the leased indicator
+    # alongside the arguments so the Sorftime adapter cannot silently drop it.
+    service._call_for_job(client, {
+        'type': 'category_trend', 'node_id': '123', 'site': 'US',
+        'indicator': 'SalesCount',
+        'arguments': {'amzSite': 'US', 'nodeid': '123', 'indicator': 'SalesCount'},
+    })
     assert client.calls == [('category_trend', {
-        'nodeId': '123', 'amzSite': 'US', 'trendIndex': 'SalesCount',
+        'amz_site': 'US', 'nodeid': '123', 'indicator': 'SalesCount',
     })]
+
+
+def test_category_tree_uses_sorftime_tool_contract():
+    client = FakeSorftime('https://mcp.example.test/mcp', 'fake-key')
+    service._call_for_job(client, {
+        'type': 'category_tree', 'node_id': '12345', 'site': 'US',
+        'arguments': {'amzSite': 'US', 'nodeid': '12345'},
+    })
+    assert client.calls == [('category_tree', {'amz_site': 'US', 'nodeid': '12345'})]
+
+
+@pytest.mark.parametrize('content', [[], [SimpleNamespace(text='')],
+                                     [SimpleNamespace(text='upstream returned HTML')]])
+def test_sorftime_rejects_empty_or_plain_text_mcp_content(content, monkeypatch):
+    client = SorftimeClient('https://mcp.example.test/mcp', 'fake-key')
+    result = SimpleNamespace(isError=False, content=content)
+
+    async def fake_call_live(name, arguments):
+        from backend.xunlongjue.sorftime import _decode
+        return _decode(result)
+
+    # Replace the live MCP boundary so this test only exercises fake content.
+    monkeypatch.setattr(client, '_call_live', fake_call_live)
+    with pytest.raises(RuntimeError):
+        import asyncio
+        asyncio.run(client.call('category_tree', {'amz_site': 'US', 'nodeid': '123'}))
+
+
+def test_sorftime_rejects_tree_objects_without_recognized_list_field(monkeypatch):
+    client = SorftimeClient('https://mcp.example.test/mcp', 'fake-key')
+    result = SimpleNamespace(isError=False, content=[SimpleNamespace(text='{"status":"ok"}')])
+
+    async def fake_call_live(name, arguments):
+        from backend.xunlongjue.sorftime import _decode
+        return _decode(result)
+
+    monkeypatch.setattr(client, '_call_live', fake_call_live)
+    with pytest.raises(RuntimeError):
+        import asyncio
+        asyncio.run(client.call('category_tree', {'amz_site': 'US', 'nodeid': '123'}))
+
+
+def test_sorftime_accepts_a_genuine_empty_tree_list(monkeypatch):
+    client = SorftimeClient('https://mcp.example.test/mcp', 'fake-key')
+    result = SimpleNamespace(isError=False, content=[SimpleNamespace(text='[]')])
+
+    async def fake_call_live(name, arguments):
+        from backend.xunlongjue.sorftime import _decode
+        return _decode(result)
+
+    monkeypatch.setattr(client, '_call_live', fake_call_live)
+    import asyncio
+    payload = asyncio.run(client.call('category_tree', {'amz_site': 'US', 'nodeid': '123'}))
+    from backend.xunlongjue.vendor.xlj_core.engine import _normalize_tree_payload
+    assert _normalize_tree_payload(payload) == []
 
 
 def test_mcp_diagnostic_scrubs_api_key_and_url():
@@ -99,7 +160,7 @@ def test_create_run_executes_serial_mcp_job_and_only_then_writes_final_report(xl
     assert state['max_nodes'] == 10
     assert state['policy']['max_nodes'] == 10
     assert Path(state['report_path']).is_file()
-    assert instances[0].calls == [('category_tree', {'nodeId': '12345', 'amzSite': 'US'})]
+    assert instances[0].calls == [('category_tree', {'amz_site': 'US', 'nodeid': '12345'})]
     assert (xlj_home / result['run_id'] / 'workspace' / 'ipc').is_dir()
     test_app = FastAPI()
     test_app.include_router(router)

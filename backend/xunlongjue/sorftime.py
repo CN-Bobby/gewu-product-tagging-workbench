@@ -54,7 +54,10 @@ class SorftimeClient:
                 result = await self._call_live(name, arguments)
             else:
                 result = await self.transport(name, arguments)
-            return result if isinstance(result, dict) else {'data': result}
+            payload = result if isinstance(result, dict) else {'data': result}
+            if name == 'category_tree' and not _has_tree_items(payload):
+                raise ValueError('Sorftime category_tree 返回了无法识别的 JSON 结构')
+            return payload
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(scrub(exc, self.api_key)) from None
 
@@ -65,13 +68,22 @@ def _result_text(result: Any) -> str:
 
 def _decode(result: Any) -> dict:
     raw = _result_text(result)
-    if not raw:
-        return {}
+    if not raw.strip():
+        raise ValueError('Sorftime MCP 返回空文本')
     try:
         data = json.loads(raw)
     except ValueError:
-        return {'_raw_text': raw}
+        raise ValueError('Sorftime MCP 返回非 JSON 文本') from None
     return data if isinstance(data, dict) else {'data': data}
+
+
+def _has_tree_items(payload: object) -> bool:
+    if isinstance(payload, list):
+        return True
+    if not isinstance(payload, dict):
+        return False
+    return any(isinstance(payload.get(name), list)
+               for name in ('items', 'subcategories', 'data'))
 
 
 def call_sync(client: SorftimeClient, name: str, arguments: dict) -> dict:
