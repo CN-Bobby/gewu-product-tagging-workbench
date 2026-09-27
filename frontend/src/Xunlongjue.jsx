@@ -1,152 +1,91 @@
-import React,{useEffect,useRef,useState}from'react';
-import{Activity,ArrowDownToLine,ArrowUpRight,CircleAlert,Map,Pause,Play,RefreshCw,Settings2}from'lucide-react';
+import React,{useEffect,useMemo,useRef,useState}from'react';
+import{Activity,ArrowDownToLine,ArrowUpRight,Archive,Check,ChevronDown,Copy,RotateCcw,Search,Settings2,Trash2,CircleAlert,Map,Pause,Play,RefreshCw}from'lucide-react';
 import './xunlongjueRecovery.css';
 import{activeStatuses,normalizeRunStatus,runPresentation}from'./xunlongjueState';
 
-const RUNS='/api/xunlongjue/runs';
+const RUNS='/api/xunlongjue/runs',PRESETS='/api/xunlongjue/presets';
 const statusNames={queued:'排队中',pending:'等待中',running:'运行中',paused:'已暂停',pausing:'正在暂停',resuming:'正在继续',completed:'已完成',done:'已完成',succeeded:'已完成',all_done:'全部完成',partial_done:'阶段完成，可继续',not_started:'尚未开始',waiting_retry:'等待重试',failed:'失败',cancelled:'已取消',interrupted:'已中断'};
 const runIdOf=run=>String(run?.id??run?.run_id??'');
 const runStatus=normalizeRunStatus;
 const detailOf=run=>String(run?.stage||run?.current_stage||run?.message||'');
 const formatDate=value=>{if(!value)return'—';const date=new Date(value);return Number.isNaN(date.getTime())?String(value):date.toLocaleString()};
+const policyDefaults={min_avg_sales:10000,max_level:12,sales_decline_tolerance:0.05,price_decline_tolerance:0.1,min_r_squared:0.15,batch_size:20,max_attempts:3,max_data_lag_months:2};
+const policyFields=[['min_avg_sales','近6月均销门槛',1,1],['max_level','最大层级',1,1],['sales_decline_tolerance','销量下降容忍',0,0.01],['price_decline_tolerance','价格下降容忍',0,0.01],['min_r_squared','最低 R²',0,0.01],['batch_size','批量',1,1],['max_attempts','最大尝试次数',1,1],['max_data_lag_months','最大数据滞后月',0,1]];
 function errorText(error){return error?.message||'请求失败，请稍后重试。'}
 function retryErrorText(value){return typeof value==='string'?value:value?.message||value?.detail||''}
+function queryString(values){const params=new URLSearchParams();Object.entries(values).forEach(([key,value])=>{if(value!==''&&value!=null)params.set(key,String(value))});return params.toString()}
+function rowsOf(value,key){return Array.isArray(value)?value:Array.isArray(value?.[key])?value[key]:[]}
+function mergeByRevision(current,incoming){if(!current||runIdOf(current)!==runIdOf(incoming))return incoming;const currentRevision=Number(current.revision??current.metadata?.revision)||0,incomingRevision=Number(incoming.revision??incoming.metadata?.revision)||0;if(incomingRevision>=currentRevision)return incoming;const metadata={...incoming.metadata,...current.metadata};return{...incoming,...metadata,revision:current.revision,metadata}}
 
 export function Xunlongjue({api}){
- const[settings,setSettings]=useState({endpoint:'',key_configured:false});
- const[endpoint,setEndpoint]=useState('');const[apiKey,setApiKey]=useState('');
+ const[settings,setSettings]=useState({endpoint:'',key_configured:false});const[endpoint,setEndpoint]=useState('');const[apiKey,setApiKey]=useState('');
  const[settingsLoading,setSettingsLoading]=useState(true),[settingsSaving,setSettingsSaving]=useState(false),[settingsError,setSettingsError]=useState(''),[settingsSaved,setSettingsSaved]=useState(false);
- const[site,setSite]=useState('US'),[nodeId,setNodeId]=useState('');const[maxDepth,setMaxDepth]=useState(''),[maxNodes,setMaxNodes]=useState('');
- const[starting,setStarting]=useState(false),[startError,setStartError]=useState('');
- const[runs,setRuns]=useState([]),[runsLoading,setRunsLoading]=useState(true),[runsError,setRunsError]=useState('');
- const[recoveryWarnings,setRecoveryWarnings]=useState(0);
- const[selectedId,setSelectedId]=useState(''),[detail,setDetail]=useState(null),[detailLoading,setDetailLoading]=useState(false),[detailError,setDetailError]=useState('');
- const[actionBusy,setActionBusy]=useState('');const listRequest=useRef(0),detailRequest=useRef(0);
+ const[site,setSite]=useState('US'),[nodeId,setNodeId]=useState(''),[category,setCategory]=useState(''),[operator,setOperator]=useState(''),[maxNodes,setMaxNodes]=useState('');
+ const[policy,setPolicy]=useState(policyDefaults),[starting,setStarting]=useState(false),[startError,setStartError]=useState('');
+ const[runs,setRuns]=useState([]),[runsLoading,setRunsLoading]=useState(true),[runsError,setRunsError]=useState(''),[recoveryWarnings,setRecoveryWarnings]=useState(0);
+ const[search,setSearch]=useState(''),[statusFilter,setStatusFilter]=useState(''),[sort,setSort]=useState('created_at'),[direction,setDirection]=useState('desc'),[scope,setScope]=useState('active');
+ const[selectedIds,setSelectedIds]=useState([]),[selectedId,setSelectedId]=useState(''),[detail,setDetail]=useState(null),[detailLoading,setDetailLoading]=useState(false),[detailError,setDetailError]=useState('');
+ const[nameDraft,setNameDraft]=useState(''),[noteDraft,setNoteDraft]=useState(''),[metadataSaving,setMetadataSaving]=useState(false),[metadataSaved,setMetadataSaved]=useState(false);
+ const[actionBusy,setActionBusy]=useState(''),[bulkError,setBulkError]=useState('');
+ const[presets,setPresets]=useState([]),[presetId,setPresetId]=useState(''),[presetName,setPresetName]=useState(''),[presetError,setPresetError]=useState(''),[presetBusy,setPresetBusy]=useState(false);
+ const listRequest=useRef(0),detailRequest=useRef(0);
+ const runQuery=useMemo(()=>queryString({search,status:statusFilter,sort,direction,archived:scope==='archived',trashed:scope==='trashed'}),[search,statusFilter,sort,direction,scope]);
  const refreshRuns=async({initial=false}={})=>{
-  const request=++listRequest.current;
-  if(initial)setRunsLoading(true);
-  try{
-   const result=await api(RUNS,undefined,'GET');
-   if(request!==listRequest.current)return;
-   const rows=Array.isArray(result)?result:Array.isArray(result?.runs)?result.runs:[];
-   setRuns(rows);setRunsError('');
-   setRecoveryWarnings(Math.max(0,Number(result?.recovery_warnings?.count)||0));
-   setSelectedId(current=>current&&rows.some(item=>runIdOf(item)===current)?current:runIdOf(rows[0]));
-  }catch(error){if(request===listRequest.current)setRunsError(errorText(error))}
-  finally{if(request===listRequest.current&&initial)setRunsLoading(false)}
+  const request=++listRequest.current;if(initial)setRunsLoading(true);
+  try{const result=await api(`${RUNS}${runQuery?`?${runQuery}`:''}`,undefined,'GET');if(request!==listRequest.current)return;const rows=rowsOf(result,'runs');setRuns(rows);setRunsError('');setRecoveryWarnings(Math.max(0,Number(result?.recovery_warnings?.count)||0));setSelectedId(current=>current&&rows.some(item=>runIdOf(item)===current)?current:runIdOf(rows[0]));setSelectedIds(current=>current.filter(id=>rows.some(run=>runIdOf(run)===id)))}
+  catch(error){if(request===listRequest.current)setRunsError(errorText(error))}finally{if(request===listRequest.current&&initial)setRunsLoading(false)}
  };
- useEffect(()=>{
-  let live=true;
-  api('/api/xunlongjue/settings',undefined,'GET').then(value=>{
-   if(!live)return;const next={endpoint:String(value?.endpoint||''),key_configured:Boolean(value?.key_configured)};
-   setSettings(next);setEndpoint(next.endpoint);
-  }).catch(error=>{if(live)setSettingsError(errorText(error))}).finally(()=>{if(live)setSettingsLoading(false)});
-  void refreshRuns({initial:true});
-  return()=>{live=false;listRequest.current++};
- },[]);
- useEffect(()=>{
-  const timer=window.setInterval(()=>{if(runs.some(run=>activeStatuses.has(runStatus(run))))void refreshRuns()},5000);
-  return()=>window.clearInterval(timer);
- },[runs]);
- useEffect(()=>{
-  if(!selectedId){setDetail(null);setDetailError('');setDetailLoading(false);return undefined}
-  let live=true;const request=++detailRequest.current;setDetailLoading(true);setDetailError('');setDetail(null);
-  const load=async()=>{
-   try{const value=await api(`${RUNS}/${encodeURIComponent(selectedId)}`,undefined,'GET');if(live&&request===detailRequest.current)setDetail(value)}
-   catch(error){if(live&&request===detailRequest.current)setDetailError(errorText(error))}
-   finally{if(live&&request===detailRequest.current)setDetailLoading(false)}
-  };
-  void load();
-  return()=>{live=false;detailRequest.current++};
- },[selectedId]);
- useEffect(()=>{
-  if(!selectedId||!activeStatuses.has(runStatus(detail||runs.find(run=>runIdOf(run)===selectedId))))return undefined;
-  let live=true,timer;
-  const poll=async()=>{
-   try{const value=await api(`${RUNS}/${encodeURIComponent(selectedId)}`,undefined,'GET');if(!live)return;setDetail(value);setDetailError('')}
-   catch(error){if(live)setDetailError(errorText(error))}
-   finally{if(live)timer=window.setTimeout(poll,3500)}
-  };
-  timer=window.setTimeout(poll,3500);
-  return()=>{live=false;window.clearTimeout(timer)};
- },[selectedId,runStatus(detail||runs.find(run=>runIdOf(run)===selectedId))]);
- const saveSettings=async event=>{
-  event.preventDefault();setSettingsSaving(true);setSettingsError('');setSettingsSaved(false);
-  try{
-   const value=await api('/api/xunlongjue/settings',{endpoint:endpoint.trim(),api_key:apiKey.trim()||null},'PUT');
-   const next={endpoint:String(value?.endpoint??endpoint.trim()),key_configured:value?.key_configured==null?(Boolean(apiKey.trim())||settings.key_configured):Boolean(value.key_configured)};
-   setSettings(next);setEndpoint(next.endpoint);setApiKey('');setSettingsSaved(true);
-  }catch(error){setSettingsError(errorText(error))}finally{setSettingsSaving(false)}
- };
- const startRun=async event=>{
-  event.preventDefault();setStartError('');
-  if(!site.trim()||!nodeId.trim()){setStartError('请填写站点和类目 Node ID。');return}
-  setStarting(true);
-  try{
-   const body={site:site.trim(),node_id:nodeId.trim()};
-   if(maxDepth.trim())body.max_depth=Number(maxDepth);
-   if(maxNodes.trim())body.max_nodes=Number(maxNodes);
-   const run=await api(RUNS,body);
-   const id=runIdOf(run);if(id)setSelectedId(id);
-   await refreshRuns();
-   if(id)setSelectedId(id);
-   setNodeId('');
-  }catch(error){setStartError(errorText(error))}finally{setStarting(false)}
- };
- const runAction=async action=>{
-  if(!selectedId)return;setActionBusy(action);setDetailError('');
-  try{
-   const result=await api(`${RUNS}/${encodeURIComponent(selectedId)}/${action}`,{});
-   if(result&&typeof result==='object')setDetail(result);
-   await refreshRuns();
-   const latest=await api(`${RUNS}/${encodeURIComponent(selectedId)}`,undefined,'GET');setDetail(latest);
-  }catch(error){setDetailError(errorText(error))}finally{setActionBusy('')}
- };
- const selectedRun=detail||runs.find(run=>runIdOf(run)===selectedId)||null;
- const selectedStatus=runStatus(selectedRun);
- const reportUrl=selectedRun?.report_url||runs.find(run=>runIdOf(run)===selectedId)?.report_url||'';
- const selectedPresentation=runPresentation(selectedRun);
- const selectedProgress=selectedPresentation.progress;
- const canPause=['queued','pending','running','resuming'].includes(selectedStatus),canResume=['paused','interrupted','partial_done'].includes(selectedStatus);
+ const refreshPresets=async()=>{try{const value=await api(PRESETS,undefined,'GET');setPresets(rowsOf(value,'presets'))}catch(error){setPresetError(errorText(error))}};
+ useEffect(()=>{let live=true;api('/api/xunlongjue/settings',undefined,'GET').then(value=>{if(!live)return;const next={endpoint:String(value?.endpoint||''),key_configured:Boolean(value?.key_configured)};setSettings(next);setEndpoint(next.endpoint)}).catch(error=>{if(live)setSettingsError(errorText(error))}).finally(()=>{if(live)setSettingsLoading(false)});void refreshRuns({initial:true});void refreshPresets();return()=>{live=false;listRequest.current++}},[]);
+ useEffect(()=>{void refreshRuns()},[runQuery]);
+ useEffect(()=>{if(!runs.some(run=>activeStatuses.has(runStatus(run))))return undefined;const timer=window.setInterval(()=>void refreshRuns(),5000);return()=>window.clearInterval(timer)},[runs,runQuery]);
+ useEffect(()=>{if(!selectedId){setDetail(null);setDetailError('');setDetailLoading(false);return undefined}let live=true;const request=++detailRequest.current;setDetailLoading(true);setDetailError('');setDetail(null);const load=async()=>{try{const value=await api(`${RUNS}/${encodeURIComponent(selectedId)}`,undefined,'GET');if(live&&request===detailRequest.current){setDetail(current=>mergeByRevision(current,value));setNameDraft(String(value?.metadata?.name??value?.name??''));setNoteDraft(String(value?.metadata?.note??''))}}catch(error){if(live&&request===detailRequest.current)setDetailError(errorText(error))}finally{if(live&&request===detailRequest.current)setDetailLoading(false)}};void load();return()=>{live=false;detailRequest.current++}},[selectedId]);
+ useEffect(()=>{if(!selectedId||!activeStatuses.has(runStatus(detail||runs.find(run=>runIdOf(run)===selectedId))))return undefined;let live=true,timer;const poll=async()=>{try{const value=await api(`${RUNS}/${encodeURIComponent(selectedId)}`,undefined,'GET');if(!live)return;setDetail(current=>mergeByRevision(current,value));setDetailError('')}catch(error){if(live)setDetailError(errorText(error))}finally{if(live)timer=window.setTimeout(poll,3500)}};timer=window.setTimeout(poll,3500);return()=>{live=false;window.clearTimeout(timer)}},[selectedId,runStatus(detail||runs.find(run=>runIdOf(run)===selectedId))]);
+ const saveSettings=async event=>{event.preventDefault();setSettingsSaving(true);setSettingsError('');setSettingsSaved(false);try{const value=await api('/api/xunlongjue/settings',{endpoint:endpoint.trim(),api_key:apiKey.trim()||null},'PUT');const next={endpoint:String(value?.endpoint??endpoint.trim()),key_configured:value?.key_configured==null?(Boolean(apiKey.trim())||settings.key_configured):Boolean(value.key_configured)};setSettings(next);setEndpoint(next.endpoint);setApiKey('');setSettingsSaved(true)}catch(error){setSettingsError(errorText(error))}finally{setSettingsSaving(false)}};
+ const startRun=async event=>{event.preventDefault();setStartError('');if(!site.trim()||!nodeId.trim()||!category.trim()){setStartError('请填写站点、类目 Node ID 和类目名称。');return}setStarting(true);try{const body={site:site.trim(),node_id:nodeId.trim(),category:category.trim(),operator:operator.trim(),policy:{...policy},max_nodes:maxNodes.trim()?Number(maxNodes):undefined};const run=await api(RUNS,body);const id=runIdOf(run);await refreshRuns();if(id)setSelectedId(id);setNodeId('')}catch(error){setStartError(errorText(error))}finally{setStarting(false)}};
+ const savePreset=async()=>{const name=presetName.trim();if(!name){setPresetError('请填写预设名称。');return}setPresetBusy(true);setPresetError('');try{const body={name,policy:{...policy}};const saved=presetId?await api(`${PRESETS}/${encodeURIComponent(presetId)}`,body,'PUT'):await api(PRESETS,body);await refreshPresets();const item=saved?.preset||saved;setPresetId(String(item?.preset_id||item?.id||''));setPresetName(String(item?.name||name))}catch(error){setPresetError(errorText(error))}finally{setPresetBusy(false)}};
+ const loadPreset=()=>{const item=presets.find(p=>String(p.preset_id??p.id)===presetId);if(!item)return;setPolicy({...policyDefaults,...item.policy});setPresetName(String(item.name||''));setPresetError('')};
+ const deletePreset=async()=>{if(!presetId)return;setPresetBusy(true);setPresetError('');try{await api(`${PRESETS}/${encodeURIComponent(presetId)}`,undefined,'DELETE');setPresetId('');setPresetName('');await refreshPresets()}catch(error){setPresetError(errorText(error))}finally{setPresetBusy(false)}};
+ const runAction=async action=>{if(!selectedId)return;const run=selectedRun;if(['archive','trash','restore'].includes(action)&&activeStatuses.has(runStatus(run))){setDetailError('请先暂停正在运行的任务，再更改归档或回收站状态。');return}setActionBusy(action);setDetailError('');try{if(action==='pause'||action==='resume'){const value=await api(`${RUNS}/${encodeURIComponent(selectedId)}/${action}`,{});if(value&&typeof value==='object')setDetail(value)}else await api(`${RUNS}/bulk`,{action,run_ids:[selectedId]});if(action==='archive'&&scope==='active'||action==='trash'&&scope!=='trashed'||action==='restore'&&scope!=='active'){setSelectedId('');setDetail(null);await refreshRuns()}else{await refreshRuns();const latest=await api(`${RUNS}/${encodeURIComponent(selectedId)}`,undefined,'GET');setDetail(latest)}}catch(error){setDetailError(errorText(error))}finally{setActionBusy('')}};
+ const bulkAction=async action=>{if(!selectedIds.length)return;const chosen=runs.filter(run=>selectedIds.includes(runIdOf(run)));if(chosen.some(run=>activeStatuses.has(runStatus(run)))){setBulkError('所选任务中有正在运行的记录，请先逐项暂停后再更改归档或回收站状态。');return}setActionBusy(`bulk-${action}`);setBulkError('');try{await api(`${RUNS}/bulk`,{action,run_ids:selectedIds});setSelectedIds([]);await refreshRuns()}catch(error){setBulkError(errorText(error))}finally{setActionBusy('')}};
+ const saveMetadata=async()=>{if(!selectedId||!selectedRun)return;setMetadataSaving(true);setMetadataSaved(false);setDetailError('');try{const value=await api(`${RUNS}/${encodeURIComponent(selectedId)}/metadata`,{revision:Number(selectedRun.revision)||1,name:nameDraft,note:noteDraft});setDetail(value);setMetadataSaved(true);await refreshRuns()}catch(error){setDetailError(errorText(error))}finally{setMetadataSaving(false)}};
+ const copyParameters=run=>{const source=run?.policy||run?.metadata?.policy;if(source)setPolicy({...policyDefaults,...source});setSite(String(run?.site||'US'));setNodeId(String(run?.node_id||run?.root_node_id||''));setCategory(String(run?.category||''));setOperator(String(run?.operator||run?.operator_name||''));setMaxNodes(String(run?.max_nodes||''));document.querySelector('.xj-scan-form')?.scrollIntoView({behavior:'smooth',block:'start'})};
+ const selectedRun=detail||runs.find(run=>runIdOf(run)===selectedId)||null,selectedStatus=runStatus(selectedRun),reportUrl=selectedRun?.report_url||'',selectedPresentation=runPresentation(selectedRun),selectedProgress=selectedPresentation.progress;
+ const canPause=['queued','pending','running','resuming'].includes(selectedStatus),canResume=['paused','interrupted','partial_done'].includes(selectedStatus),visibleIds=runs.map(runIdOf).filter(Boolean),allSelected=visibleIds.length>0&&visibleIds.every(id=>selectedIds.includes(id));
+ const toggleSelected=id=>setSelectedIds(ids=>ids.includes(id)?ids.filter(item=>item!==id):[...ids,id]);
  return <main className="xj-page">
-  <header className="xj-heading"><div><div className="eyebrow">XUNLONGJUE · CATEGORY SCAN</div><h1>寻龙诀</h1><p>配置 Sorftime 服务并发起类目树扫描，跟踪运行进度与成熟报告。</p></div><button className="xj-refresh" onClick={()=>void refreshRuns()} disabled={runsLoading} aria-label="刷新任务列表"><RefreshCw size={15}/>刷新</button></header>
-  <section className="xj-grid">
-   <div className="xj-column">
-    <section className="home-card xj-card"><div className="home-card-head"><div><small>CONNECTION</small><h3><Settings2 size={16}/>Sorftime 服务</h3></div><span className={settings.key_configured?'configured-pill':'missing-pill'}>{settingsLoading?'读取中':settings.key_configured?'Key 已配置':'需要配置 Key'}</span></div>
-     <form className="xj-settings" onSubmit={saveSettings}>
-      <label className="settings-field"><span className="field-label">API 地址</span><input aria-label="Sorftime API 地址" type="url" value={endpoint} onChange={event=>{setEndpoint(event.target.value);setSettingsSaved(false)}} placeholder="https://api.example.com" required/><small className="field-help">填写 Sorftime MCP 服务地址。</small></label>
-      <label className="settings-field"><span className="field-label">API Key</span><input aria-label="Sorftime API Key" type="password" autoComplete="new-password" value={apiKey} onChange={event=>{setApiKey(event.target.value);setSettingsSaved(false)}} placeholder={settings.key_configured?'已配置；留空保留现有 Key':'输入 Sorftime API Key'} autoCapitalize="off" spellCheck="false"/><small className="field-help">密钥不会回显。留空保存地址时按保留现有密钥处理。</small></label>
-      {settingsError&&<p className="xj-error" role="alert"><CircleAlert size={15}/>{settingsError}</p>}
-      <div className="xj-form-actions"><button className="primary" type="submit" disabled={settingsSaving||settingsLoading}>{settingsSaving?'保存中…':'保存连接设置'}</button>{settingsSaved&&<span className="xj-success">设置已保存</span>}</div>
-     </form>
-    </section>
-    <section className="home-card xj-card"><div className="home-card-head"><div><small>NEW SCAN</small><h3><Map size={16}/>启动类目扫描</h3></div></div>
-     <form className="xj-scan-form" onSubmit={startRun}>
-      <div className="xj-form-row"><label className="settings-field"><span className="field-label">站点</span><select aria-label="站点" value={site} onChange={event=>setSite(event.target.value)}><option value="US">美国 · US</option><option value="CA">加拿大 · CA</option><option value="UK">英国 · UK</option><option value="DE">德国 · DE</option><option value="FR">法国 · FR</option><option value="IT">意大利 · IT</option><option value="ES">西班牙 · ES</option><option value="JP">日本 · JP</option></select></label><label className="settings-field"><span className="field-label">类目 Node ID</span><input aria-label="类目 Node ID" value={nodeId} onChange={event=>setNodeId(event.target.value)} placeholder="例如 3760901" required/></label></div>
-      <details className="xj-advanced"><summary>高级扫描范围</summary><div className="xj-form-row"><label className="settings-field"><span className="field-label">最大深度</span><input aria-label="最大深度" type="number" min="1" step="1" value={maxDepth} onChange={event=>setMaxDepth(event.target.value)} placeholder="按默认范围"/></label><label className="settings-field"><span className="field-label">最大节点数</span><input aria-label="最大节点数" type="number" min="1" step="1" value={maxNodes} onChange={event=>setMaxNodes(event.target.value)} placeholder="按默认范围"/></label></div></details>
-      {startError&&<p className="xj-error" role="alert"><CircleAlert size={15}/>{startError}</p>}
-      <div className="xj-form-actions"><button className="primary" type="submit" disabled={starting||settingsLoading||!settings.key_configured}>{starting?<><Activity size={15}/>正在启动…</>:<><Play size={15}/>开始扫描</>}</button>{!settingsLoading&&!settings.key_configured&&<span className="xj-muted">先保存 Sorftime 地址和 Key</span>}</div>
-     </form>
-    </section>
-   </div>
-   <section className="home-card xj-runs-card"><div className="home-card-head"><div><small>SCAN RUNS</small><h3><Activity size={16}/>运行任务</h3></div><span className="xj-run-count">{runs.length} 项</span></div>
-    {runsError&&<div className="xj-error xj-list-error" role="alert"><CircleAlert size={15}/>{runsError}<button onClick={()=>void refreshRuns()}>重试</button></div>}
-    {recoveryWarnings>0&&<div className="xj-recovery-warning" role="status"><CircleAlert size={15}/><span>有 {recoveryWarnings} 条历史任务未能恢复，已跳过并保留原记录；其他任务仍可正常使用。</span></div>}
-    {runsLoading&&!runs.length?<div className="xj-empty">正在读取运行记录…</div>:!runs.length?<div className="xj-empty">还没有扫描任务。填写站点与 Node ID 后开始。</div>:<div className="xj-run-layout">
-      <div className="xj-run-list" aria-label="扫描任务列表">{runs.map(run=>{const id=runIdOf(run),presentation=runPresentation(run),status=presentation.displayStatus,percent=presentation.progress,nodeId=run.node_id||run.root_node_id;return <button type="button" key={id||run.created_at} className={'xj-run-item '+(id===selectedId?'selected':'')} onClick={()=>id&&setSelectedId(id)}><span className={'xj-status '+status}>{statusNames[status]||status||'未知'}</span><b>{run.title||run.name||run.node_name||`Node ${nodeId||'—'}`}</b><small>{run.site||run.marketplace||'—'} · Node ID {nodeId||'—'}</small><div className="xj-run-item-foot"><small>{detailOf(run)||formatDate(run.created_at||run.started_at)}</small>{percent!=null&&<small>{Math.round(percent)}%</small>}</div></button>})}</div>
-     <section className="xj-run-detail" aria-live="polite">
-      {detailLoading&&!detail?<div className="xj-empty">正在读取任务详情…</div>:detailError&&!detail?<div className="xj-error" role="alert"><CircleAlert size={15}/>{detailError}</div>:selectedRun?<>
-        <div className="xj-detail-title"><div><span className={'xj-status '+selectedPresentation.displayStatus}>{statusNames[selectedPresentation.displayStatus]||selectedPresentation.displayStatus||'未知'}</span><h4>{selectedRun.title||selectedRun.name||selectedRun.node_name||`Node ${selectedRun.node_id||selectedRun.root_node_id||'—'}`}</h4></div><small>{formatDate(selectedRun.created_at||selectedRun.started_at)}</small></div>
-       <p className="xj-run-meta">站点 {selectedRun.site||selectedRun.marketplace||site} <span>·</span> Node ID {selectedRun.node_id||selectedRun.root_node_id||'—'}{selectedRun.max_depth!=null&&<> <span>·</span> 深度 {selectedRun.max_depth}</>}</p>
-       <div className="xj-progress-head"><b>{detailOf(selectedRun)||'扫描进度'}</b><span>{selectedPresentation.label}</span></div><div className="xj-progress" role="progressbar" aria-label="扫描进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow={selectedProgress==null?undefined:Math.round(selectedProgress)}><span style={{width:selectedProgress==null?(activeStatuses.has(selectedStatus)?'35%':'0%'):`${selectedProgress}%`}} className={selectedProgress==null&&activeStatuses.has(selectedStatus)?'indeterminate':''}/></div>
-       {selectedPresentation.displayStatus==='waiting_retry'&&<div className="xj-recovery-warning" role="status"><CircleAlert size={15}/><span><b>等待自动重试</b>{(selectedPresentation.retryInfo?.waiting_count??selectedPresentation.retryInfo?.pending_retry_count)!=null&&<> · {(selectedPresentation.retryInfo.waiting_count??selectedPresentation.retryInfo.pending_retry_count)} 个分支等待中</>}{selectedPresentation.retryInfo?.last_attempt!=null&&<> · 第 {selectedPresentation.retryInfo.last_attempt}{selectedPresentation.retryInfo.max_attempts!=null?` / ${selectedPresentation.retryInfo.max_attempts}`:''} 次尝试</>}{(selectedPresentation.retryInfo?.next_retry_at||selectedPresentation.retryInfo?.earliest_retry_at)&&<> · 预计 {formatDate(selectedPresentation.retryInfo.next_retry_at||selectedPresentation.retryInfo.earliest_retry_at)} 重试</>}{selectedPresentation.retryInfo?.last_node_id&&<> · Node ID {selectedPresentation.retryInfo.last_node_id}</>}{retryErrorText(selectedPresentation.retryInfo?.last_error)&&<div>最近错误：{retryErrorText(selectedPresentation.retryInfo.last_error)}</div>}</span></div>}
-       {selectedPresentation.hasSuspendedBranches&&<div className="xj-recovery-warning" role="status"><CircleAlert size={15}/><span><b>部分完成：仍有 {selectedPresentation.suspendedCount} 个分支已暂停</b><div>已完成部分结果；可继续扫描以恢复这些分支。任务未全部完成。</div>{retryErrorText(selectedPresentation.retryInfo?.last_error)&&<div>最近错误：{retryErrorText(selectedPresentation.retryInfo.last_error)}</div>}</span></div>}
-       {selectedRun.message&&<p className="xj-run-message">{selectedRun.message}</p>}{detailError&&<p className="xj-inline-error" role="status">详情刷新失败：{detailError}</p>}
-       <div className="xj-detail-foot"><span>最近更新 {formatDate(selectedRun.updated_at||selectedRun.last_activity||selectedRun.created_at)}</span><div>{canPause&&<button disabled={!!actionBusy} onClick={()=>void runAction('pause')}><Pause size={14}/>{actionBusy==='pause'?'暂停中…':'暂停'}</button>}{canResume&&<button disabled={!!actionBusy} onClick={()=>void runAction('resume')}><Play size={14}/>{actionBusy==='resume'?'继续中…':'继续'}</button>}{reportUrl&&<><button onClick={()=>window.open(reportUrl,'_blank','noopener,noreferrer')}><ArrowUpRight size={14}/>打开报告</button><a className="xj-download" href={reportUrl} download rel="noreferrer"><ArrowDownToLine size={14}/>下载报告</a></>}</div></div>
-      </>:<div className="xj-empty">选择一项扫描任务查看进度。</div>}
-     </section>
-    </div>}
-   </section>
-  </section>
+  <header className="xj-heading"><div><div className="eyebrow">XUNLONGJUE · CATEGORY SCAN</div><h1>寻龙诀</h1><p>配置 Sorftime 服务、扫描规则和任务生命周期。</p></div><button className="xj-refresh" onClick={()=>void refreshRuns()} disabled={runsLoading} aria-label="刷新任务列表"><RefreshCw size={15}/>刷新</button></header>
+  <section className="xj-grid"><div className="xj-column">
+   <section className="home-card xj-card"><div className="home-card-head"><div><small>CONNECTION</small><h3><Settings2 size={16}/>Sorftime 服务</h3></div><span className={settings.key_configured?'configured-pill':'missing-pill'}>{settingsLoading?'读取中':settings.key_configured?'Key 已配置':'需要配置 Key'}</span></div><form className="xj-settings" onSubmit={saveSettings}>
+    <label className="settings-field"><span className="field-label">API 地址</span><input aria-label="Sorftime API 地址" type="url" value={endpoint} onChange={event=>{setEndpoint(event.target.value);setSettingsSaved(false)}} placeholder="https://api.example.com" required/><small className="field-help">填写 Sorftime MCP 服务地址。</small></label>
+    <label className="settings-field"><span className="field-label">API Key</span><input aria-label="Sorftime API Key" type="password" autoComplete="new-password" value={apiKey} onChange={event=>{setApiKey(event.target.value);setSettingsSaved(false)}} placeholder={settings.key_configured?'已配置；留空保留现有 Key':'输入 Sorftime API Key'} autoCapitalize="off" spellCheck="false"/><small className="field-help">密钥不会回显。留空保存地址时按保留现有密钥处理。</small></label>
+    {settingsError&&<p className="xj-error" role="alert"><CircleAlert size={15}/>{settingsError}</p>}<div className="xj-form-actions"><button className="primary" type="submit" disabled={settingsSaving||settingsLoading}>{settingsSaving?'保存中…':'保存连接设置'}</button>{settingsSaved&&<span className="xj-success">设置已保存</span>}</div>
+   </form></section>
+   <section className="home-card xj-card"><div className="home-card-head"><div><small>NEW SCAN</small><h3><Map size={16}/>启动类目扫描</h3></div></div><form className="xj-scan-form" onSubmit={startRun}>
+    <div className="xj-form-row"><label className="settings-field"><span className="field-label">站点</span><select aria-label="站点" value={site} onChange={event=>setSite(event.target.value)}><option value="US">美国 · US</option><option value="CA">加拿大 · CA</option><option value="UK">英国 · UK</option><option value="DE">德国 · DE</option><option value="FR">法国 · FR</option><option value="IT">意大利 · IT</option><option value="ES">西班牙 · ES</option><option value="JP">日本 · JP</option></select></label><label className="settings-field"><span className="field-label">类目 Node ID</span><input aria-label="类目 Node ID" inputMode="numeric" value={nodeId} onChange={event=>setNodeId(event.target.value)} placeholder="例如 3760901" required/></label></div>
+    <div className="xj-form-row"><label className="settings-field"><span className="field-label">类目名称</span><input aria-label="类目名称" value={category} onChange={event=>setCategory(event.target.value)} placeholder="例如 Patio, Lawn & Garden" required/></label><label className="settings-field"><span className="field-label">操作人</span><input aria-label="操作人" value={operator} onChange={event=>setOperator(event.target.value)} placeholder="可选"/></label></div>
+    <details className="xj-advanced" open><summary>八项筛选策略与扫描上限</summary><div className="xj-form-row xj-policy-grid">{policyFields.map(([key,label,min,step])=><label className="settings-field" key={key}><span className="field-label">{label}</span><input aria-label={label} type="number" min={min} max={['sales_decline_tolerance','price_decline_tolerance','min_r_squared'].includes(key)?1:undefined} step={step} value={policy[key]} onChange={event=>setPolicy(current=>({...current,[key]:event.target.value===''?'':Number(event.target.value)}))} required/></label>)}</div><label className="settings-field"><span className="field-label">最大节点数</span><input aria-label="最大节点数" type="number" min="1" step="1" value={maxNodes} onChange={event=>setMaxNodes(event.target.value)} placeholder="不设上限"/><small className="field-help">达到上限后任务会标为未完整；可查看提醒并新建任务续跑。</small></label></details>
+    <div className="xj-preset-tools" style={{display:'flex',alignItems:'end',flexWrap:'wrap',gap:8}}><label className="settings-field"><span className="field-label">具名策略预设</span><select aria-label="具名策略预设" value={presetId} onChange={event=>{const id=event.target.value;setPresetId(id);setPresetName(String(presets.find(item=>String(item.preset_id??item.id)===id)?.name||''))}}><option value="">选择预设…</option>{presets.map(item=><option key={item.preset_id||item.id} value={item.preset_id||item.id}>{item.name}</option>)}</select></label><button type="button" onClick={loadPreset} disabled={!presetId}>应用预设</button><button type="button" onClick={()=>copyParameters(selectedRun)} disabled={!selectedRun}><Copy size={14}/>复制当前任务参数</button></div>
+    <div className="xj-preset-tools" style={{display:'flex',alignItems:'end',flexWrap:'wrap',gap:8}}><label className="settings-field"><span className="field-label">预设名称</span><input aria-label="预设名称" value={presetName} onChange={event=>setPresetName(event.target.value)} placeholder="例如：美国站标准扫描"/></label><button type="button" onClick={()=>void savePreset()} disabled={presetBusy}>{presetBusy?'保存中…':presetId?'更新预设':'保存预设'}</button><button type="button" onClick={()=>void deletePreset()} disabled={presetBusy||!presetId}>删除预设</button></div>{presetError&&<p className="xj-error" role="alert"><CircleAlert size={15}/>{presetError}</p>}
+    {startError&&<p className="xj-error" role="alert"><CircleAlert size={15}/>{startError}</p>}<div className="xj-form-actions"><button className="primary" type="submit" disabled={starting||settingsLoading||!settings.key_configured}>{starting?<><Activity size={15}/>正在启动…</>:<><Play size={15}/>开始扫描</>}</button>{!settingsLoading&&!settings.key_configured&&<span className="xj-muted">先保存 Sorftime 地址和 Key</span>}</div>
+   </form></section>
+  </div>
+  <section className="home-card xj-runs-card"><div className="home-card-head"><div><small>SCAN RUNS</small><h3><Activity size={16}/>运行任务</h3></div><span className="xj-run-count">{runs.length} 项</span></div>
+   <div className="xj-list-tools" style={{display:'grid',gridTemplateColumns:'minmax(180px,2fr) repeat(3,minmax(105px,1fr)) auto',alignItems:'end',gap:9,marginBottom:12}}><label className="settings-field"><span className="field-label">搜索任务</span><span style={{display:'flex',alignItems:'center',gap:5}}><Search size={14}/><input aria-label="搜索任务" value={search} onChange={event=>setSearch(event.target.value)} placeholder="名称、Node ID、类目或操作人"/></span></label><label className="settings-field"><span className="field-label">状态</span><select aria-label="状态筛选" value={statusFilter} onChange={event=>setStatusFilter(event.target.value)}><option value="">全部状态</option>{Object.entries(statusNames).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><label className="settings-field"><span className="field-label">范围</span><select aria-label="任务范围" value={scope} onChange={event=>{setScope(event.target.value);setSelectedIds([])}}><option value="active">未归档</option><option value="archived">已归档</option><option value="trashed">回收站</option></select></label><label className="settings-field"><span className="field-label">排序</span><select aria-label="排序字段" value={sort} onChange={event=>setSort(event.target.value)}><option value="created_at">创建时间</option><option value="updated_at">更新时间</option><option value="name">名称</option><option value="status">状态</option></select></label><button type="button" onClick={()=>setDirection(value=>value==='asc'?'desc':'asc')} aria-label="切换排序方向">{direction==='desc'?'最新优先':'最早优先'} <ChevronDown size={14}/></button></div>
+   {runsError&&<div className="xj-error xj-list-error" role="alert"><CircleAlert size={15}/>{runsError}<button onClick={()=>void refreshRuns()}>重试</button></div>}{bulkError&&<div className="xj-error" role="alert"><CircleAlert size={15}/>{bulkError}</div>}{recoveryWarnings>0&&<div className="xj-recovery-warning" role="status"><CircleAlert size={15}/><span>有 {recoveryWarnings} 条历史任务未能恢复，已跳过并保留原记录；其他任务仍可正常使用。</span></div>}
+   {!!runs.length&&<div className="xj-bulk-tools" style={{display:'flex',alignItems:'center',flexWrap:'wrap',gap:8,marginBottom:10}}><label><input type="checkbox" aria-label="选择当前列表全部任务" checked={allSelected} onChange={()=>setSelectedIds(allSelected?[]:visibleIds)}/>全选</label><span>已选 {selectedIds.length} 项</span><button type="button" disabled={!selectedIds.length||!!actionBusy||scope==='archived'||scope==='trashed'} onClick={()=>void bulkAction('archive')}><Archive size={14}/>批量归档</button><button type="button" disabled={!selectedIds.length||!!actionBusy||scope==='trashed'} onClick={()=>void bulkAction('trash')}><Trash2 size={14}/>批量移入回收站</button>{scope!=='active'&&<button type="button" disabled={!selectedIds.length||!!actionBusy} onClick={()=>void bulkAction('restore')}><RotateCcw size={14}/>批量恢复</button>}</div>}
+   {runsLoading&&!runs.length?<div className="xj-empty">正在读取运行记录…</div>:!runs.length?<div className="xj-empty">当前范围没有扫描任务。</div>:<div className="xj-run-layout"><div className="xj-run-list" aria-label="扫描任务列表">{runs.map(run=>{const id=runIdOf(run),presentation=runPresentation(run),status=presentation.displayStatus,node=run.node_id||run.root_node_id;return <div className={'xj-run-item-wrap '+(id===selectedId?'selected':'')} key={id||run.created_at} style={{display:'grid',gridTemplateColumns:'auto minmax(0,1fr)',alignItems:'start',gap:4}}><input type="checkbox" aria-label={`选择 ${run.name||run.title||`Node ${node||'未知'}`}`} checked={selectedIds.includes(id)} onChange={()=>toggleSelected(id)}/><button type="button" className={'xj-run-item '+(id===selectedId?'selected':'')} onClick={()=>id&&setSelectedId(id)}><span className={'xj-status '+status}>{statusNames[status]||status||'未知'}</span><b>{run.metadata?.name||run.name||run.title||run.category||run.node_name||`Node ${node||'—'}`}</b><small>{run.site||run.marketplace||'—'} · Node ID {node||'—'}{run.archived?' · 已归档':''}{run.trashed?' · 回收站':''}</small><div className="xj-run-item-foot"><small>{detailOf(run)||formatDate(run.created_at||run.started_at)}</small>{presentation.progress!=null&&<small>{Math.round(presentation.progress)}%</small>}</div></button></div>})}</div>
+    <section className="xj-run-detail" aria-live="polite">{detailLoading&&!detail?<div className="xj-empty">正在读取任务详情…</div>:detailError&&!detail?<div className="xj-error" role="alert"><CircleAlert size={15}/>{detailError}</div>:selectedRun?<>
+      <div className="xj-detail-title"><div><span className={'xj-status '+selectedPresentation.displayStatus}>{statusNames[selectedPresentation.displayStatus]||selectedPresentation.displayStatus||'未知'}</span><h4>{selectedRun.metadata?.name||selectedRun.name||selectedRun.title||selectedRun.category||selectedRun.node_name||`Node ${selectedRun.node_id||selectedRun.root_node_id||'—'}`}</h4></div><small>{formatDate(selectedRun.created_at||selectedRun.started_at)}</small></div>
+      <p className="xj-run-meta">站点 {selectedRun.site||selectedRun.marketplace||'—'} <span>·</span> {selectedRun.category||selectedRun.node_name||'未命名类目'} <span>·</span> Node ID {selectedRun.node_id||selectedRun.root_node_id||'—'}{selectedRun.operator||selectedRun.operator_name?<> <span>·</span> 操作人 {selectedRun.operator||selectedRun.operator_name}</>:null}</p>
+      <div className="xj-metadata-editor" style={{display:'grid',gridTemplateColumns:'1fr',gap:8,marginBottom:14}}><label className="settings-field"><span className="field-label">任务名称</span><input aria-label="任务名称" value={nameDraft} onChange={event=>{setNameDraft(event.target.value);setMetadataSaved(false)}} placeholder="可选自定义名称"/></label><label className="settings-field"><span className="field-label">备注</span><textarea aria-label="任务备注" value={noteDraft} onChange={event=>{setNoteDraft(event.target.value);setMetadataSaved(false)}} rows="2"/></label><div><button type="button" disabled={metadataSaving} onClick={()=>void saveMetadata()}>{metadataSaving?'保存中…':'保存名称和备注'}</button>{metadataSaved&&<span className="xj-success"><Check size={13}/>已保存</span>}</div></div>
+      <div className="xj-progress-head"><b>{detailOf(selectedRun)||'扫描进度'}</b><span>{selectedPresentation.label}</span></div><div className="xj-progress" role="progressbar" aria-label="扫描进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow={selectedProgress==null?undefined:Math.round(selectedProgress)}><span style={{width:selectedProgress==null?(activeStatuses.has(selectedStatus)?'35%':'0%'):`${selectedProgress}%`}} className={selectedProgress==null&&activeStatuses.has(selectedStatus)?'indeterminate':''}/></div><small className="xj-progress-basis">{selectedRun.progress_basis||selectedRun.progress?.basis||selectedRun.progress?.unit||'进度按已处理节点数计算；节点总数可能随类目展开而变化。'}</small>
+      {selectedPresentation.displayStatus==='waiting_retry'&&<div className="xj-recovery-warning" role="status"><CircleAlert size={15}/><span><b>等待自动重试</b>{(selectedPresentation.retryInfo?.waiting_count??selectedPresentation.retryInfo?.pending_retry_count)!=null&&<> · {(selectedPresentation.retryInfo.waiting_count??selectedPresentation.retryInfo.pending_retry_count)} 个分支等待中</>}{selectedPresentation.retryInfo?.last_attempt!=null&&<> · 第 {selectedPresentation.retryInfo.last_attempt}{selectedPresentation.retryInfo.max_attempts!=null?` / ${selectedPresentation.retryInfo.max_attempts}`:''} 次尝试</>}{(selectedPresentation.retryInfo?.next_retry_at||selectedPresentation.retryInfo?.earliest_retry_at)&&<> · 预计 {formatDate(selectedPresentation.retryInfo.next_retry_at||selectedPresentation.retryInfo.earliest_retry_at)} 重试</>}{selectedPresentation.retryInfo?.last_node_id&&<> · Node ID {selectedPresentation.retryInfo.last_node_id}</>}{retryErrorText(selectedPresentation.retryInfo?.last_error)&&<div>最近错误：{retryErrorText(selectedPresentation.retryInfo.last_error)}</div>}</span></div>}
+      {selectedPresentation.hasSuspendedBranches&&<div className="xj-recovery-warning" role="status"><CircleAlert size={15}/><span><b>部分完成：仍有 {selectedPresentation.suspendedCount} 个分支已暂停</b><div>已完成部分结果；可继续扫描以恢复这些分支。任务未全部完成。</div>{retryErrorText(selectedPresentation.retryInfo?.last_error)&&<div>最近错误：{retryErrorText(selectedPresentation.retryInfo.last_error)}</div>}</span></div>}
+      {(selectedRun.needs_rerun||selectedRun.incomplete||selectedRun.node_cap_reached||selectedRun.completion_ok===false)&&<div className="xj-recovery-warning" role="status"><CircleAlert size={15}/><span><b>扫描结果不完整，需重新运行或续跑</b><div>{selectedRun.needs_rerun_reason||selectedRun.incomplete_reason||selectedRun.completion_reason||'任务达到节点上限或仍有未完成节点。复制当前参数后新建任务可继续处理。'}</div><button type="button" onClick={()=>copyParameters(selectedRun)}>复制参数到新扫描</button></span></div>}
+      {selectedRun.message&&<p className="xj-run-message">{selectedRun.message}</p>}{detailError&&<p className="xj-inline-error" role="status">详情刷新失败：{detailError}</p>}
+      <div className="xj-detail-foot"><span>最近更新 {formatDate(selectedRun.updated_at||selectedRun.last_activity||selectedRun.created_at)}</span><div><button type="button" onClick={()=>copyParameters(selectedRun)}><Copy size={14}/>复制参数到新扫描</button>{canPause&&<button disabled={!!actionBusy} onClick={()=>void runAction('pause')}><Pause size={14}/>{actionBusy==='pause'?'暂停中…':'暂停'}</button>}{canResume&&<button disabled={!!actionBusy} onClick={()=>void runAction('resume')}><Play size={14}/>{actionBusy==='resume'?'继续中…':'继续'}</button>}{selectedRun.trashed||selectedRun.archived?<button disabled={!!actionBusy||activeStatuses.has(selectedStatus)} title={activeStatuses.has(selectedStatus)?'请先暂停任务':''} onClick={()=>void runAction('restore')}><RotateCcw size={14}/>恢复任务</button>:<><button disabled={!!actionBusy||activeStatuses.has(selectedStatus)} title={activeStatuses.has(selectedStatus)?'请先暂停任务':''} onClick={()=>void runAction('archive')}><Archive size={14}/>归档</button><button disabled={!!actionBusy||activeStatuses.has(selectedStatus)} title={activeStatuses.has(selectedStatus)?'请先暂停任务':''} onClick={()=>void runAction('trash')}><Trash2 size={14}/>移入回收站</button></>}{reportUrl&&<><button onClick={()=>window.open(reportUrl,'_blank','noopener,noreferrer')}><ArrowUpRight size={14}/>打开报告</button><a className="xj-download" href={reportUrl} download rel="noreferrer"><ArrowDownToLine size={14}/>下载报告</a></>}</div></div>
+     </>:<div className="xj-empty">选择一项扫描任务查看进度。</div>}</section></div>}
+  </section></section>
  </main>;
 }
