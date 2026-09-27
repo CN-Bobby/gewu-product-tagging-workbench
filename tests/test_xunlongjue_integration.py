@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.xunlongjue import router, service, settings
-from backend.xunlongjue.sorftime import SorftimeClient
+from backend.xunlongjue.sorftime import SorftimeClient, scrub
 
 
 class FakeSorftime:
@@ -75,6 +75,40 @@ def test_category_tree_uses_sorftime_tool_contract():
         'arguments': {'amz_site': 'US', 'node_id': '12345'},
     })
     assert client.calls == [('category_tree', {'amz_site': 'US', 'node_id': '12345'})]
+
+
+def test_sorftime_trend_envelope_keeps_latest_24_complete_consecutive_points(monkeypatch):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    start_index = (now.year - 2) * 12 + now.month - 1
+    raw = []
+    for offset in range(25):
+        index = start_index + offset
+        year, month = divmod(index, 12)
+        raw.append(f'{year:04d}-{month + 1:02d}={offset + 1}.5')
+    # The final row is the current, incomplete month and must be excluded.
+    normalized = service._normalize_sorftime_trend({'doc': {}, 'data': raw}, 'SalesCount')
+    assert len(normalized['months']) == 24
+    assert normalized['values'][0] == 1.5
+    assert normalized['values'][-1] == 24.5
+    assert normalized['months'][-1] < now.strftime('%Y-%m')
+
+
+def test_sorftime_trend_envelope_rejects_nonfinite_complete_month_points():
+    raw = {'data': [
+        '2026-01=1', '2026-02=nan', '2026-03=3', '2026-04=4',
+        '2026-05=5', '2026-06=6', '2026-07=7', '2026-08=8',
+    ]}
+    with pytest.raises(ValueError, match='有限数字'):
+        service._normalize_sorftime_trend(raw, 'AvgPrice')
+
+
+def test_sorftime_trend_envelope_rejects_complete_month_gaps():
+    with pytest.raises(ValueError, match='必须连续'):
+        service._normalize_sorftime_trend({'data': [
+            '2026-01=1', '2026-02=2', '2026-04=4', '2026-05=5',
+            '2026-06=6', '2026-07=7', '2026-08=8',
+        ]}, 'SalesCount')
 
 
 @pytest.mark.parametrize('content', [[], [SimpleNamespace(text='')],
@@ -167,6 +201,19 @@ def test_mcp_diagnostic_scrubs_api_key_and_url():
     assert 'mcp.example.test' not in str(error.value)
 
 
+def test_mcp_diagnostic_keeps_safe_leaf_causes_from_exception_group():
+    error = ExceptionGroup('unhandled errors in a TaskGroup', [
+        ConnectionResetError('connection reset by peer'),
+        TimeoutError('read timed out at https://mcp.example.test/?key=very-secret'),
+    ])
+    diagnostic = scrub(error, 'very-secret')
+    assert 'ConnectionResetError: connection reset by peer' in diagnostic
+    assert 'TimeoutError: read timed out' in diagnostic
+    assert 'TaskGroup' not in diagnostic
+    assert 'very-secret' not in diagnostic
+    assert 'mcp.example.test' not in diagnostic
+
+
 def test_create_run_executes_serial_mcp_job_and_only_then_writes_final_report(xlj_home, monkeypatch):
     settings.save('https://mcp.example.test/mcp', 'fake-key')
     instances = []
@@ -200,9 +247,142 @@ def test_create_run_executes_serial_mcp_job_and_only_then_writes_final_report(xl
         report = client.get(state['report_url'])
     assert report.status_code == 200
     assert '<html' in report.text.lower()
+    service._write_control(result['run_id'], report_path='')
+    empty_legacy = service.get_run(result['run_id'])
+    assert empty_legacy['needs_rerun'] is True
+    assert empty_legacy['report_needs_rerun'] is True
+    assert empty_legacy['report_url'] is None
     service._write_control(result['run_id'], report_path=str(xlj_home / 'outside.html'))
     with pytest.raises(ValueError, match='报告文件不存在或路径无效'):
         service.report_file(result['run_id'])
+
+
+def test_full_run_policy_metadata_filters_presets_and_active_bulk_guard(xlj_home, monkeypatch):
+    settings.save('https://mcp.example.test/mcp', 'fake-key')
+    monkeypatch.setattr(service, 'start', lambda: None)
+    monkeypatch.setattr(service, '_schedule', lambda _run_id: None)
+    app = FastAPI()
+    app.include_router(router)
+    policy = {
+        'min_avg_sales': 4200,
+        'max_level': 7,
+        'sales_decline_tolerance': 0.08,
+        'price_decline_tolerance': 0.12,
+        'min_r_squared': 0.25,
+        'batch_size': 9,
+        'max_attempts': 4,
+        'max_data_lag_months': 1,
+    }
+    with TestClient(app) as client:
+        created = client.post('/api/xunlongjue/runs', json={
+            'site': 'US', 'node_id': '321', 'category': 'Storage',
+            'operator': 'Ada', 'policy': policy, 'max_nodes': 50,
+        })
+        assert created.status_code == 200
+        run_id = created.json()['run_id']
+        detail = client.get(f'/api/xunlongjue/runs/{run_id}').json()
+        assert detail['policy']['batch_size'] == 9
+        assert detail['policy']['max_level'] == 7
+        assert detail['category'] == 'Storage'
+        assert detail['operator'] == 'Ada'
+        assert detail['revision'] == 1
+
+        changed = client.post(f'/api/xunlongjue/runs/{run_id}/metadata', json={
+            'revision': 1, 'name': 'Spring scan', 'note': 'Review the tree',
+        })
+        assert changed.status_code == 200
+        assert changed.json()['revision'] == 2
+        assert changed.json()['name'] == 'Spring scan'
+        assert changed.json()['note'] == 'Review the tree'
+        stale = client.post(f'/api/xunlongjue/runs/{run_id}/metadata', json={
+            'revision': 1, 'name': 'stale',
+        })
+        assert stale.status_code == 409
+
+        filtered = client.get('/api/xunlongjue/runs', params={
+            'search': 'Spring', 'status': 'running', 'sort': 'name', 'direction': 'asc',
+            'archived': 'false', 'trashed': 'false',
+        }).json()['runs']
+        assert [item['id'] for item in filtered] == [run_id]
+        blocked = client.post('/api/xunlongjue/runs/bulk', json={
+            'action': 'archive', 'run_ids': [run_id],
+        })
+        assert blocked.status_code == 400
+        assert '活动运行' in blocked.json()['detail']
+        assert service.pause(run_id)['status'] == 'paused'
+        assert service.bulk_runs('archive', [run_id])['runs'][0]['archived'] is True
+        assert len(service.list_runs(archived=True, trashed=False)) == 1
+        trashed = service.bulk_runs('trash', [run_id])['runs'][0]
+        assert trashed['trashed'] is True and trashed['archived'] is False
+        assert len(service.list_runs(archived=False, trashed=True)) == 1
+        restored = service.bulk_runs('restore', [run_id])['runs'][0]
+        assert restored['trashed'] is False and restored['archived'] is False
+
+        preset = client.post('/api/xunlongjue/presets', json={
+            'name': 'Balanced', 'policy': policy,
+        })
+        assert preset.status_code == 200
+        preset_id = preset.json()['preset_id']
+        listed = client.get('/api/xunlongjue/presets').json()['presets']
+        assert listed[0]['policy']['batch_size'] == 9
+        updated = client.put(f'/api/xunlongjue/presets/{preset_id}', json={'name': 'Fast'})
+        assert updated.status_code == 200
+        assert updated.json()['name'] == 'Fast'
+        assert client.delete(f'/api/xunlongjue/presets/{preset_id}').json()['deleted'] is True
+
+
+def test_node_cap_rejects_tree_without_clipping_to_leaf_or_opportunity(xlj_home, monkeypatch):
+    monkeypatch.setattr(service, 'start', lambda: None)
+    monkeypatch.setattr(service, '_schedule', lambda _run_id: None)
+    settings.save('https://mcp.example.test/mcp', 'fake-key')
+    run = service.create_run('US', '12345', max_nodes=1)
+    tree = {'data': [{'node_id': '67890', 'category_name': 'Child'}]}
+    with pytest.raises(service.NodeCapReached, match='未截断'):
+        service._cap_tree_result(run['run_id'], tree)
+    assert tree['data'] == [{'node_id': '67890', 'category_name': 'Child'}]
+
+
+def test_empty_legacy_terminal_report_requires_rerun_but_verified_empty_root_does_not(xlj_home, monkeypatch):
+    from backend.xunlongjue.vendor.xlj_core import db as xlj_db
+    settings.save('https://mcp.example.test/mcp', 'fake-key')
+    monkeypatch.setattr(service, 'start', lambda: None)
+    monkeypatch.setattr(service, '_schedule', lambda _run_id: None)
+    run = service.create_run('US', '24680')
+    workspace = str(xlj_home / run['run_id'] / 'workspace')
+    report = xlj_home / run['run_id'] / 'reports' / 'old-empty.html'
+    report.write_text('<html>empty historical report</html>', encoding='utf-8')
+    conn = xlj_db.connect(workspace)
+    try:
+        with xlj_db.transaction(conn):
+            conn.execute(
+                "UPDATE nodes SET state='EXPANDED',result='EXPANDED' WHERE run_id=? AND node_id='24680'",
+                (run['run_id'],),
+            )
+            conn.execute(
+                "UPDATE jobs SET state='SUCCEEDED' WHERE run_id=? AND node_id='24680' AND job_type='category_tree'",
+                (run['run_id'],),
+            )
+    finally:
+        conn.close()
+    service._write_control(run['run_id'], status='all_done', report_path=str(report), report_mode='final')
+
+    empty_without_evidence = service.get_run(run['run_id'])
+    assert empty_without_evidence['needs_rerun'] is True
+    assert '没有有效的量价判断' in empty_without_evidence['needs_rerun_reason']
+    assert empty_without_evidence['report_url'] is None
+
+    conn = xlj_db.connect(workspace)
+    try:
+        with xlj_db.transaction(conn):
+            conn.execute(
+                "UPDATE nodes SET result='ROOT_EMPTY' WHERE run_id=? AND node_id='24680'",
+                (run['run_id'],),
+            )
+    finally:
+        conn.close()
+    verified_empty = service.get_run(run['run_id'])
+    assert verified_empty['needs_rerun'] is False
+    assert verified_empty['report_url'].endswith('/report')
 
 
 def test_run_retry_info_summarizes_backoff_and_scrubs_error(xlj_home):
@@ -287,8 +467,8 @@ def test_partial_report_is_staged_and_resume_reopens_suspended_work(xlj_home, mo
     partial = service.get_run(run_id)
     assert partial['status'] == 'partial_done'
     assert partial['engine_status'] == 'PARTIAL_DONE'
-    assert partial['report_url'], (partial, service._read_control(run_id))
-    assert partial['report_url'].endswith('/report')
+    assert partial['needs_rerun'] is True
+    assert partial['report_url'] is None
     assert '<html' in service.report_file(run_id).read_text(encoding='utf-8').lower()
 
     monkeypatch.setattr(service, 'start', lambda: None)
@@ -356,6 +536,86 @@ def test_pause_then_immediate_resume_waits_for_ingest_and_preserves_lease(xlj_ho
     resumed = service.resume(result['run_id'])
     assert resumed['status'] == 'running'
     assert len(instances[0].calls) == 1
+
+
+def test_batch_progress_does_not_double_count_failed_requests(xlj_home, monkeypatch):
+    from backend.xunlongjue.vendor.xlj_core import db as xlj_db
+    settings.save('https://mcp.example.test/mcp', 'fake-key')
+    monkeypatch.setattr(service, 'start', lambda: None)
+    monkeypatch.setattr(service, '_schedule', lambda _: None)
+    service._STOP.clear()
+    class FailingSorftime(FakeSorftime):
+        async def call(self, name, arguments):
+            self.calls.append((name, arguments))
+            raise RuntimeError('recorded offline failure')
+
+    run = service.create_run('US', '12345', policy={'batch_size': 4})
+    engine = service._engine()
+    workspace = str(xlj_home / run['run_id'] / 'workspace')
+    client = FailingSorftime('https://mcp.example.test/mcp', 'fake-key')
+    batch = engine.lease_jobs(workspace, run['run_id'], limit=4)
+    assert len(batch['jobs']) == 1
+    service._process_batch(run['run_id'], batch, client)
+
+    conn = xlj_db.connect(workspace)
+    try:
+        assert conn.execute(
+            'SELECT COUNT(*) FROM mcp_attempts WHERE run_id=?', (run['run_id'],),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE run_id=? AND state='PENDING' AND attempts=1",
+            (run['run_id'],),
+        ).fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_pause_ingests_completed_batch_results_and_releases_unstarted_jobs(xlj_home, monkeypatch):
+    settings.save('https://mcp.example.test/mcp', 'fake-key')
+    started = threading.Event()
+    release = threading.Event()
+    now = time.gmtime()
+    latest_index = now.tm_year * 12 + now.tm_mon - 2
+    months = []
+    for index in range(latest_index - 23, latest_index + 1):
+        year, month = divmod(index, 12)
+        months.append(f'{year:04d}-{month + 1:02d}')
+
+    class BatchSorftime(FakeSorftime):
+        async def call(self, name, arguments):
+            self.calls.append((name, arguments))
+            if name == 'category_tree':
+                return {'data': [
+                    {'node_id': '45601', 'category_name': 'One'},
+                    {'node_id': '45602', 'category_name': 'Two'},
+                ]}
+            started.set()
+            assert release.wait(5)
+            values = [12000] * 24 if arguments.get('trend_index') == 'SalesCount' else [20] * 24
+            return {'months': months, 'values': values}
+
+    monkeypatch.setattr(service, '_CLIENT_FACTORY', lambda endpoint, key: BatchSorftime(endpoint, key))
+    run = service.create_run('US', '12345', category='Root', policy={'batch_size': 2})
+    assert started.wait(5)
+    assert service.pause(run['run_id'])['status'] == 'pausing'
+    release.set()
+    deadline = time.monotonic() + 8
+    state = service.get_run(run['run_id'])
+    while state['status'] != 'paused' and time.monotonic() < deadline:
+        time.sleep(0.03)
+        state = service.get_run(run['run_id'])
+    assert state['status'] == 'paused'
+
+    from backend.xunlongjue.vendor.xlj_core import db as xlj_db
+    conn = xlj_db.connect(str(xlj_home / run['run_id'] / 'workspace'))
+    try:
+        jobs = conn.execute("SELECT job_type,state,attempts FROM jobs WHERE job_type='category_trend'").fetchall()
+        assert sum(row['state'] == 'SUCCEEDED' for row in jobs) == 1
+        assert sum(row['state'] == 'PENDING' and row['attempts'] == 0 for row in jobs) == 3
+        assert conn.execute("SELECT COUNT(*) FROM mcp_attempts WHERE run_id=?", (run['run_id'],)).fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM batches WHERE run_id=? AND state='LEASED'", (run['run_id'],)).fetchone()[0] == 0
+    finally:
+        conn.close()
 
 
 def test_pause_on_last_batch_still_generates_final_report(xlj_home, monkeypatch):

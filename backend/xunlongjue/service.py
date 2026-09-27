@@ -7,8 +7,10 @@ import logging
 import os
 import re
 import threading
+import math
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import settings
@@ -78,15 +80,22 @@ def _read_control(run_id: str) -> dict:
 
 
 def _write_control(run_id: str, **fields) -> dict:
-    path = _control_path(run_id)
-    state = _read_control(run_id)
-    state.update(fields)
-    state['updated_at'] = _now()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix('.json.tmp')
-    temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
-    os.replace(temporary, path)
-    return state
+    with _LOCK:
+        path = _control_path(run_id)
+        state = _read_control(run_id)
+        state.update(fields)
+        state['updated_at'] = _now()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f'{path.name}.{uuid.uuid4().hex}.tmp')
+        try:
+            temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+            os.replace(temporary, path)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return state
 
 
 def _now() -> str:
@@ -187,6 +196,71 @@ def recovery_warnings() -> dict:
     return {'count': len(items), 'items': items}
 
 
+def list_presets() -> list[dict]:
+    path = root() / 'presets.json'
+    try:
+        values = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError):
+        raise ValueError('策略预设文件无法读取') from None
+    if not isinstance(values, list):
+        raise ValueError('策略预设数据结构无效')
+    return values
+
+
+def _save_presets(values: list[dict]) -> None:
+    path = root() / 'presets.json'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix('.json.tmp')
+    temporary.write_text(json.dumps(values, ensure_ascii=False, indent=2), encoding='utf-8')
+    os.replace(temporary, path)
+
+
+def create_preset(name: str, policy: dict) -> dict:
+    name = str(name or '').strip()
+    if not name or len(name) > 100:
+        raise ValueError('预设名称不能为空且不得超过 100 字')
+    chosen = _engine()._validated_policy(policy or {})
+    presets = list_presets()
+    if any(str(item.get('name', '')).casefold() == name.casefold() for item in presets):
+        raise ValueError('预设名称已存在')
+    preset = {'preset_id': str(uuid.uuid4()), 'name': name, 'policy': chosen,
+              'created_at': _now(), 'updated_at': _now()}
+    presets.append(preset)
+    _save_presets(presets)
+    return preset
+
+
+def update_preset(preset_id: str, name: str | None = None,
+                  policy: dict | None = None) -> dict:
+    presets = list_presets()
+    preset = next((item for item in presets if item.get('preset_id') == preset_id), None)
+    if preset is None:
+        raise ValueError('策略预设不存在')
+    if name is not None:
+        name = str(name).strip()
+        if not name or len(name) > 100:
+            raise ValueError('预设名称不能为空且不得超过 100 字')
+        if any(item is not preset and str(item.get('name', '')).casefold() == name.casefold() for item in presets):
+            raise ValueError('预设名称已存在')
+        preset['name'] = name
+    if policy is not None:
+        preset['policy'] = _engine()._validated_policy(policy)
+    preset['updated_at'] = _now()
+    _save_presets(presets)
+    return preset
+
+
+def delete_preset(preset_id: str) -> dict:
+    presets = list_presets()
+    kept = [item for item in presets if item.get('preset_id') != preset_id]
+    if len(kept) == len(presets):
+        raise ValueError('策略预设不存在')
+    _save_presets(kept)
+    return {'preset_id': preset_id, 'deleted': True}
+
+
 def stop_all() -> None:
     global _THREAD
     _STOP.set()
@@ -217,15 +291,24 @@ def _schedule(run_id: str) -> None:
 
 
 def create_run(site: str, node_id: str, max_depth: int | None = None,
-               max_nodes: int | None = None) -> dict:
-    endpoint, _ = settings.connection()
-    # Validate inexpensive policy inputs before creating persistent state.
-    depth = 12 if max_depth is None else int(max_depth)
-    if not 1 <= depth <= 100:
-        raise ValueError('max_depth 必须在 1 至 100 之间')
+               max_nodes: int | None = None, *, category: str | None = None,
+               operator: str | None = None, policy: dict | None = None) -> dict:
+    settings.connection()
+    engine = _engine()
+    site = engine.normalize_site(site)
+    node_id = engine._validate_node_id(node_id)
+    chosen = dict(policy or {})
+    if max_depth is not None and 'max_level' not in chosen:
+        chosen['max_level'] = max_depth
+    chosen = engine._validated_policy(chosen)
+    depth = chosen['max_level']
     node_cap = None if max_nodes is None else int(max_nodes)
     if node_cap is not None and not 1 <= node_cap <= 100000:
         raise ValueError('max_nodes 必须在 1 至 100000 之间')
+    category_name = str(node_id if category is None else category).strip()
+    operator_name = str(operator or '').strip()
+    if not category_name:
+        raise ValueError('category 不能为空')
     run_id = str(uuid.uuid4())
     run_dir = root() / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -233,24 +316,29 @@ def create_run(site: str, node_id: str, max_depth: int | None = None,
     workspace.mkdir()
     report_dir = run_dir / 'reports'
     report_dir.mkdir()
-    engine = _engine()
-    policy = {'max_level': depth}
     if node_cap is not None:
-        policy['max_nodes'] = node_cap
-    engine.create_run(str(workspace), site, str(node_id), str(node_id),
-                      policy=policy, report_dir=str(report_dir), run_id=run_id)
+        chosen['max_nodes'] = node_cap
+    engine.create_run(str(workspace), site, str(node_id), category_name,
+                      policy=chosen, operator_name=operator_name,
+                      report_dir=str(report_dir), run_id=run_id)
     _write_control(run_id, status='running', site=site.upper(), node_id=str(node_id),
-                   max_depth=depth, max_nodes=node_cap, message='', report_path='')
+                   category=category_name, operator=operator_name,
+                   policy=chosen, max_depth=depth, max_nodes=node_cap, message='', report_path='',
+                   revision=1, name='', note='', archived=False, trashed=False,
+                   archived_at=None, trashed_at=None, needs_rerun=False)
     start()
     _schedule(run_id)
-    return {'run_id': run_id, 'id': run_id, 'status': 'running', 'reused': False}
+    return {'run_id': run_id, 'id': run_id, 'status': 'running', 'reused': False,
+            'revision': 1, 'metadata': _metadata(_read_control(run_id))}
 
 
 def _engine_state(run_id: str) -> dict:
     return _engine().status(str(_workspace(run_id)), run_id)
 
 
-def list_runs() -> list[dict]:
+def list_runs(search: str = '', status: str = '', sort: str = 'updated_at',
+              direction: str = 'desc', archived: bool | None = None,
+              trashed: bool | None = None) -> list[dict]:
     base = root()
     if not base.exists():
         return []
@@ -266,7 +354,23 @@ def list_runs() -> list[dict]:
                 rows.append(get_run(path.name))
         except (ValueError, OSError):
             continue
-    return sorted(rows, key=lambda item: item.get('updated_at', ''), reverse=True)
+    query = str(search or '').strip().casefold()
+    if query:
+        rows = [row for row in rows if query in ' '.join(str(row.get(key) or '') for key in
+                 ('id', 'node_id', 'category', 'operator', 'name', 'note', 'site')).casefold()]
+    if status:
+        rows = [row for row in rows if str(row.get('status', '')).casefold() == str(status).casefold()]
+    if archived is not None:
+        rows = [row for row in rows if bool(row.get('archived')) is archived]
+    if trashed is not None:
+        rows = [row for row in rows if bool(row.get('trashed')) is trashed]
+    allowed_sort = {'updated_at', 'created_at', 'category', 'operator', 'name', 'status', 'site'}
+    if sort not in allowed_sort:
+        raise ValueError('sort 不受支持')
+    if direction.lower() not in ('asc', 'desc'):
+        raise ValueError('direction 必须是 asc 或 desc')
+    return sorted(rows, key=lambda item: str(item.get(sort) or '').casefold(),
+                  reverse=direction.lower() == 'desc')
 
 
 def get_run(run_id: str) -> dict:
@@ -288,14 +392,124 @@ def get_run(run_id: str) -> dict:
     state['progress_percent'] = state.get('completion_percent')
     state['progress'] = state.get('completion_percent')
     state.update({key: control.get(key) for key in ('max_depth', 'max_nodes', 'message', 'report_path')})
+    state['category'] = control.get('category') or state.get('category') or control.get('node_id')
+    state['operator'] = control.get('operator') or state.get('operator_name') or ''
+    state['revision'] = int(control.get('revision') or 1)
+    state['metadata'] = _metadata(control)
+    state.update(state['metadata'])
+    state['incomplete'] = bool(control.get('node_cap_reached'))
+    if control.get('incomplete_reason'):
+        state['incomplete_reason'] = control['incomplete_reason']
+    if (not control.get('report_path') and engine_status in ('ALL_DONE', 'PARTIAL_DONE')):
+        state['needs_rerun'] = True
+        state['report_needs_rerun'] = True
+    else:
+        state['needs_rerun'] = bool(control.get('needs_rerun'))
+        state['report_needs_rerun'] = bool(control.get('needs_rerun'))
+    if control.get('report_path') and engine_status in ('ALL_DONE', 'PARTIAL_DONE'):
+        try:
+            reports_dir = (_run_root(run_id) / 'reports').resolve()
+            report_path = Path(control['report_path']).resolve()
+            if report_path.parent != reports_dir or not report_path.is_file() or report_path.stat().st_size == 0:
+                state['needs_rerun'] = state['report_needs_rerun'] = True
+        except (OSError, ValueError):
+            state['needs_rerun'] = state['report_needs_rerun'] = True
+    if (engine_status in ('ALL_DONE', 'PARTIAL_DONE') and not state['needs_rerun']
+            and not _has_valid_report_data(run_id, control)):
+        state['needs_rerun'] = state['report_needs_rerun'] = True
+        state['needs_rerun_reason'] = '历史报告没有有效的量价判断或明确的空类目结果；请用修复后的版本重新扫描。'
     report_ready = ((engine_status == 'ALL_DONE' and control.get('report_mode') == 'final')
                     or (engine_status == 'PARTIAL_DONE' and control.get('report_mode') == 'partial'))
-    state['report_url'] = f'/api/xunlongjue/runs/{run_id}/report' if report_ready and control.get('report_path') else None
+    state['report_url'] = (f'/api/xunlongjue/runs/{run_id}/report'
+                           if report_ready and control.get('report_path') and not state['needs_rerun'] else None)
     state['updated_at'] = control.get('updated_at') or state.get('updated_at')
     retry_info = _retry_info(run_id, state.get('policy') or {})
     if retry_info:
         state['retry_info'] = retry_info
     return state
+
+
+def _has_valid_report_data(run_id: str, control: dict) -> bool:
+    """Reject old terminal reports that contain neither decisions nor a verified empty root."""
+    db = importlib.import_module('.vendor.xlj_core.db', package=__package__)
+    conn = db.connect(str(_workspace(run_id)))
+    try:
+        root_id = str(control.get('node_id') or '')
+        root = conn.execute(
+            "SELECT result FROM nodes WHERE run_id=? AND node_id=?", (run_id, root_id),
+        ).fetchone()
+        decisions = int(conn.execute(
+            'SELECT COUNT(*) FROM decisions WHERE run_id=?', (run_id,),
+        ).fetchone()[0])
+        if decisions:
+            return True
+        if not root or root['result'] != 'ROOT_EMPTY':
+            return False
+        successful_root_tree = conn.execute(
+            "SELECT 1 FROM jobs WHERE run_id=? AND node_id=? AND job_type='category_tree' "
+            "AND state='SUCCEEDED' LIMIT 1", (run_id, root_id),
+        ).fetchone()
+        return successful_root_tree is not None
+    finally:
+        conn.close()
+
+
+def _metadata(control: dict) -> dict:
+    return {key: control.get(key) for key in
+            ('revision', 'name', 'note', 'archived', 'trashed', 'archived_at', 'trashed_at')}
+
+
+def update_metadata(run_id: str, revision: int, name: str | None = None,
+                    note: str | None = None) -> dict:
+    try:
+        revision = int(revision)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError('revision 必须是整数') from None
+    with _LOCK:
+        control = _read_control(run_id)
+        if not control:
+            raise ValueError('运行不存在')
+        if revision != int(control.get('revision') or 1):
+            raise RevisionConflict('运行信息已被其他编辑更新，请刷新后重试')
+        fields = {}
+        if name is not None:
+            fields['name'] = str(name).strip()[:200]
+        if note is not None:
+            fields['note'] = str(note).strip()[:5000]
+        fields['revision'] = int(control.get('revision') or 1) + 1
+        _write_control(run_id, **fields)
+    return get_run(run_id)
+
+
+class RevisionConflict(ValueError):
+    """Optimistic metadata revision conflict; routes map it to HTTP 409."""
+
+
+def _is_active(state: dict) -> bool:
+    return str(state.get('status') or '').lower() in {'running', 'queued', 'pausing', 'resuming'}
+
+
+def bulk_runs(action: str, run_ids: list[str]) -> dict:
+    if action not in {'archive', 'trash', 'restore'}:
+        raise ValueError('action 必须是 archive、trash 或 restore')
+    ids = list(dict.fromkeys(_validate_run_id(value) for value in run_ids or []))
+    if not ids:
+        raise ValueError('run_ids 不能为空')
+    states = [(run_id, get_run(run_id)) for run_id in ids]
+    active = [run_id for run_id, state in states if _is_active(state)]
+    if active:
+        raise ValueError('活动运行不能归档、移入回收站或恢复')
+    stamp = _now()
+    for run_id, _ in states:
+        if action == 'archive':
+            _write_control(run_id, archived=True, archived_at=stamp)
+        elif action == 'trash':
+            _write_control(run_id, archived=False, archived_at=None,
+                           trashed=True, trashed_at=stamp)
+        else:
+            _write_control(run_id, archived=False, trashed=False,
+                           archived_at=None, trashed_at=None)
+    return {'updated': ids, 'runs': [get_run(run_id) for run_id in ids]}
 
 
 def _retry_info(run_id: str, policy: dict) -> dict | None:
@@ -400,7 +614,17 @@ def report_file(run_id: str) -> Path:
     return report
 
 
-def _cap_tree_result(run_id: str, payload):
+def _tree_item_count(payload: object) -> int:
+    if isinstance(payload, list):
+        return len(payload)
+    if isinstance(payload, dict):
+        for key in ('items', 'subcategories', 'data'):
+            if isinstance(payload.get(key), list):
+                return len(payload[key])
+    return 0
+
+
+def _cap_tree_result(run_id: str, payload, reserved_nodes: int = 0):
     control = _read_control(run_id)
     cap = control.get('max_nodes')
     if not cap:
@@ -417,30 +641,116 @@ def _cap_tree_result(run_id: str, payload):
     else:
         return payload
     state = _engine_state(run_id)
-    remaining = max(0, int(cap) - int(state.get('total_nodes') or 0))
-    clipped = raw[:remaining]
-    if key is None:
-        return clipped
-    copy = dict(payload)
-    copy[key] = clipped
-    return copy
+    remaining = max(0, int(cap) - int(state.get('total_nodes') or 0) - int(reserved_nodes))
+    if len(raw) > remaining:
+        raise NodeCapReached('达到 max_nodes 节点上限；Sorftime 类目树未截断，本分支未判定为叶节点或机会')
+    return payload
+
+
+class NodeCapReached(ValueError):
+    """The node cap stopped expansion without fabricating a leaf or opportunity."""
 
 
 def _call_for_job(client, job: dict) -> dict:
     kind = job.get('type')
     if kind not in ('category_tree', 'category_trend'):
         raise ValueError('引擎返回未知任务类型')
-    arguments = {'node_id': str(job.get('node_id') or ''),
-                 'amz_site': str(job.get('site') or '')}
+    # Map internal lease fields to the documented Sorftime MCP wire names.
+    arguments = {'amz_site': str(job.get('site') or ''),
+                 'node_id': str(job.get('node_id') or '')}
     if kind == 'category_trend':
         arguments['trend_index'] = str(job.get('indicator') or '')
-    return call_sync(client, kind, arguments)
+    payload = call_sync(client, kind, arguments)
+    if kind == 'category_trend':
+        return _normalize_sorftime_trend(payload, str(job.get('indicator') or ''))
+    return payload
+
+
+def _normalize_sorftime_trend(payload: object, indicator: str) -> dict:
+    """Convert Sorftime's data rows (`YYYY-MM=value`) to the core's stable shape."""
+    if isinstance(payload, dict):
+        rows = payload.get('data')
+        if rows is None:
+            months, values = payload.get('months'), payload.get('values')
+            if not isinstance(months, list) or not isinstance(values, list) or len(months) != len(values):
+                raise ValueError('Sorftime 趋势响应缺少 data 列表')
+            pairs = list(zip(months, values))
+        else:
+            if not isinstance(rows, list):
+                raise ValueError('Sorftime 趋势 data 必须是数组')
+            pairs = []
+            for row in rows:
+                if isinstance(row, str):
+                    month, sep, value = row.partition('=')
+                    if not sep:
+                        raise ValueError('Sorftime 趋势 data 行必须使用 YYYY-MM=value 格式')
+                    pairs.append((month.strip(), value.strip()))
+                elif isinstance(row, dict):
+                    month = next((row.get(k) for k in ('month', 'Month', '月份', 'date') if row.get(k) is not None), None)
+                    value = next((row.get(k) for k in (indicator, indicator.lower(), 'value', 'Value', 'count', 'price') if row.get(k) is not None), None)
+                    if month is None or value is None:
+                        raise ValueError('Sorftime 趋势 data 项缺少月份或数值')
+                    pairs.append((month, value))
+                else:
+                    raise ValueError('Sorftime 趋势 data 项类型无效')
+    elif isinstance(payload, list):
+        pairs = []
+        for row in payload:
+            if isinstance(row, str):
+                month, sep, value = row.partition('=')
+                if not sep:
+                    raise ValueError('Sorftime 趋势 data 行必须使用 YYYY-MM=value 格式')
+                pairs.append((month.strip(), value.strip()))
+            elif isinstance(row, dict):
+                month = next((row.get(k) for k in ('month', 'Month', '月份', 'date') if row.get(k) is not None), None)
+                value = next((row.get(k) for k in (indicator, indicator.lower(), 'value', 'Value', 'count', 'price') if row.get(k) is not None), None)
+                if month is None or value is None:
+                    raise ValueError('Sorftime 趋势 data 项缺少月份或数值')
+                pairs.append((month, value))
+            else:
+                raise ValueError('Sorftime 趋势 data 项类型无效')
+    else:
+        raise ValueError('Sorftime 趋势响应结构无效')
+
+    from .vendor.xlj_core.engine import _normalize_month
+    now = datetime.now(timezone.utc)
+    latest_complete = now.year * 12 + now.month - 2
+    points = {}
+    for month, raw_value in pairs:
+        normalized, index = _normalize_month(month)
+        if index > latest_complete:
+            continue
+        if index in points:
+            raise ValueError('Sorftime 趋势月份重复')
+        if isinstance(raw_value, bool):
+            raise ValueError('Sorftime 趋势数值必须为有限数字')
+        try:
+            value = float(str(raw_value).replace(',', '').strip())
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError('Sorftime 趋势数值必须为有限数字') from None
+        if not math.isfinite(value):
+            raise ValueError('Sorftime 趋势数值必须为有限数字')
+        points[index] = (normalized, value)
+    if not points:
+        raise ValueError('Sorftime 趋势没有完整有限数据点')
+    end = max(points)
+    indexes = sorted(points)
+    if indexes != list(range(indexes[0], indexes[-1] + 1)):
+        raise ValueError('Sorftime 趋势完整月份必须连续')
+    start = max(indexes[0], end - 23)
+    selected = [points[index] for index in range(start, end + 1)]
+    if len(selected) < 6:
+        raise ValueError(f'Sorftime 趋势连续完整数据不足 6 个月: {len(selected)}')
+    return {'months': [point[0] for point in selected],
+            'values': [point[1] for point in selected]}
 
 
 def _process_batch(run_id: str, batch: dict, client) -> None:
     engine = _engine()
     results = []
-    for job in batch.get('jobs') or []:
+    reserved_nodes = 0
+    jobs = list(batch.get('jobs') or [])
+    for index, job in enumerate(jobs):
         with _LOCK:
             control_status = _read_control(run_id).get('status')
             if _STOP.is_set() or control_status in ('paused', 'pausing'):
@@ -451,16 +761,25 @@ def _process_batch(run_id: str, batch: dict, client) -> None:
                 _CALLING_RUNS.add(run_id)
                 dispatch = True
         if not dispatch:
-            _release_unstarted_batch(run_id, batch)
-            _write_control(run_id, status='paused', message='已暂停；未发送的任务已安全退回')
-            return
+            unstarted = jobs[index:]
+            _release_unstarted_batch(run_id, batch, unstarted,
+                                     preserve_completed=bool(results))
+            if not results:
+                _write_control(run_id, status='paused', message='已暂停；未发送的任务已安全退回')
+                return
+            batch['jobs'] = jobs[:index]
+            break
         try:
             payload = _call_for_job(client, job)
             if job.get('type') == 'category_tree':
-                payload = _cap_tree_result(run_id, payload)
+                payload = _cap_tree_result(run_id, payload, reserved_nodes)
+                reserved_nodes += _tree_item_count(payload)
             result = {'job_id': job['job_id'], 'attempt': job['attempt'],
                       'lease_token': job['lease_token'], 'status': 'success', 'payload': payload}
         except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, NodeCapReached):
+                _write_control(run_id, node_cap_reached=True,
+                               incomplete_reason=str(exc), needs_rerun=False)
             result = {'job_id': job['job_id'], 'attempt': job['attempt'],
                       'lease_token': job['lease_token'], 'status': 'failed',
                       'error': scrub(exc, client.api_key)}
@@ -469,7 +788,8 @@ def _process_batch(run_id: str, batch: dict, client) -> None:
                 _CALLING_RUNS.discard(run_id)
         results.append(result)
         engine.pulse_batch(str(_workspace(run_id)), run_id, batch['batch_id'],
-                           completed=len(results), failed=sum(x['status'] == 'failed' for x in results),
+                           completed=sum(x['status'] == 'success' for x in results),
+                           failed=sum(x['status'] == 'failed' for x in results),
                            current_node_id=job.get('node_id', ''), stage='INGESTING')
     if len(results) != len(batch.get('jobs') or []):
         return
@@ -482,22 +802,34 @@ def _process_batch(run_id: str, batch: dict, client) -> None:
     engine.ingest_batch(str(_workspace(run_id)), run_id, batch['batch_id'])
 
 
-def _release_unstarted_batch(run_id: str, batch: dict) -> None:
-    """Return a leased but never-dispatched batch without consuming an attempt."""
-    engine = _engine()
+def _release_unstarted_batch(run_id: str, batch: dict, jobs: list[dict] | None = None,
+                             *, preserve_completed: bool = False) -> None:
+    """Return unstarted jobs without consuming attempts, retaining completed lease results."""
     workspace = str(_workspace(run_id))
-    engine.takeover_run(workspace, run_id, force=True,
-                        worker_label='格物工作台/暂停前退回')
     xlj_db = importlib.import_module('.vendor.xlj_core.db', package=__package__)
     conn = xlj_db.connect(workspace)
     try:
         with xlj_db.transaction(conn):
-            for job in batch.get('jobs') or []:
+            unstarted = list(jobs if jobs is not None else batch.get('jobs') or [])
+            for job in unstarted:
                 conn.execute(
-                    "UPDATE jobs SET attempts=MAX(0,attempts-1),updated_at=? "
-                    "WHERE job_id=? AND state='PENDING' AND attempts=?",
-                    (xlj_db.utc_now(), job.get('job_id'), job.get('attempt')),
+                    "UPDATE jobs SET state='PENDING',attempts=MAX(0,attempts-1),"
+                    "lease_until=NULL,lease_token='',eligible_at=?,updated_at=? "
+                    "WHERE job_id=? AND state='LEASED' AND attempts=? AND lease_token=?",
+                    (xlj_db.utc_now(), xlj_db.utc_now(), job.get('job_id'),
+                     job.get('attempt'), job.get('lease_token')),
                 )
+                conn.execute('DELETE FROM batch_jobs WHERE batch_id=? AND job_id=?',
+                             (batch['batch_id'], job.get('job_id')))
+            remaining = int(conn.execute(
+                'SELECT COUNT(*) FROM batch_jobs WHERE batch_id=?', (batch['batch_id'],),
+            ).fetchone()[0])
+            if remaining:
+                conn.execute('UPDATE batches SET job_count=?,updated_at=? WHERE batch_id=?',
+                             (remaining, xlj_db.utc_now(), batch['batch_id']))
+            elif not preserve_completed:
+                conn.execute("UPDATE batches SET state='ABANDONED',job_count=0,lease_until=NULL,updated_at=? WHERE batch_id=?",
+                             (xlj_db.utc_now(), batch['batch_id']))
     finally:
         conn.close()
 
@@ -576,7 +908,8 @@ def _run_one(run_id: str) -> None:
                 return
             _BUSY_RUNS.add(run_id)
         try:
-            batch = engine.lease_jobs(workspace, run_id, limit=1)
+            batch_size = int((state.get('policy') or {}).get('batch_size') or 20)
+            batch = engine.lease_jobs(workspace, run_id, limit=batch_size)
             if batch.get('busy'):
                 # This is a previous process's lease. Do not force-take over automatically.
                 _write_control(run_id, status='interrupted', message='存在未结束批次；请显式恢复')

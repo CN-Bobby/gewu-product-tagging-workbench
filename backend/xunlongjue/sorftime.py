@@ -16,13 +16,22 @@ _KEY = re.compile(r'(?i)(api[_-]?key|secret[_-]?key)([=: ]+)[^&\s,;]+')
 
 
 def scrub(text: object, key: str = '') -> str:
-    value = str(text or '')
+    value = _diagnostic_text(text)
     if key:
         value = value.replace(key, '[密钥已隐藏]')
     value = _BEARER.sub('Bearer [密钥已隐藏]', value)
     value = _KEY.sub(r'\1\2[密钥已隐藏]', value)
     value = _URL.sub('[服务地址已隐藏]', value)
     return value.replace('\r', ' ').replace('\n', ' ')[:500]
+
+
+def _diagnostic_text(value: object) -> str:
+    """Keep useful leaf causes when asyncio reports an ExceptionGroup."""
+    if isinstance(value, BaseExceptionGroup):
+        return '; '.join(_diagnostic_text(child) for child in value.exceptions)
+    if isinstance(value, BaseException):
+        return f'{type(value).__name__}: {value}'
+    return str(value or '')
 
 
 class SorftimeClient:
