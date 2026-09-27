@@ -1,31 +1,16 @@
 import React,{useEffect,useRef,useState}from'react';
 import{Activity,ArrowDownToLine,ArrowUpRight,CircleAlert,Map,Pause,Play,RefreshCw,Settings2}from'lucide-react';
 import './xunlongjueRecovery.css';
+import{activeStatuses,normalizeRunStatus,runPresentation}from'./xunlongjueState';
 
 const RUNS='/api/xunlongjue/runs';
 const statusNames={queued:'排队中',pending:'等待中',running:'运行中',paused:'已暂停',pausing:'正在暂停',resuming:'正在继续',completed:'已完成',done:'已完成',succeeded:'已完成',all_done:'全部完成',partial_done:'阶段完成，可继续',not_started:'尚未开始',waiting_retry:'等待重试',failed:'失败',cancelled:'已取消',interrupted:'已中断'};
-const activeStatuses=new Set(['queued','pending','running','pausing','resuming']);
 const runIdOf=run=>String(run?.id??run?.run_id??'');
-const runStatus=run=>String(run?.status||'unknown').toLowerCase();
+const runStatus=normalizeRunStatus;
 const detailOf=run=>String(run?.stage||run?.current_stage||run?.message||'');
 const formatDate=value=>{if(!value)return'—';const date=new Date(value);return Number.isNaN(date.getTime())?String(value):date.toLocaleString()};
-function progressOf(run){
- const raw=run?.progress??run?.progress_percent??run?.percent_complete;
- if(typeof raw==='number')return Math.max(0,Math.min(100,raw<=1?raw*100:raw));
- if(typeof raw==='object'&&raw){const done=Number(raw.done??raw.completed??0),total=Number(raw.total??raw.expected??0);return total>0?Math.max(0,Math.min(100,done/total*100)):null}
- const done=Number(run?.completed_nodes??run?.nodes_completed??NaN),total=Number(run?.total_nodes??run?.nodes_total??NaN);
- return Number.isFinite(done)&&Number.isFinite(total)&&total>0?Math.max(0,Math.min(100,done/total*100)):null;
-}
-function progressLabel(run){
- const raw=run?.progress;
- if(raw&&typeof raw==='object'){
-  const done=raw.done??raw.completed,total=raw.total??raw.expected;
-  if(done!=null&&total!=null)return`${done} / ${total}${raw.unit?' '+raw.unit:''}`;
-  if(raw.message)return String(raw.message);
- }
- const percent=progressOf(run);return percent==null?'进度暂不可用':`${Math.round(percent)}%`;
-}
 function errorText(error){return error?.message||'请求失败，请稍后重试。'}
+function retryErrorText(value){return typeof value==='string'?value:value?.message||value?.detail||''}
 
 export function Xunlongjue({api}){
  const[settings,setSettings]=useState({endpoint:'',key_configured:false});
@@ -120,7 +105,8 @@ export function Xunlongjue({api}){
  const selectedRun=detail||runs.find(run=>runIdOf(run)===selectedId)||null;
  const selectedStatus=runStatus(selectedRun);
  const reportUrl=selectedRun?.report_url||runs.find(run=>runIdOf(run)===selectedId)?.report_url||'';
- const selectedProgress=progressOf(selectedRun);
+ const selectedPresentation=runPresentation(selectedRun);
+ const selectedProgress=selectedPresentation.progress;
  const canPause=['queued','pending','running','resuming'].includes(selectedStatus),canResume=['paused','interrupted','partial_done'].includes(selectedStatus);
  return <main className="xj-page">
   <header className="xj-heading"><div><div className="eyebrow">XUNLONGJUE · CATEGORY SCAN</div><h1>寻龙诀</h1><p>配置 Sorftime 服务并发起类目树扫描，跟踪运行进度与成熟报告。</p></div><button className="xj-refresh" onClick={()=>void refreshRuns()} disabled={runsLoading} aria-label="刷新任务列表"><RefreshCw size={15}/>刷新</button></header>
@@ -147,12 +133,14 @@ export function Xunlongjue({api}){
     {runsError&&<div className="xj-error xj-list-error" role="alert"><CircleAlert size={15}/>{runsError}<button onClick={()=>void refreshRuns()}>重试</button></div>}
     {recoveryWarnings>0&&<div className="xj-recovery-warning" role="status"><CircleAlert size={15}/><span>有 {recoveryWarnings} 条历史任务未能恢复，已跳过并保留原记录；其他任务仍可正常使用。</span></div>}
     {runsLoading&&!runs.length?<div className="xj-empty">正在读取运行记录…</div>:!runs.length?<div className="xj-empty">还没有扫描任务。填写站点与 Node ID 后开始。</div>:<div className="xj-run-layout">
-      <div className="xj-run-list" aria-label="扫描任务列表">{runs.map(run=>{const id=runIdOf(run),status=runStatus(run),percent=progressOf(run),nodeId=run.node_id||run.root_node_id;return <button type="button" key={id||run.created_at} className={'xj-run-item '+(id===selectedId?'selected':'')} onClick={()=>id&&setSelectedId(id)}><span className={'xj-status '+status}>{statusNames[status]||status||'未知'}</span><b>{run.title||run.name||run.node_name||`Node ${nodeId||'—'}`}</b><small>{run.site||run.marketplace||'—'} · Node ID {nodeId||'—'}</small><div className="xj-run-item-foot"><small>{detailOf(run)||formatDate(run.created_at||run.started_at)}</small>{percent!=null&&<small>{Math.round(percent)}%</small>}</div></button>})}</div>
+      <div className="xj-run-list" aria-label="扫描任务列表">{runs.map(run=>{const id=runIdOf(run),presentation=runPresentation(run),status=presentation.displayStatus,percent=presentation.progress,nodeId=run.node_id||run.root_node_id;return <button type="button" key={id||run.created_at} className={'xj-run-item '+(id===selectedId?'selected':'')} onClick={()=>id&&setSelectedId(id)}><span className={'xj-status '+status}>{statusNames[status]||status||'未知'}</span><b>{run.title||run.name||run.node_name||`Node ${nodeId||'—'}`}</b><small>{run.site||run.marketplace||'—'} · Node ID {nodeId||'—'}</small><div className="xj-run-item-foot"><small>{detailOf(run)||formatDate(run.created_at||run.started_at)}</small>{percent!=null&&<small>{Math.round(percent)}%</small>}</div></button>})}</div>
      <section className="xj-run-detail" aria-live="polite">
       {detailLoading&&!detail?<div className="xj-empty">正在读取任务详情…</div>:detailError&&!detail?<div className="xj-error" role="alert"><CircleAlert size={15}/>{detailError}</div>:selectedRun?<>
-       <div className="xj-detail-title"><div><span className={'xj-status '+selectedStatus}>{statusNames[selectedStatus]||selectedStatus||'未知'}</span><h4>{selectedRun.title||selectedRun.name||selectedRun.node_name||`Node ${selectedRun.node_id||selectedRun.root_node_id||'—'}`}</h4></div><small>{formatDate(selectedRun.created_at||selectedRun.started_at)}</small></div>
+        <div className="xj-detail-title"><div><span className={'xj-status '+selectedPresentation.displayStatus}>{statusNames[selectedPresentation.displayStatus]||selectedPresentation.displayStatus||'未知'}</span><h4>{selectedRun.title||selectedRun.name||selectedRun.node_name||`Node ${selectedRun.node_id||selectedRun.root_node_id||'—'}`}</h4></div><small>{formatDate(selectedRun.created_at||selectedRun.started_at)}</small></div>
        <p className="xj-run-meta">站点 {selectedRun.site||selectedRun.marketplace||site} <span>·</span> Node ID {selectedRun.node_id||selectedRun.root_node_id||'—'}{selectedRun.max_depth!=null&&<> <span>·</span> 深度 {selectedRun.max_depth}</>}</p>
-       <div className="xj-progress-head"><b>{detailOf(selectedRun)||'扫描进度'}</b><span>{progressLabel(selectedRun)}</span></div><div className="xj-progress" role="progressbar" aria-label="扫描进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow={selectedProgress==null?undefined:Math.round(selectedProgress)}><span style={{width:selectedProgress==null?(activeStatuses.has(selectedStatus)?'35%':'0%'):`${selectedProgress}%`}} className={selectedProgress==null&&activeStatuses.has(selectedStatus)?'indeterminate':''}/></div>
+       <div className="xj-progress-head"><b>{detailOf(selectedRun)||'扫描进度'}</b><span>{selectedPresentation.label}</span></div><div className="xj-progress" role="progressbar" aria-label="扫描进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow={selectedProgress==null?undefined:Math.round(selectedProgress)}><span style={{width:selectedProgress==null?(activeStatuses.has(selectedStatus)?'35%':'0%'):`${selectedProgress}%`}} className={selectedProgress==null&&activeStatuses.has(selectedStatus)?'indeterminate':''}/></div>
+       {selectedPresentation.displayStatus==='waiting_retry'&&<div className="xj-recovery-warning" role="status"><CircleAlert size={15}/><span><b>等待自动重试</b>{(selectedPresentation.retryInfo?.waiting_count??selectedPresentation.retryInfo?.pending_retry_count)!=null&&<> · {(selectedPresentation.retryInfo.waiting_count??selectedPresentation.retryInfo.pending_retry_count)} 个分支等待中</>}{selectedPresentation.retryInfo?.last_attempt!=null&&<> · 第 {selectedPresentation.retryInfo.last_attempt}{selectedPresentation.retryInfo.max_attempts!=null?` / ${selectedPresentation.retryInfo.max_attempts}`:''} 次尝试</>}{(selectedPresentation.retryInfo?.next_retry_at||selectedPresentation.retryInfo?.earliest_retry_at)&&<> · 预计 {formatDate(selectedPresentation.retryInfo.next_retry_at||selectedPresentation.retryInfo.earliest_retry_at)} 重试</>}{selectedPresentation.retryInfo?.last_node_id&&<> · Node ID {selectedPresentation.retryInfo.last_node_id}</>}{retryErrorText(selectedPresentation.retryInfo?.last_error)&&<div>最近错误：{retryErrorText(selectedPresentation.retryInfo.last_error)}</div>}</span></div>}
+       {selectedPresentation.hasSuspendedBranches&&<div className="xj-recovery-warning" role="status"><CircleAlert size={15}/><span><b>部分完成：仍有 {selectedPresentation.suspendedCount} 个分支已暂停</b><div>已完成部分结果；可继续扫描以恢复这些分支。任务未全部完成。</div>{retryErrorText(selectedPresentation.retryInfo?.last_error)&&<div>最近错误：{retryErrorText(selectedPresentation.retryInfo.last_error)}</div>}</span></div>}
        {selectedRun.message&&<p className="xj-run-message">{selectedRun.message}</p>}{detailError&&<p className="xj-inline-error" role="status">详情刷新失败：{detailError}</p>}
        <div className="xj-detail-foot"><span>最近更新 {formatDate(selectedRun.updated_at||selectedRun.last_activity||selectedRun.created_at)}</span><div>{canPause&&<button disabled={!!actionBusy} onClick={()=>void runAction('pause')}><Pause size={14}/>{actionBusy==='pause'?'暂停中…':'暂停'}</button>}{canResume&&<button disabled={!!actionBusy} onClick={()=>void runAction('resume')}><Play size={14}/>{actionBusy==='resume'?'继续中…':'继续'}</button>}{reportUrl&&<><button onClick={()=>window.open(reportUrl,'_blank','noopener,noreferrer')}><ArrowUpRight size={14}/>打开报告</button><a className="xj-download" href={reportUrl} download rel="noreferrer"><ArrowDownToLine size={14}/>下载报告</a></>}</div></div>
       </>:<div className="xj-empty">选择一项扫描任务查看进度。</div>}

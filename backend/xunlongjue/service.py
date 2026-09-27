@@ -292,7 +292,63 @@ def get_run(run_id: str) -> dict:
                     or (engine_status == 'PARTIAL_DONE' and control.get('report_mode') == 'partial'))
     state['report_url'] = f'/api/xunlongjue/runs/{run_id}/report' if report_ready and control.get('report_path') else None
     state['updated_at'] = control.get('updated_at') or state.get('updated_at')
+    retry_info = _retry_info(run_id, state.get('policy') or {})
+    if retry_info:
+        state['retry_info'] = retry_info
     return state
+
+
+def _retry_info(run_id: str, policy: dict) -> dict | None:
+    """Summarize retryable/failed jobs without exposing raw transport diagnostics."""
+    workspace = str(_workspace(run_id))
+    db = importlib.import_module('.vendor.xlj_core.db', package=__package__)
+    conn = db.connect(workspace)
+    try:
+        retry_rows = conn.execute(
+            "SELECT node_id,attempts,state,eligible_at,last_error,updated_at "
+            "FROM jobs WHERE run_id=? AND attempts>0 AND state IN ('PENDING','FAILED') "
+            "ORDER BY updated_at DESC,job_id",
+            (run_id,),
+        ).fetchall()
+        if not retry_rows:
+            return None
+        pending = [row for row in retry_rows if row['state'] == 'PENDING']
+        last_error_row = next((row for row in retry_rows if row['last_error']), retry_rows[0])
+        _, api_key = settings.connection()
+        suspended_count = int(conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE run_id=? AND state='SUSPENDED'", (run_id,),
+        ).fetchone()[0])
+        summary = {
+            'retry_count': len(retry_rows),
+            'waiting_count': len(pending),
+            'exhausted_count': sum(row['state'] == 'FAILED' for row in retry_rows),
+            'suspended_count': suspended_count,
+            'next_retry_at': min((row['eligible_at'] for row in pending if row['eligible_at']), default=None),
+            'last_error': scrub(last_error_row['last_error'], api_key),
+            'last_node_id': str(last_error_row['node_id']),
+            'last_attempt': int(last_error_row['attempts']),
+            'max_attempts': int(policy.get('max_attempts') or 0),
+        }
+        return summary
+    except ValueError:
+        # Settings may be absent after credential removal. Stored errors are already
+        # scrubbed on ingest; keep diagnostics available without requiring a key.
+        return {
+            'retry_count': len(retry_rows),
+            'waiting_count': sum(row['state'] == 'PENDING' for row in retry_rows),
+            'exhausted_count': sum(row['state'] == 'FAILED' for row in retry_rows),
+            'suspended_count': int(conn.execute(
+                "SELECT COUNT(*) FROM nodes WHERE run_id=? AND state='SUSPENDED'", (run_id,),
+            ).fetchone()[0]),
+            'next_retry_at': min((row['eligible_at'] for row in retry_rows
+                                      if row['state'] == 'PENDING' and row['eligible_at']), default=None),
+            'last_error': scrub(last_error_row['last_error']),
+            'last_node_id': str(last_error_row['node_id']),
+            'last_attempt': int(last_error_row['attempts']),
+            'max_attempts': int(policy.get('max_attempts') or 0),
+        }
+    finally:
+        conn.close()
 
 
 def home_summary() -> dict:
@@ -374,10 +430,10 @@ def _call_for_job(client, job: dict) -> dict:
     kind = job.get('type')
     if kind not in ('category_tree', 'category_trend'):
         raise ValueError('引擎返回未知任务类型')
-    arguments = {'nodeid': str(job.get('node_id') or ''),
+    arguments = {'node_id': str(job.get('node_id') or ''),
                  'amz_site': str(job.get('site') or '')}
     if kind == 'category_trend':
-        arguments['indicator'] = str(job.get('indicator') or '')
+        arguments['trend_index'] = str(job.get('indicator') or '')
     return call_sync(client, kind, arguments)
 
 

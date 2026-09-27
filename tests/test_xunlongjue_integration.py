@@ -61,10 +61,10 @@ def test_category_trend_uses_sorftime_tool_contract():
     service._call_for_job(client, {
         'type': 'category_trend', 'node_id': '123', 'site': 'US',
         'indicator': 'SalesCount',
-        'arguments': {'amzSite': 'US', 'nodeid': '123', 'indicator': 'SalesCount'},
+        'arguments': {'amz_site': 'US', 'node_id': '123', 'trend_index': 'SalesCount'},
     })
     assert client.calls == [('category_trend', {
-        'amz_site': 'US', 'nodeid': '123', 'indicator': 'SalesCount',
+        'amz_site': 'US', 'node_id': '123', 'trend_index': 'SalesCount',
     })]
 
 
@@ -72,9 +72,9 @@ def test_category_tree_uses_sorftime_tool_contract():
     client = FakeSorftime('https://mcp.example.test/mcp', 'fake-key')
     service._call_for_job(client, {
         'type': 'category_tree', 'node_id': '12345', 'site': 'US',
-        'arguments': {'amzSite': 'US', 'nodeid': '12345'},
+        'arguments': {'amz_site': 'US', 'node_id': '12345'},
     })
-    assert client.calls == [('category_tree', {'amz_site': 'US', 'nodeid': '12345'})]
+    assert client.calls == [('category_tree', {'amz_site': 'US', 'node_id': '12345'})]
 
 
 @pytest.mark.parametrize('content', [[], [SimpleNamespace(text='')],
@@ -91,7 +91,7 @@ def test_sorftime_rejects_empty_or_plain_text_mcp_content(content, monkeypatch):
     monkeypatch.setattr(client, '_call_live', fake_call_live)
     with pytest.raises(RuntimeError):
         import asyncio
-        asyncio.run(client.call('category_tree', {'amz_site': 'US', 'nodeid': '123'}))
+        asyncio.run(client.call('category_tree', {'amz_site': 'US', 'node_id': '123'}))
 
 
 def test_sorftime_rejects_tree_objects_without_recognized_list_field(monkeypatch):
@@ -105,7 +105,7 @@ def test_sorftime_rejects_tree_objects_without_recognized_list_field(monkeypatch
     monkeypatch.setattr(client, '_call_live', fake_call_live)
     with pytest.raises(RuntimeError):
         import asyncio
-        asyncio.run(client.call('category_tree', {'amz_site': 'US', 'nodeid': '123'}))
+        asyncio.run(client.call('category_tree', {'amz_site': 'US', 'node_id': '123'}))
 
 
 def test_sorftime_accepts_a_genuine_empty_tree_list(monkeypatch):
@@ -118,9 +118,41 @@ def test_sorftime_accepts_a_genuine_empty_tree_list(monkeypatch):
 
     monkeypatch.setattr(client, '_call_live', fake_call_live)
     import asyncio
-    payload = asyncio.run(client.call('category_tree', {'amz_site': 'US', 'nodeid': '123'}))
+    payload = asyncio.run(client.call('category_tree', {'amz_site': 'US', 'node_id': '123'}))
     from backend.xunlongjue.vendor.xlj_core.engine import _normalize_tree_payload
     assert _normalize_tree_payload(payload) == []
+
+
+def test_realistic_tree_wrapper_accepts_direct_child_fields_without_flattening(monkeypatch):
+    client = SorftimeClient('https://mcp.example.test/mcp', 'fake-key')
+    result = SimpleNamespace(isError=False, content=[SimpleNamespace(text=json.dumps({
+        'data': [{
+            'node_id': '123456', 'category_name': 'Storage & Organization',
+            'children': [{'node_id': '999999', 'category_name': 'Grandchild'}],
+        }],
+    }))])
+
+    async def fake_call_live(name, arguments):
+        from backend.xunlongjue.sorftime import _decode
+        return _decode(result)
+
+    monkeypatch.setattr(client, '_call_live', fake_call_live)
+    import asyncio
+    payload = asyncio.run(client.call('category_tree', {
+        'amz_site': 'US', 'node_id': '12345',
+    }))
+    from backend.xunlongjue.vendor.xlj_core.engine import _normalize_tree_payload
+    assert _normalize_tree_payload(payload) == [
+        {'id': '123456', 'name': 'Storage & Organization'},
+    ]
+
+
+def test_tree_payload_rejects_slug_ids_as_non_successful_items():
+    from backend.xunlongjue.vendor.xlj_core.engine import _normalize_tree_payload
+    with pytest.raises(ValueError, match='纯数字'):
+        _normalize_tree_payload({'data': [
+            {'node_id': 'home-storage', 'category_name': 'Storage'},
+        ]})
 
 
 def test_mcp_diagnostic_scrubs_api_key_and_url():
@@ -130,7 +162,7 @@ def test_mcp_diagnostic_scrubs_api_key_and_url():
     client = SorftimeClient('https://mcp.example.test/mcp', 'very-secret', transport=fake_transport)
     with pytest.raises(RuntimeError) as error:
         import asyncio
-        asyncio.run(client.call('category_tree', {'nodeId': '123', 'amzSite': 'US'}))
+        asyncio.run(client.call('category_tree', {'node_id': '123', 'amz_site': 'US'}))
     assert 'very-secret' not in str(error.value)
     assert 'mcp.example.test' not in str(error.value)
 
@@ -160,7 +192,7 @@ def test_create_run_executes_serial_mcp_job_and_only_then_writes_final_report(xl
     assert state['max_nodes'] == 10
     assert state['policy']['max_nodes'] == 10
     assert Path(state['report_path']).is_file()
-    assert instances[0].calls == [('category_tree', {'amz_site': 'US', 'nodeid': '12345'})]
+    assert instances[0].calls == [('category_tree', {'amz_site': 'US', 'node_id': '12345'})]
     assert (xlj_home / result['run_id'] / 'workspace' / 'ipc').is_dir()
     test_app = FastAPI()
     test_app.include_router(router)
@@ -171,6 +203,44 @@ def test_create_run_executes_serial_mcp_job_and_only_then_writes_final_report(xl
     service._write_control(result['run_id'], report_path=str(xlj_home / 'outside.html'))
     with pytest.raises(ValueError, match='报告文件不存在或路径无效'):
         service.report_file(result['run_id'])
+
+
+def test_run_retry_info_summarizes_backoff_and_scrubs_error(xlj_home):
+    settings.save('https://mcp.example.test/mcp', 'very-secret')
+    run_id = '12345678-1234-1234-1234-123456789abc'
+    workspace = xlj_home / run_id / 'workspace'
+    workspace.mkdir(parents=True)
+    engine = service._engine()
+    engine.create_run(str(workspace), 'US', '12345', '12345', run_id=run_id)
+    service._write_control(run_id, status='running', site='US', node_id='12345')
+    from backend.xunlongjue.vendor.xlj_core import db as xlj_db
+    conn = xlj_db.connect(str(workspace))
+    try:
+        conn.execute(
+            "UPDATE jobs SET state='PENDING',attempts=1,eligible_at=?,last_error=?,updated_at=? "
+            "WHERE run_id=? AND job_type='category_tree'",
+            ('2099-01-01T00:00:00+00:00',
+             'failed https://mcp.example.test/?key=very-secret',
+             '2026-09-27T00:00:00+00:00', run_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    info = service.get_run(run_id)['retry_info']
+    assert info == {
+        'retry_count': 1,
+        'waiting_count': 1,
+        'exhausted_count': 0,
+        'suspended_count': 0,
+        'next_retry_at': '2099-01-01T00:00:00+00:00',
+        'last_error': 'failed [服务地址已隐藏]',
+        'last_node_id': '12345',
+        'last_attempt': 1,
+        'max_attempts': 3,
+    }
+    assert 'very-secret' not in json.dumps(info)
+    assert 'mcp.example.test' not in json.dumps(info)
 
 
 def test_worker_setup_error_is_interrupted_and_can_be_resumed(xlj_home, monkeypatch):
