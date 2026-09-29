@@ -17,6 +17,7 @@ from . import knowledge,templates,storage_management,model_settings,capabilities
 from .keyword_research import routes as keyword_research_routes
 from .keyword_research import registry as keyword_registry, runner as keyword_runner
 from . import amazon_scraper
+from .amazon_reviews import service as amazon_reviews
 from .amazon_scraper_http import (AmazonRequestBodyTooLarge, InvalidAmazonContentLength,
                                   buffer_amazon_request_body)
 from .xunlongjue import router as xunlongjue_router, home_summary as xunlongjue_home_summary
@@ -33,7 +34,7 @@ AMAZON_REQUEST_BODY_LIMIT = 256 * 1024
 async def lifespan(app):
     app.state.stopping=False
     agent_application.start()
-    init_db();jobs.recover();batch.recover();keyword_registry.recover();amazon_scraper.recover();xunlongjue_start();xunlongjue_recover()
+    init_db();jobs.recover();batch.recover();keyword_registry.recover();amazon_scraper.recover();amazon_reviews.recover();xunlongjue_start();xunlongjue_recover()
     with Session() as s:ids=list(s.scalars(select(Dataset.id)))
     for did in ids:draft.migrate(did)
     yield
@@ -45,6 +46,7 @@ async def lifespan(app):
     for jid in list(batch.active):batch.stop(jid)
     keyword_runner.stop_all()
     amazon_scraper.stop_all()
+    amazon_reviews.stop_all()
     xunlongjue_stop_all()
 
 app=FastAPI(title='商品特征工程工作台',version=VERSION,lifespan=lifespan)
@@ -107,6 +109,30 @@ def amazon_scraper_retry(job_id:str):return amazon_scraper.service.retry(job_id)
 
 @app.get('/api/amazon-scraper/jobs/{job_id}/download')
 def amazon_scraper_download(job_id:str):return FileResponse(amazon_scraper.service.output_path(job_id),filename='Amazon-Listing-图片.xlsx',media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+@app.get('/api/amazon-reviews/settings')
+def amazon_reviews_settings():return amazon_reviews.model_settings_public()
+
+@app.post('/api/amazon-reviews/jobs')
+def amazon_reviews_start(body:dict):return amazon_reviews.create(body)
+
+@app.get('/api/amazon-reviews/jobs')
+def amazon_reviews_jobs():return amazon_reviews.list_jobs()
+
+@app.get('/api/amazon-reviews/jobs/{job_id}')
+def amazon_reviews_job(job_id:str):return amazon_reviews.get(job_id)
+
+@app.post('/api/amazon-reviews/jobs/{job_id}/cancel')
+def amazon_reviews_cancel(job_id:str):return amazon_reviews.cancel(job_id)
+
+@app.post('/api/amazon-reviews/jobs/{job_id}/retry')
+def amazon_reviews_retry(job_id:str):return amazon_reviews.retry(job_id)
+
+@app.get('/api/amazon-reviews/jobs/{job_id}/download')
+def amazon_reviews_download(job_id:str):return FileResponse(amazon_reviews.output_path(job_id),filename='Amazon-Reviews.xlsx',media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+@app.get('/api/amazon-reviews/jobs/{job_id}/raw')
+def amazon_reviews_raw(job_id:str):return FileResponse(amazon_reviews.raw_path(job_id),filename='Amazon-Reviews-raw.json',media_type='application/json')
 
 @app.get('/api/home/summary')
 def home_summary():

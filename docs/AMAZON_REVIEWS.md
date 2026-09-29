@@ -1,0 +1,53 @@
+# Amazon 评论采集与翻译
+
+## 来源与契约
+
+工作台实现依据私有仓库 CN-Bobby/Bobby_Skills_Group/sorftime-reviews-pull，源码固定在提交 ef447da2b9785c8ac921350c706dd858b18794f2。该 Skill 的接口与流程约定：
+
+- 榜单数据从 Sorftime category_report 的 data.top100_products 读取。
+- 评论由 product_reviews 提供，站点使用 Amazon marketplace code。
+- 每个 ASIN 以 review_type=Both 调用两次，按 (ASIN, review_date, title, content) 去重。两次调用是重复采样，不是分页。
+- 每次最多 100 条且范围为最近一年；不能将结果称为全历史评论。
+- 对返回的每条评论翻译非空标题和正文；按星级映射情感：4–5 星积极、1–2 星消极、3 星中性。
+- Excel 工作表为「全部评论 / 商品评论统计 / 统计汇总」；首表包含 14 个源字段并支持筛选与情感着色。
+
+## 工作台接入
+
+前端入口为主导航「Amazon 评论」，页面路由为 #/amazon-reviews。页面提供三种输入方式：类目榜单 Top 50/100、直接输入 ASIN、从类目榜单筛选指定 ASIN。站点、模型及已授权模型 Key 均在任务创建时冻结。
+
+Sorftime MCP 配置复用工作台「寻龙诀」的设置；翻译模型与凭据复用「总设置」。页面仅检查连接是否配置，不读取或显示密钥。任务和逐商品检查点保存在当前 TAG_STORAGE/amazon-reviews/<job-id>/，支持进度查询、取消、重试和重启后恢复。单次最多并行两个评论任务。
+
+API 路由：
+
+- GET /api/amazon-reviews/settings
+- POST /api/amazon-reviews/jobs、GET /api/amazon-reviews/jobs
+- GET /api/amazon-reviews/jobs/{job_id}
+- POST /api/amazon-reviews/jobs/{job_id}/cancel
+- POST /api/amazon-reviews/jobs/{job_id}/retry
+- GET /api/amazon-reviews/jobs/{job_id}/download
+- GET /api/amazon-reviews/jobs/{job_id}/raw
+
+导出保留两个 Both 调用的完整原始响应、每轮原始/新增去重数量、翻译结果及汇总工作簿。取消或恢复时先读取已保存轮次，只补齐缺少的评论调用，并保留已完成翻译。
+
+## 验证
+
+离线回归：
+
+    python -m pytest tests/test_amazon_reviews.py -q
+
+前端回归与构建：
+
+    npm test
+    npm run build
+
+美国站真实端到端验证（脚本只接受 stdin 中的一行 Sorftime Key；Key 会写入独立测试目录，退出时清除。模型 Key 从现有总设置解析，不写入任务记录）：
+
+    python scripts/verify_sorftime_reviews_live.py --key-stdin
+
+该脚本在仓库忽略目录 builds/sorftime-reviews-live/<run-id>/ 创建独立 SQLite、任务数据、Excel、原始 JSON 和验证报告，不使用正式或绿色工作台数据目录。默认使用已确认位于美国站 Node 17269957011 的 ASIN B0D5TQJXRN，调用 1 次榜单接口和 2 次评论接口；可用 --asins 追加多个同类目 ASIN。遇到可重试失败时通过工作台重试路由补齐未完成工作，最多重试两次。最终校验数据去重、译文覆盖、三张工作表及计数一致性。
+
+若某次真实任务已完成评论采集、但后续翻译失败，可将已清除凭据的隔离任务安全恢复：
+
+    python scripts/verify_sorftime_reviews_live.py --key-stdin --resume-run-id 20260929T115704Z-86ac57ef
+
+恢复模式从该 run 的请求与任务检查点读取站点、Node、ASIN 和任务 ID，只重试未完成商品；验证器会断言恢复期间新增评论 API 调用数为 0，并另存恢复报告，不覆盖首次运行报告。
