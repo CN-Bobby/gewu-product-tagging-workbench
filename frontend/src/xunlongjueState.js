@@ -2,6 +2,27 @@ export const activeStatuses=new Set(['queued','pending','running','pausing','res
 
 export const normalizeRunStatus=run=>String(run?.status||'unknown').toLowerCase();
 
+const runIdOf=run=>String(run?.id??run?.run_id??'');
+
+export function mergeRunByRevision(current,incoming){
+ if(!current||runIdOf(current)!==runIdOf(incoming))return incoming;
+ const currentRevision=Number(current.revision??current.metadata?.revision)||0;
+ const incomingRevision=Number(incoming.revision??incoming.metadata?.revision)||0;
+ const currentUpdated=Date.parse(current.updated_at||'');
+ const incomingUpdated=Date.parse(incoming.updated_at||'');
+ const stateSource=Number.isFinite(currentUpdated)&&Number.isFinite(incomingUpdated)&&currentUpdated>incomingUpdated?current:incoming;
+ const metadataSource=incomingRevision>=currentRevision?incoming:current;
+ const metadata=metadataSource===current?{...incoming.metadata,...current.metadata}:{...current.metadata,...incoming.metadata};
+ const revision=Math.max(currentRevision,incomingRevision);
+ metadata.revision=revision||1;
+ return{...stateSource,...metadata,revision:revision||1,metadata};
+}
+
+export function mergeRunsByRevision(current,incoming){
+ const previous=new Map((current||[]).map(run=>[runIdOf(run),run]));
+ return(incoming||[]).map(run=>mergeRunByRevision(previous.get(runIdOf(run)),run));
+}
+
 export function progressOf(run){
  const raw=run?.progress??run?.progress_percent??run?.percent_complete;
  if(typeof raw==='number')return Math.max(0,Math.min(100,raw<=1?raw*100:raw));

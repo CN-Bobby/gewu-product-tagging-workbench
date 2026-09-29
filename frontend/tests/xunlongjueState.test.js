@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import{activeStatuses,runPresentation}from'../src/xunlongjueState.js';
+import{activeStatuses,mergeRunByRevision,mergeRunsByRevision,runPresentation}from'../src/xunlongjueState.js';
 
 test('waiting retry remains active and exposes retry context at zero progress',()=>{
  const presentation=runPresentation({status:'waiting_retry',progress:0,retry_info:{waiting_count:2,exhausted_count:0,next_retry_at:'2026-09-27T10:00:00Z',last_error:'temporary timeout',last_node_id:'123',last_attempt:2,max_attempts:4}});
@@ -50,4 +50,33 @@ test('ordinary active and completed runs retain normal progress presentation',()
  assert.equal(completed.hasSuspendedBranches,false);
  assert.equal(completed.progress,100);
  assert.equal(completed.label,'100%');
+});
+
+test('late task detail responses preserve the newest saved name and note',()=>{
+ const current={run_id:'run-1',revision:4,updated_at:'2026-09-29T10:02:00Z',metadata:{revision:4,name:'new name',note:'latest note'},status:'running',progress:25};
+ const stale={run_id:'run-1',revision:3,updated_at:'2026-09-29T10:01:00Z',metadata:{revision:3,name:'old name',note:'old note'},status:'running',progress:30};
+ const merged=mergeRunByRevision(current,stale);
+ assert.equal(merged.revision,4);
+ assert.equal(merged.name,'new name');
+ assert.equal(merged.metadata.note,'latest note');
+ assert.equal(merged.progress,25);
+});
+
+test('late task list responses keep newer metadata while refreshing task status',()=>{
+ const current=[{id:'run-1',revision:5,updated_at:'2026-09-29T10:01:00Z',metadata:{revision:5,name:'renamed',note:'saved'},status:'running'}];
+ const incoming=[{id:'run-1',revision:2,updated_at:'2026-09-29T10:02:00Z',metadata:{revision:2,name:'old'},status:'completed'}];
+ const merged=mergeRunsByRevision(current,incoming);
+ assert.equal(merged[0].status,'completed');
+ assert.equal(merged[0].revision,5);
+ assert.equal(merged[0].metadata.name,'renamed');
+ assert.equal(merged[0].metadata.note,'saved');
+});
+
+test('a slower poll cannot undo a newer pause or retry state',()=>{
+ const current={run_id:'run-2',revision:1,updated_at:'2026-09-29T10:03:00Z',status:'paused',progress:40,message:'已暂停'};
+ const late={run_id:'run-2',revision:1,updated_at:'2026-09-29T10:02:00Z',status:'running',progress:70,message:''};
+ const merged=mergeRunByRevision(current,late);
+ assert.equal(merged.status,'paused');
+ assert.equal(merged.progress,40);
+ assert.equal(merged.message,'已暂停');
 });

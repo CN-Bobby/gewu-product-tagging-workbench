@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 
 const source=await readFile(new URL('../src/Xunlongjue.jsx',import.meta.url),'utf8');
+const stateSource=await readFile(new URL('../src/xunlongjueState.js',import.meta.url),'utf8');
 
 test('new scans expose category, operator, node cap, and all eight original policy inputs',()=>{
  for(const label of ['类目名称','操作人','最大节点数','近6月均销门槛','最大层级','销量下降容忍','价格下降容忍','最低 R²','批量','最大尝试次数','最大数据滞后月'])assert.ok(source.includes(label),`missing ${label}`);
@@ -15,10 +16,17 @@ test('run list supports server-side filters, ordering, and archived or trashed s
  for(const label of ['搜索任务','状态筛选','任务范围','排序字段','切换排序方向'])assert.ok(source.includes(label),`missing ${label}`);
 });
 
+test('the latest list request always clears loading even when it supersedes the initial request',()=>{
+ assert.match(source,/finally\{if\(request===listRequest\.current\)setRunsLoading\(false\)\}/);
+});
+
 test('metadata uses optimistic revision and named presets expose create, update, delete, and apply',()=>{
  assert.match(source,/\/metadata`,\{revision:Number\(selectedRun\.revision\)\|\|1,name:nameDraft,note:noteDraft\}/);
- assert.match(source,/function mergeByRevision\(current,incoming\)/);
- assert.match(source,/setDetail\(current=>mergeByRevision\(current,value\)\)/);
+ assert.match(source,/mergeRunByRevision/);
+ assert.match(source,/setDetail\(current=>mergeRunByRevision\(current,value\)\)/);
+ assert.match(source,/setRuns\(current=>mergeRunsByRevision\(current,rows\)\)/);
+ assert.match(stateSource,/export function mergeRunByRevision/);
+ assert.match(stateSource,/currentUpdated>incomingUpdated/);
  assert.match(source,/await api\(PRESETS,body\)/);
  assert.match(source,/await api\(`\$\{PRESETS\}\/\$\{encodeURIComponent\(presetId\)\}`,body,'PUT'\)/);
  assert.match(source,/await api\(`\$\{PRESETS\}\/\$\{encodeURIComponent\(presetId\)\}`,undefined,'DELETE'\)/);
