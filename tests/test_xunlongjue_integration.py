@@ -1,3 +1,4 @@
+import asyncio
 import json
 import threading
 import time
@@ -157,6 +158,145 @@ def test_sorftime_accepts_a_genuine_empty_tree_list(monkeypatch):
     assert _normalize_tree_payload(payload) == []
 
 
+def test_sorftime_prefers_text_json_when_structured_content_is_also_present():
+    from backend.xunlongjue.sorftime import _decode
+    result = SimpleNamespace(
+        isError=False,
+        content=[SimpleNamespace(text='{"data":[]}')],
+        structuredContent={'data': [{'node_id': '999', 'category_name': 'ignored'}]},
+    )
+    assert _decode(result) == {'data': []}
+
+
+def test_sorftime_uses_structured_content_only_when_text_is_empty():
+    from backend.xunlongjue.sorftime import _decode
+    result = SimpleNamespace(isError=False, content=[], structuredContent={'data': []})
+    assert _decode(result) == {'data': []}
+
+
+def test_sorftime_decodes_the_installed_mcp_result_model():
+    from mcp.types import CallToolResult
+    from backend.xunlongjue.sorftime import _decode
+    result = CallToolResult(content=[], structuredContent={'data': []})
+    assert _decode(result) == {'data': []}
+
+
+def test_sorftime_does_not_fall_back_to_structured_content_for_non_json_text():
+    from backend.xunlongjue.sorftime import _decode
+    result = SimpleNamespace(
+        isError=False,
+        content=[SimpleNamespace(text='No data available.')],
+        structuredContent={'data': []},
+    )
+    with pytest.raises(ValueError, match='非 JSON 文本'):
+        _decode(result)
+
+
+def test_sorftime_preserves_plain_text_timeout_diagnostic_without_secrets():
+    from backend.xunlongjue.sorftime import _decode
+    result = SimpleNamespace(
+        isError=False,
+        content=[SimpleNamespace(text=(
+            'Soft timeout while reading https://mcp.example.test/?key=very-secret'
+        ))],
+        structuredContent={'data': []},
+    )
+    with pytest.raises(ValueError) as error:
+        _decode(result, key='very-secret')
+    assert 'Soft timeout while reading' in str(error.value)
+    assert 'very-secret' not in str(error.value)
+    assert 'mcp.example.test' not in str(error.value)
+
+
+def test_sorftime_mcp_is_error_remains_failure_and_is_scrubbed():
+    from backend.xunlongjue.sorftime import _decode
+    result = SimpleNamespace(
+        isError=True,
+        content=[SimpleNamespace(text='failed https://mcp.example.test/?key=very-secret')],
+        structuredContent={'data': []},
+    )
+    with pytest.raises(RuntimeError) as error:
+        _decode(result, key='very-secret')
+    assert 'failed' in str(error.value)
+    assert 'very-secret' not in str(error.value)
+    assert 'mcp.example.test' not in str(error.value)
+
+
+def test_sorftime_call_enforces_injectable_total_timeout(monkeypatch):
+    assert SorftimeClient('https://mcp.example.test/mcp', 'fake-key').timeout_seconds == 180
+    client = SorftimeClient(
+        'https://mcp.example.test/mcp', 'fake-key', timeout_seconds=0.01,
+    )
+
+    async def slow_live_call(name, arguments):
+        # Represents any delay inside connect, initialize, or call_tool.
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(client, '_call_live', slow_live_call)
+    with pytest.raises(RuntimeError, match='超过 0.01 秒总期限'):
+        asyncio.run(client.call(
+            'category_tree', {'amz_site': 'US', 'node_id': '123'},
+        ))
+
+
+def test_sorftime_rejects_payload_returned_after_timeout_was_suppressed(monkeypatch):
+    client = SorftimeClient(
+        'https://mcp.example.test/mcp', 'fake-key', timeout_seconds=0.01,
+    )
+
+    async def suppress_cancellation(name, arguments):
+        try:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            # A transport that swallows cancellation must not turn an expired
+            # request back into a successful category tree.
+            return {'data': [{'node_id': '123456', 'category_name': 'Late'}]}
+
+    monkeypatch.setattr(client, '_call_live', suppress_cancellation)
+    with pytest.raises(RuntimeError, match='超过 0.01 秒总期限'):
+        asyncio.run(client.call(
+            'category_tree', {'amz_site': 'US', 'node_id': '123'},
+        ))
+
+
+def test_sorftime_total_timeout_is_clear_when_mcp_wraps_cancel_in_task_group(monkeypatch):
+    client = SorftimeClient(
+        'https://mcp.example.test/mcp', 'fake-key', timeout_seconds=0.01,
+    )
+
+    async def task_group_cleanup(name, arguments):
+        try:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            # AnyIO/MCP transport cleanup can surface an exception group after
+            # the outer asyncio deadline cancels the request.
+            raise ExceptionGroup(
+                'unhandled errors in a TaskGroup',
+                [TimeoutError('SSE stream was closed')],
+            ) from None
+
+    monkeypatch.setattr(client, '_call_live', task_group_cleanup)
+    with pytest.raises(RuntimeError, match='超过 0.01 秒总期限') as error:
+        asyncio.run(client.call(
+            'category_tree', {'amz_site': 'US', 'node_id': '123'},
+        ))
+    assert 'SSE stream was closed' in str(error.value)
+
+
+def test_sorftime_preserves_transport_timeout_cause():
+    async def fail_with_read_timeout(name, arguments):
+        raise TimeoutError('SSE read timed out')
+
+    client = SorftimeClient(
+        'https://mcp.example.test/mcp', 'fake-key',
+        transport=fail_with_read_timeout, timeout_seconds=1,
+    )
+    with pytest.raises(RuntimeError) as error:
+        asyncio.run(client.call('category_tree', {'amz_site': 'US', 'node_id': '123'}))
+    assert 'SSE read timed out' in str(error.value)
+    assert '总期限' not in str(error.value)
+
+
 def test_realistic_tree_wrapper_accepts_direct_child_fields_without_flattening(monkeypatch):
     client = SorftimeClient('https://mcp.example.test/mcp', 'fake-key')
     result = SimpleNamespace(isError=False, content=[SimpleNamespace(text=json.dumps({
@@ -204,7 +344,9 @@ def test_mcp_diagnostic_scrubs_api_key_and_url():
 def test_mcp_diagnostic_keeps_safe_leaf_causes_from_exception_group():
     error = ExceptionGroup('unhandled errors in a TaskGroup', [
         ConnectionResetError('connection reset by peer'),
-        TimeoutError('read timed out at https://mcp.example.test/?key=very-secret'),
+        ExceptionGroup('nested task group', [
+            TimeoutError('read timed out at https://mcp.example.test/?key=very-secret'),
+        ]),
     ])
     diagnostic = scrub(error, 'very-secret')
     assert 'ConnectionResetError: connection reset by peer' in diagnostic
