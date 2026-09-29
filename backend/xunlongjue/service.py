@@ -651,7 +651,7 @@ class NodeCapReached(ValueError):
     """The node cap stopped expansion without fabricating a leaf or opportunity."""
 
 
-def _call_for_job(client, job: dict) -> dict:
+def _call_for_job(client, job: dict, run_id: str = '') -> dict:
     kind = job.get('type')
     if kind not in ('category_tree', 'category_trend'):
         raise ValueError('引擎返回未知任务类型')
@@ -660,7 +660,15 @@ def _call_for_job(client, job: dict) -> dict:
                  'node_id': str(job.get('node_id') or '')}
     if kind == 'category_trend':
         arguments['trend_index'] = str(job.get('indicator') or '')
-    payload = call_sync(client, kind, arguments)
+    payload = call_sync(client, kind, arguments, audit_context={
+        'run_id': run_id,
+        'job_id': str(job.get('job_id') or ''),
+        'node_id': str(job.get('node_id') or ''),
+        'site': str(job.get('site') or ''),
+        'job_type': kind,
+        'indicator': str(job.get('indicator') or ''),
+        'attempt': int(job.get('attempt') or 0),
+    })
     if kind == 'category_trend':
         return _normalize_sorftime_trend(payload, str(job.get('indicator') or ''))
     return payload
@@ -770,7 +778,7 @@ def _process_batch(run_id: str, batch: dict, client) -> None:
             batch['jobs'] = jobs[:index]
             break
         try:
-            payload = _call_for_job(client, job)
+            payload = _call_for_job(client, job, run_id)
             if job.get('type') == 'category_tree':
                 payload = _cap_tree_result(run_id, payload, reserved_nodes)
                 reserved_nodes += _tree_item_count(payload)

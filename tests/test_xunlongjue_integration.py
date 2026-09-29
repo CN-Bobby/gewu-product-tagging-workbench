@@ -19,7 +19,7 @@ class FakeSorftime:
         self.api_key = api_key
         self.calls = []
 
-    async def call(self, name, arguments):
+    async def call(self, name, arguments, *, audit_context=None):
         self.calls.append((name, arguments))
         if name == 'category_tree':
             return {'data': []}
@@ -61,9 +61,10 @@ def test_category_trend_uses_sorftime_tool_contract():
     # alongside the arguments so the Sorftime adapter cannot silently drop it.
     service._call_for_job(client, {
         'type': 'category_trend', 'node_id': '123', 'site': 'US',
+        'job_id': 'job-1', 'attempt': 2,
         'indicator': 'SalesCount',
         'arguments': {'amz_site': 'US', 'node_id': '123', 'trend_index': 'SalesCount'},
-    })
+    }, 'run-1')
     assert client.calls == [('category_trend', {
         'amz_site': 'US', 'node_id': '123', 'trend_index': 'SalesCount',
     })]
@@ -237,6 +238,73 @@ def test_sorftime_call_enforces_injectable_total_timeout(monkeypatch):
         asyncio.run(client.call(
             'category_tree', {'amz_site': 'US', 'node_id': '123'},
         ))
+
+
+def test_sorftime_exchange_audit_is_opt_in_contextual_and_redacted(tmp_path, monkeypatch):
+    from backend.xunlongjue.sorftime import SorftimeClient
+
+    audit_dir = tmp_path / 'exchanges'
+    monkeypatch.setenv('XLJ_SORFTIME_EXCHANGE_DIR', str(audit_dir))
+
+    async def fake_transport(name, arguments):
+        return {'data': [{'month': '2026-01', 'value': 12,
+                          'description': 'contains temporary-secret',
+                          'api_key': 'field-secret',
+                          'x_api_key': 'prefixed-field-secret',
+                          'source': 'https://example.test/?key=query-secret&access_token=url-token'}]}
+
+    client = SorftimeClient(
+        'https://mcp.example.test/mcp', 'temporary-secret', transport=fake_transport,
+    )
+    payload = asyncio.run(client.call(
+        'category_trend',
+        {'amz_site': 'US', 'node_id': '123', 'trend_index': 'SalesCount'},
+        audit_context={
+            'run_id': 'run-1', 'job_id': 'job-1', 'node_id': '123',
+            'site': 'US', 'job_type': 'category_trend',
+            'indicator': 'SalesCount', 'attempt': 2,
+        },
+    ))
+
+    assert payload['data'][0]['value'] == 12
+    records = list(audit_dir.glob('exchange-*.json'))
+    assert len(records) == 1
+    record = json.loads(records[0].read_text(encoding='utf-8'))
+    assert record['tool'] == 'category_trend'
+    assert record['request_arguments']['node_id'] == '123'
+    assert record['execution_context']['run_id'] == 'run-1'
+    assert record['execution_context']['attempt'] == 2
+    assert record['raw_payload']['data'][0]['api_key'] == '[redacted]'
+    rendered = records[0].read_text(encoding='utf-8')
+    for secret in ('temporary-secret', 'field-secret', 'prefixed-field-secret',
+                   'query-secret', 'url-token'):
+        assert secret not in rendered
+
+
+def test_sorftime_exchange_audit_records_soft_timeout_error_redacted(tmp_path, monkeypatch):
+    audit_dir = tmp_path / 'exchanges'
+    monkeypatch.setenv('XLJ_SORFTIME_EXCHANGE_DIR', str(audit_dir))
+
+    async def timeout_transport(name, arguments):
+        raise RuntimeError(
+            'Soft timeout at https://mcp.example.test/?key=temporary-secret'
+        )
+
+    client = SorftimeClient(
+        'https://mcp.example.test/mcp', 'temporary-secret', transport=timeout_transport,
+    )
+    with pytest.raises(RuntimeError, match='Soft timeout'):
+        asyncio.run(client.call(
+            'category_tree', {'amz_site': 'US', 'node_id': '123'},
+            audit_context={'run_id': 'run-2', 'node_id': '123', 'attempt': 1},
+        ))
+
+    records = list(audit_dir.glob('exchange-*.json'))
+    assert len(records) == 1
+    record = json.loads(records[0].read_text(encoding='utf-8'))
+    assert record['status'] == 'failed'
+    assert 'Soft timeout' in record['error_redacted']
+    assert 'temporary-secret' not in records[0].read_text(encoding='utf-8')
 
 
 def test_sorftime_rejects_payload_returned_after_timeout_was_suppressed(monkeypatch):
@@ -627,7 +695,7 @@ def test_pause_then_immediate_resume_waits_for_ingest_and_preserves_lease(xlj_ho
     release = threading.Event()
 
     class BlockingSorftime(FakeSorftime):
-        async def call(self, name, arguments):
+        async def call(self, name, arguments, *, audit_context=None):
             self.calls.append((name, arguments))
             started.set()
             assert release.wait(5)
@@ -687,7 +755,7 @@ def test_batch_progress_does_not_double_count_failed_requests(xlj_home, monkeypa
     monkeypatch.setattr(service, '_schedule', lambda _: None)
     service._STOP.clear()
     class FailingSorftime(FakeSorftime):
-        async def call(self, name, arguments):
+        async def call(self, name, arguments, *, audit_context=None):
             self.calls.append((name, arguments))
             raise RuntimeError('recorded offline failure')
 
@@ -724,7 +792,7 @@ def test_pause_ingests_completed_batch_results_and_releases_unstarted_jobs(xlj_h
         months.append(f'{year:04d}-{month + 1:02d}')
 
     class BatchSorftime(FakeSorftime):
-        async def call(self, name, arguments):
+        async def call(self, name, arguments, *, audit_context=None):
             self.calls.append((name, arguments))
             if name == 'category_tree':
                 return {'data': [
@@ -766,7 +834,7 @@ def test_pause_on_last_batch_still_generates_final_report(xlj_home, monkeypatch)
     release = threading.Event()
 
     class BlockingLeafSorftime(FakeSorftime):
-        async def call(self, name, arguments):
+        async def call(self, name, arguments, *, audit_context=None):
             self.calls.append((name, arguments))
             started.set()
             assert release.wait(5)
