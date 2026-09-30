@@ -79,6 +79,113 @@ def test_category_tree_uses_sorftime_tool_contract():
     assert client.calls == [('category_tree', {'amz_site': 'US', 'node_id': '12345'})]
 
 
+def test_tree_no_data_context_requires_same_run_parent_and_completed_trends(xlj_home, monkeypatch):
+    import importlib
+    import uuid
+
+    run_id = str(uuid.uuid4())
+    workspace = service._workspace(run_id)
+    engine = service._engine()
+    engine.create_run(
+        str(workspace), 'US', '100', 'Root', run_id=run_id,
+    )
+    db_module = importlib.import_module(
+        '.vendor.xlj_core.db', package='backend.xunlongjue',
+    )
+    conn = db_module.connect(str(workspace))
+    try:
+        now = db_module.utc_now()
+        conn.execute(
+            "INSERT INTO nodes(run_id,node_id,path,level,state,result,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (run_id, '200', 'Root/Child', 2, 'SUSPENDED', 'MCP_OR_DATA_FAILED', now, now),
+        )
+        conn.execute(
+            "INSERT INTO edges(run_id,parent_id,child_id,child_name,created_at) VALUES(?,?,?,?,?)",
+            (run_id, '100', '200', 'Child', now),
+        )
+        for indicator in ('SalesCount', 'AvgPrice'):
+            conn.execute(
+                "INSERT INTO jobs(job_id,run_id,node_id,job_type,indicator,state,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (f'{indicator}-job', run_id, '200', 'category_trend', indicator,
+                 'SUCCEEDED', now, now),
+            )
+        conn.execute(
+            "INSERT INTO jobs(job_id,run_id,node_id,job_type,indicator,state,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            ('tree-job', run_id, '200', 'category_tree', '', 'LEASED', now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    context = service._tree_no_data_context(run_id, {
+        'job_id': 'tree-job', 'node_id': '200',
+    })
+    assert context == {
+        'is_root': False,
+        'node_known': True,
+        'parent_edge_found': True,
+        'tree_job_leased': True,
+        'successful_trend_count': 2,
+    }
+    assert service._tree_no_data_context(run_id, {
+        'job_id': 'tree-job', 'node_id': '100',
+    })['is_root'] is True
+    orphan_run_id = str(uuid.uuid4())
+    orphan_context = service._tree_no_data_context(orphan_run_id, {
+        'job_id': 'tree-job', 'node_id': '200',
+    })
+    assert orphan_context['is_root'] is None
+    from backend.xunlongjue.sorftime import _no_data_tree_is_eligible
+    assert not _no_data_tree_is_eligible('category_tree', orphan_context)
+
+    # Exercise service context -> real SorftimeClient parser -> wire audit as
+    # one path; a fake MCP transport keeps this fully offline.
+    from backend.xunlongjue.sorftime import SorftimeClient, _LiveCallResult
+
+    audit_dir = xlj_home / 'integration-exchanges'
+    monkeypatch.setenv('XLJ_SORFTIME_EXCHANGE_DIR', str(audit_dir))
+
+    async def transport(name, arguments):
+        result = SimpleNamespace(
+            isError=False,
+            content=[SimpleNamespace(text='No data available.')],
+            structuredContent=None,
+        )
+        return _LiveCallResult(result, {
+            'is_error': False,
+            'raw_response_text': 'No data available.',
+            'http_responses': [{'method': 'POST', 'status_code': 200}],
+        })
+
+    client = SorftimeClient(
+        'https://mcp.example.test/mcp', 'adapter-test-secret', transport=transport,
+    )
+    job = {
+        'type': 'category_tree', 'site': 'US', 'node_id': '200',
+        'job_id': 'tree-job', 'attempt': 1,
+    }
+    assert service._call_for_job(client, job, run_id) == {'data': []}
+
+    with pytest.raises(RuntimeError, match='child structure is unconfirmed'):
+        service._call_for_job(client, {
+            **job, 'job_id': 'orphan-tree-job',
+        }, orphan_run_id)
+
+    records = [json.loads(path.read_text(encoding='utf-8'))
+               for path in sorted(audit_dir.glob('exchange-*.json'))]
+    assert [record['status'] for record in records] == ['success', 'failed']
+    accepted_wire = records[0]['wire_response']
+    assert accepted_wire['parse_stage'] == 'no_data_sentinel_as_empty_child_array'
+    assert accepted_wire['official_sorftime_semantics_confirmed'] is False
+    assert accepted_wire['http_responses'][0]['status_code'] == 200
+    rejected_wire = records[1]['wire_response']
+    assert rejected_wire['parse_stage'] == 'no_data_sentinel_unconfirmed'
+    assert 'adapter-test-secret' not in json.dumps(records, ensure_ascii=False)
+
+
 def test_sorftime_trend_envelope_keeps_latest_24_complete_consecutive_points(monkeypatch):
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
@@ -183,14 +290,59 @@ def test_sorftime_decodes_the_installed_mcp_result_model():
 
 
 def test_sorftime_does_not_fall_back_to_structured_content_for_non_json_text():
-    from backend.xunlongjue.sorftime import _decode
+    from backend.xunlongjue.sorftime import SorftimeDecodeError, _decode
     result = SimpleNamespace(
         isError=False,
         content=[SimpleNamespace(text='No data available.')],
         structuredContent={'data': []},
     )
-    with pytest.raises(ValueError, match='非 JSON 文本'):
+    with pytest.raises(SorftimeDecodeError, match='child structure is unconfirmed') as error:
         _decode(result)
+    assert error.value.stage == 'no_data_sentinel_unconfirmed'
+    assert error.value.raw_text == 'No data available.'
+
+    with pytest.raises(SorftimeDecodeError, match='category_trend returned no data') as trend_error:
+        _decode(result, tool_name='category_trend')
+    assert trend_error.value.stage == 'no_data_response_unconfirmed'
+
+
+def test_sorftime_no_data_sentinel_maps_only_after_verified_child_context():
+    from backend.xunlongjue.sorftime import (
+        _decode, _no_data_tree_is_eligible,
+    )
+
+    result = SimpleNamespace(
+        isError=False,
+        content=[SimpleNamespace(text='No data available.')],
+        structuredContent=None,
+    )
+    verified = {
+        'is_root': False,
+        'node_known': True,
+        'parent_edge_found': True,
+        'tree_job_leased': True,
+        'successful_trend_count': 2,
+    }
+    assert _no_data_tree_is_eligible('category_tree', verified)
+    wire = {'raw_response_text': 'No data available.'}
+    assert _decode(
+        result, tool_name='category_tree', allow_no_data_as_empty=True,
+        wire_response=wire,
+    ) == []
+    assert wire['parse_stage'] == 'no_data_sentinel_as_empty_child_array'
+    assert wire['normalization'] == 'exact_text_to_empty_direct_children_for_verified_non_root_node'
+
+    for changes in (
+        {'is_root': True},
+        {'node_known': False},
+        {'parent_edge_found': False},
+        {'tree_job_leased': False},
+        {'successful_trend_count': 1},
+    ):
+        invalid = {**verified, **changes}
+        assert not _no_data_tree_is_eligible('category_tree', invalid)
+
+    assert not _no_data_tree_is_eligible('category_trend', verified)
 
 
 def test_sorftime_preserves_plain_text_timeout_diagnostic_without_secrets():
@@ -251,7 +403,11 @@ def test_sorftime_exchange_audit_is_opt_in_contextual_and_redacted(tmp_path, mon
                           'description': 'contains temporary-secret',
                           'api_key': 'field-secret',
                           'x_api_key': 'prefixed-field-secret',
-                          'source': 'https://example.test/?key=query-secret&access_token=url-token'}]}
+                          'cookie': 'session-cookie-secret',
+                          'cookie_header': 'session-header-secret',
+                          'Authorization_Header': 'Bearer auth-header-secret',
+                          'month_key': '2026-01',
+                          'source': 'https://user:pass@example.test/?key=query-secret&access_token=url-token'}]}
 
     client = SorftimeClient(
         'https://mcp.example.test/mcp', 'temporary-secret', transport=fake_transport,
@@ -263,6 +419,7 @@ def test_sorftime_exchange_audit_is_opt_in_contextual_and_redacted(tmp_path, mon
             'run_id': 'run-1', 'job_id': 'job-1', 'node_id': '123',
             'site': 'US', 'job_type': 'category_trend',
             'indicator': 'SalesCount', 'attempt': 2,
+            'cookie': 'context-cookie-secret',
         },
     ))
 
@@ -274,11 +431,94 @@ def test_sorftime_exchange_audit_is_opt_in_contextual_and_redacted(tmp_path, mon
     assert record['request_arguments']['node_id'] == '123'
     assert record['execution_context']['run_id'] == 'run-1'
     assert record['execution_context']['attempt'] == 2
+    assert record['execution_context']['cookie'] == '[redacted]'
     assert record['raw_payload']['data'][0]['api_key'] == '[redacted]'
+    assert record['raw_payload']['data'][0]['month_key'] == '[redacted]'
+    assert record['raw_payload']['data'][0]['source'] == '[服务地址已隐藏]'
     rendered = records[0].read_text(encoding='utf-8')
     for secret in ('temporary-secret', 'field-secret', 'prefixed-field-secret',
-                   'query-secret', 'url-token'):
+                   'query-secret', 'url-token', 'session-cookie-secret',
+                   'context-cookie-secret', 'session-header-secret',
+                   'auth-header-secret', 'user:pass', 'example.test'):
         assert secret not in rendered
+
+
+def test_sorftime_exchange_audit_preserves_redacted_wire_response(tmp_path, monkeypatch):
+    from backend.xunlongjue.sorftime import _record_exchange
+
+    audit_dir = tmp_path / 'exchanges'
+    monkeypatch.setenv('XLJ_SORFTIME_EXCHANGE_DIR', str(audit_dir))
+    wire = {
+        'is_error': False,
+        'raw_response_text': '{"api_key":"wire-secret","value":7}',
+        'http_responses': [{'method': 'POST', 'status_code': 200,
+                            'content_type': 'text/event-stream'}],
+    }
+    _record_exchange(
+        'category_tree', {'amz_site': 'US', 'node_id': '123'}, status='failed',
+        payload=None, error='unconfirmed tree', elapsed_seconds=1.0,
+        api_key='wire-secret', context={'run_id': 'run-1'},
+        started_at='2026-09-29T00:00:00Z', wire_response=wire,
+    )
+    records = list(audit_dir.glob('exchange-*.json'))
+    assert len(records) == 1
+    record = json.loads(records[0].read_text(encoding='utf-8'))
+    assert record['wire_response']['raw_response_text'] == '{"api_key": "[redacted]", "value": 7}'
+    assert record['wire_response']['http_responses'][0]['status_code'] == 200
+    assert 'wire-secret' not in records[0].read_text(encoding='utf-8')
+
+
+def test_sorftime_exchange_keeps_http_status_when_transport_fails(tmp_path, monkeypatch):
+    from backend.xunlongjue import sorftime
+
+    audit_dir = tmp_path / 'exchanges'
+    monkeypatch.setenv('XLJ_SORFTIME_EXCHANGE_DIR', str(audit_dir))
+    client = SorftimeClient('https://mcp.example.test/mcp', 'fake-key')
+
+    async def fail_after_http_response(name, arguments):
+        response_audit = sorftime._LIVE_RESPONSE_AUDIT.get()
+        response_audit['http_responses'] = []
+        response_audit['http_responses'].append({
+            'method': 'POST', 'status_code': 503, 'content_type': 'application/json',
+        })
+        raise OSError('upstream returned 503')
+
+    client._call_live = fail_after_http_response
+    with pytest.raises(RuntimeError, match='503'):
+        asyncio.run(client.call(
+            'category_tree', {'amz_site': 'US', 'node_id': '123'},
+        ))
+
+    record = json.loads(next(audit_dir.glob('exchange-*.json')).read_text(encoding='utf-8'))
+    assert record['status'] == 'failed'
+    assert record['wire_response']['capture_stage'] == 'mcp_transport_failed_after_http_response'
+    assert record['wire_response']['http_responses'][0]['status_code'] == 503
+
+
+def test_sorftime_exchange_records_explicit_cancellation(tmp_path, monkeypatch):
+    audit_dir = tmp_path / 'exchanges'
+    monkeypatch.setenv('XLJ_SORFTIME_EXCHANGE_DIR', str(audit_dir))
+
+    async def blocked_transport(name, arguments):
+        await asyncio.Future()
+
+    client = SorftimeClient(
+        'https://mcp.example.test/mcp', 'fake-key', transport=blocked_transport,
+    )
+
+    async def cancel_call():
+        task = asyncio.create_task(client.call(
+            'category_tree', {'amz_site': 'US', 'node_id': '123'},
+        ))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_call())
+    record = json.loads(next(audit_dir.glob('exchange-*.json')).read_text(encoding='utf-8'))
+    assert record['status'] == 'cancelled'
+    assert record['error_redacted'] == 'Sorftime MCP 调用已取消'
 
 
 def test_sorftime_exchange_audit_records_soft_timeout_error_redacted(tmp_path, monkeypatch):
@@ -305,6 +545,87 @@ def test_sorftime_exchange_audit_records_soft_timeout_error_redacted(tmp_path, m
     assert record['status'] == 'failed'
     assert 'Soft timeout' in record['error_redacted']
     assert 'temporary-secret' not in records[0].read_text(encoding='utf-8')
+
+
+def test_sorftime_live_http_hook_captures_plain_text_soft_timeout(tmp_path, monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from backend.xunlongjue import sorftime
+    import mcp.shared._httpx_utils as httpx_utils
+
+    audit_dir = tmp_path / 'exchanges'
+    monkeypatch.setenv('XLJ_SORFTIME_EXCHANGE_DIR', str(audit_dir))
+
+    class FakeHTTPClient:
+        event_hooks = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    @asynccontextmanager
+    async def fake_streamable_http_client(_endpoint, *, http_client, terminate_on_close):
+        assert terminate_on_close is False
+        yield object(), object()
+
+    class FakeSession:
+        def __init__(self, _read, _write):
+            self.http_client = fake_http_client
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def initialize(self):
+            return None
+
+        async def call_tool(self, _name, *, arguments):
+            assert arguments == {'amz_site': 'US', 'node_id': '123'}
+            response = SimpleNamespace(
+                request=SimpleNamespace(method='POST'),
+                status_code=200,
+                headers={'content-type': 'text/event-stream'},
+            )
+            await self.http_client.event_hooks['response'][0](response)
+            return SimpleNamespace(
+                isError=False,
+                content=[SimpleNamespace(
+                    text='Soft timeout while reading https://mcp.example.test/?key=temporary-secret',
+                )],
+                structuredContent=None,
+            )
+
+    fake_http_client = FakeHTTPClient()
+    monkeypatch.setattr(httpx_utils, 'create_mcp_http_client', lambda: fake_http_client)
+    monkeypatch.setattr(sorftime, 'streamable_http_client', fake_streamable_http_client)
+    monkeypatch.setattr(sorftime, 'ClientSession', FakeSession)
+    client = SorftimeClient('https://mcp.example.test/mcp', 'temporary-secret')
+
+    with pytest.raises(RuntimeError, match='Soft timeout') as error:
+        asyncio.run(client.call(
+            'category_tree', {'amz_site': 'US', 'node_id': '123'},
+            audit_context={'run_id': 'run-live-hook', 'attempt': 1},
+        ))
+
+    assert 'temporary-secret' not in str(error.value)
+    record_path = next(audit_dir.glob('exchange-*.json'))
+    rendered = record_path.read_text(encoding='utf-8')
+    record = json.loads(rendered)
+    assert record['status'] == 'failed'
+    assert record['wire_response']['parse_stage'] == 'parse_tool_text_json'
+    assert record['wire_response']['http_responses'] == [{
+        'sequence': 1,
+        'method': 'POST',
+        'status_code': 200,
+        'content_type': 'text/event-stream',
+    }]
+    assert 'Soft timeout' in record['error_redacted']
+    assert 'temporary-secret' not in rendered
 
 
 def test_sorftime_rejects_payload_returned_after_timeout_was_suppressed(monkeypatch):

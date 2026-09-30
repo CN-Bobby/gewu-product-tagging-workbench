@@ -651,6 +651,61 @@ class NodeCapReached(ValueError):
     """The node cap stopped expansion without fabricating a leaf or opportunity."""
 
 
+def _tree_no_data_context(run_id: str, job: dict) -> dict:
+    """Prove that an empty-tree sentinel can only close an eligible child job."""
+    node_id = str(job.get('node_id') or '')
+    job_id = str(job.get('job_id') or '')
+    try:
+        db_module = importlib.import_module('.vendor.xlj_core.db', package=__package__)
+        conn = db_module.connect(str(_workspace(run_id)))
+        try:
+            run = conn.execute(
+                'SELECT root_node_id FROM runs WHERE run_id=?', (run_id,),
+            ).fetchone()
+            node = conn.execute(
+                'SELECT 1 FROM nodes WHERE run_id=? AND node_id=?', (run_id, node_id),
+            ).fetchone()
+            parent = conn.execute(
+                'SELECT 1 FROM edges WHERE run_id=? AND child_id=? LIMIT 1',
+                (run_id, node_id),
+            ).fetchone()
+            tree_job = conn.execute(
+                "SELECT 1 FROM jobs WHERE run_id=? AND job_id=? AND node_id=? "
+                "AND job_type='category_tree' AND state='LEASED'",
+                (run_id, job_id, node_id),
+            ).fetchone()
+            trends = conn.execute(
+                "SELECT indicator,state FROM jobs WHERE run_id=? AND node_id=? "
+                "AND job_type='category_trend'",
+                (run_id, node_id),
+            ).fetchall()
+            successful_indicators = {
+                str(row['indicator']) for row in trends if row['state'] == 'SUCCEEDED'
+            }
+            return {
+                # Unknown run metadata must never be treated as proof of a
+                # non-root node; the Sorftime no-data fallback fails closed.
+                'is_root': None if run is None else str(run['root_node_id']) == node_id,
+                'node_known': bool(node),
+                'parent_edge_found': bool(parent),
+                'tree_job_leased': bool(tree_job),
+                'successful_trend_count': len(successful_indicators.intersection(
+                    {'SalesCount', 'AvgPrice'},
+                )),
+            }
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 - fail closed, preserve useful type only.
+        return {
+            'is_root': None,
+            'node_known': False,
+            'parent_edge_found': False,
+            'tree_job_leased': False,
+            'successful_trend_count': 0,
+            'context_read_error_type': type(exc).__name__,
+        }
+
+
 def _call_for_job(client, job: dict, run_id: str = '') -> dict:
     kind = job.get('type')
     if kind not in ('category_tree', 'category_trend'):
@@ -660,7 +715,7 @@ def _call_for_job(client, job: dict, run_id: str = '') -> dict:
                  'node_id': str(job.get('node_id') or '')}
     if kind == 'category_trend':
         arguments['trend_index'] = str(job.get('indicator') or '')
-    payload = call_sync(client, kind, arguments, audit_context={
+    audit_context = {
         'run_id': run_id,
         'job_id': str(job.get('job_id') or ''),
         'node_id': str(job.get('node_id') or ''),
@@ -668,7 +723,10 @@ def _call_for_job(client, job: dict, run_id: str = '') -> dict:
         'job_type': kind,
         'indicator': str(job.get('indicator') or ''),
         'attempt': int(job.get('attempt') or 0),
-    })
+    }
+    if kind == 'category_tree' and run_id:
+        audit_context.update(_tree_no_data_context(run_id, job))
+    payload = call_sync(client, kind, arguments, audit_context=audit_context)
     if kind == 'category_trend':
         return _normalize_sorftime_trend(payload, str(job.get('indicator') or ''))
     return payload
