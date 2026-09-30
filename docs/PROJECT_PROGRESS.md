@@ -9,18 +9,20 @@
 
 ## 2026-09-30 寻龙诀完整实测续验
 
-- **状态：工程与报告闭环通过；4 个机会结论附语义条件。** 未修改的寻龙诀 v4.2.0-beta.3 原版基准保持有效；工作台最新源码从真实页面创建美国站 `US` / Food Containers / Node `21551230011` 任务并完成 `ALL_DONE`。完整记录见 [`LOOP_STATUS.md`](../LOOP_STATUS.md) 和 `builds/xlj-parity/US-21551230011-20260929/comparison-summary-final-v3.json`。
+- **状态：本轮有一条新工作台扫描闭环通过、一条独立源代码对照验收通过，另有一条长跑部分完成；4 个机会结论附语义条件。** 未修改的寻龙诀 v4.2.0-beta.3 原版基准保持有效。完整记录见 [`LOOP_STATUS.md`](../LOOP_STATUS.md) 和 `builds/xlj-parity/US-21551230011-20260929/comparison-summary-final-v3.json`。
 - 工作台 Run `fab9531e-5364-4d18-9916-b60d770e946c`：7 个节点、6 条边、4 个机会、2 个淘汰、17 次 Sorftime 调用；`completion_ok=true`。HTML 报告及 SQLite 快照在 `builds/xlj-parity/US-21551230011-20260929/workbench-live-final-runtime-20260930/`。
+- 新候选 Run `d87a1136-7d0e-4cf0-bd4d-a06407a0cd4c`（US / Irons & Steamers / Node `510240`）由隔离工作台创建并完整完成：10 个节点、24/24 jobs 成功、4 个机会、3 个淘汰、1 个体量剪枝、0 个暂停；`ALL_DONE` 且 `completion_ok=true`。本轮没有调用原版源码，故这是工作台闭环验证，不是双跑对照。最终 HTML 报告 API 返回 HTTP 200，正文绑定 Run ID；桌面副本 35,940 字节，SHA-256 `33211F3F58125F51DE5365205E9F97CC6CB94CB4FC22373B988037BDCFC64D0C`。
+- US / Kitchen & Dining / Node `284507` 的 Run `2904856e-3882-4e7c-ad90-8d38e997db3b` 是部分完成记录：288 个节点、126 个机会、63 个淘汰、51 个体量剪枝、2 个短历史、4 个暂停；恢复后 4 个数据质量异常仍重复出现，最终 `PARTIAL_DONE`、`completion_ok=false`。它保留为部分证据，不计作验收成功。
 - 原版 29 条记录及工作台 17 条实采记录分别经最终工作台源码离线回放；都到 `ALL_DONE`，没有缺少、错参或未消费请求；runs/nodes/edges/observations/decisions/jobs 六张表差异均为 0。v3 比较器的全部工程门禁通过，原版报告契约通过。
 - Amazon US 根类目页与 6 个子类目页均为 HTTP 200；根页 6 个子 Node ID 与 Sorftime 根树完全匹配，4 个机会页没有显示额外的下级类目链接。Sorftime 实时 `tools/list` 说明 `category_tree` 查询指定节点的子类目，但没有定义纯文本 `No data available.` 必然等于空树。故 Amazon 页面提供独立佐证，机会结论仍是条件性解释。
 - 软超时专项 6 项通过，包含 MCP HTTP 响应钩子、纯文本软超时解析、错误阶段及状态记录和脱敏；本轮真实调用没有遇到软超时。全后端 788 passed / 2 skipped，前端 128 passed，生产构建通过。隔离工作台留在 `http://127.0.0.1:8901/#/xunlongjue`，绑定源码 SHA `2ec5e6d82e2b56164c3693c44edd4c213d840b82322c1eb13199f633793e222a`、运行时 `dirty=true`；未改客户版本、未推送。
 
 ## 2026-09-29 Amazon 评论模块本地检查点
 
-- **状态：已实现待验收。** 评论模块已接入工作台主导航，临时页面开放试用。代码、接口和数据契约见 [`docs/AMAZON_REVIEWS.md`](AMAZON_REVIEWS.md)；本记录与模块代码包含在本地检查点提交 `feat(amazon-reviews): add review collection workbench module` 中。父提交为 `4752a72627f6ea1ff410aeafe57d204660220bc6`；检查点后分支预期本地领先 15 个提交。完整检查点 SHA 可由 `git log -1` 核实。本次不推送、不变更 `0.5.0-beta.7`。
+- **状态：功能实现及记录内的自动化、美国站真实接口验证已完成；临时页面服务当前离线。** 评论模块已接入工作台主导航。代码、接口和数据契约见 [`docs/AMAZON_REVIEWS.md`](AMAZON_REVIEWS.md)；本记录与模块代码包含在本地检查点提交 `feat(amazon-reviews): add review collection workbench module` 中。当前分支 HEAD 已包含该提交及后续开发提交；不推送、不变更 `0.5.0-beta.7`。
 - 自动化既有结果：评论模块 9 项通过；全后端 782 项通过、2 项跳过；前端 128 项通过、构建通过。本次保存进度时没有重跑测试。
 - 美国站真实验证：Node `17269957011`，ASIN `B0D5TQJXRN`、`B0CRGV3D93`；4 次评论调用返回 256 条原始记录，去重后 128 条，标题和正文译文覆盖 128/128；工作簿含 3 张表、128 条评论行和 14 个源字段。恢复验证额外评论调用为 0。隔离报告位于 `builds/sorftime-reviews-live/20260929T115704Z-86ac57ef/`。
-- 当前临时试用页：`http://127.0.0.1:8899/#/amazon-reviews`。本次健康检查报告 `status=ok`、`dirty=true`、构建 ID `0.5.0-beta.7+4752a72627f6`，隔离数据目录为 `builds/amazon-reviews-temp/run-76416cb5/workbench_data`。服务继续运行；该地址依赖本地进程，提交不会保存运行进程。`builds` 下测试数据被忽略，不纳入 Git。源码与进度记录不包含 API 凭据。
+- 临时试用页地址仍是 `http://127.0.0.1:8899/#/amazon-reviews`。**9 月 30 日本次探测该端口连接被拒绝，后端没有运行**；浏览器保留的 URL 不代表页面服务在线。隔离数据目录 `builds/amazon-reviews-temp/run-76416cb5/workbench_data` 仍存在，需要重新启动对应临时实例后才能继续试用。`builds` 下测试数据被忽略，不纳入 Git。源码与进度记录不包含 API 凭据。
 - 寻龙诀及其它并行工作区改动仍保留在本地，没有纳入评论模块提交。接手时重新检查 `git status -sb`，不要假定工作区干净。
 
 ## 2026-09-27 寻龙诀原版与工作台双跑结果
@@ -32,19 +34,20 @@
 - 验收目录含脱敏调用记录、独立数据库和报告、逐节点比较、请求差异、文件哈希及验证结果。未触碰 8896，隔离端口 8897；未再发请求、未递增客户版本、未推送。
 - 代码验证：后端 760 passed / 2 skipped；前端 124 passed、构建通过。完整手工浏览器按钮验收未完成，因本轮浏览器控制通道不可用，实际任务通过隔离工作台 API 的相同输入契约创建。
 
-## 1. 一分钟接手（2026-09-29）
+## 1. 一分钟接手（2026-09-30）
 
-- 当前分支：`feature/0.5.0-delivery`；评论模块检查点的父提交为 `4752a72627f6ea1ff410aeafe57d204660220bc6`，本地提交后预期领先上游 15 个、落后 0 个。最新完整 SHA 以 `git log -1` 为准；并行工作区状态以实时 `git status -sb` 为准。
+- 当前分支：`feature/0.5.0-delivery`；本次文档保存前 HEAD 为 `cb0e93e116926b4d8404d69767b2e02cba1f346a`，领先上游 17 个、落后 0 个。Amazon 评论模块源码已在本地提交 `38f4e7458760509985219dc8fcef3886a7a2663a`；近期寻龙诀及其验收文档亦已本地提交。本次只新增进度交接提交，不推送。最新 HEAD 与 dirty 状态以实时 `git status -sb`、`git log -1` 为准。
 - `0.5.0-beta.7` 是当前正式交付记录版本：`VERSION.json` 为 `released`；发布台账记录 GitHub prerelease、生产交付、技术验收 PASS、业务语义 sign-off PASS、17/17 人工值未变及可用回退备份。
-- Amazon 评论临时试用实例位于 `http://127.0.0.1:8899/#/amazon-reviews`，使用独立 `builds/amazon-reviews-temp/` 数据目录；不是正式实例。Amazon 评论模块当前为已实现待验收，自动化和美国站端到端结果见上节。
-- 寻龙诀正在另一对话继续修复；本次仅保存 Amazon 评论模块，未验收或提交寻龙诀工作区改动。
-- Amazon Listing 图片采集页已接入工作台，并加入 FIFO 任务组调度，最多同时运行 2 组。当前实现和 UI 已在 8895 开发构建中；自动回归及 3 组竞争、队列补位的专项验收尚未完成。它只抓 Listing 图片，未覆盖独立爬虫项目的 A+ / Brand Story 范围。
-- SellerSprite 关键词调研和寻龙诀 v4 代码都在项目中。关键词调研的真实运行状态需要按当前数据目录复核；寻龙诀 v4 已进入本地提交但未推送，本次未做运行或语义验收。
-- 本进度文档只记录状态，不是新客户候选或发布声明。本次检查点为本地提交，不推送；其它并行文件继续留在工作区。
+- Amazon 评论模块代码、自动化结果和美国站接口实测见上节及 [`docs/AMAZON_REVIEWS.md`](AMAZON_REVIEWS.md)。`8899` 当前拒绝连接；独立测试数据目录保留，重启实例后可继续页面试用。
+- 寻龙诀当前已完成本轮验收记录：Food Containers 有工作台与原版回放对照 PASS；Irons & Steamers 是工作台闭环通过；Kitchen & Dining 284507 保留为部分完成。机会结论仍受 Sorftime 对 `No data available.` 的语义未确认这一条件约束。
+- Amazon Listing 图片采集页已接入工作台，并加入 FIFO 任务组调度，最多同时运行 2 组。8895 本次探测连接被拒绝；自动回归及 3 组竞争、队列补位的专项验收尚未完成。它只抓 Listing 图片，未覆盖独立爬虫项目的 A+ / Brand Story 范围。
+- SellerSprite 关键词调研和寻龙诀 v4 代码都在项目中。关键词调研的真实运行状态需要按当前数据目录复核。
+- 本次探测时工作区已有其他改动：`docs/WINDOWS_BUILD.md`、`frontend/src/keywordState.js`、`frontend/src/style.css`、`scripts/build-test.ps1`、`scripts/dev-launcher.ps1` 和未跟踪的 `docs/CODEX_HANDOFF.md`。这些不属于本次进度保存，应继续保留在工作区。
+- 本进度文档只记录状态，不是新客户候选或发布声明。本次保存为本地提交，不推送，也不递增版本号。
 
 ## 2. 历史 Git 与工作区快照（2026-09-27）
 
-> 以下快照和当时的提交范围记录于 2026-09-27，现已由上面的 2026-09-29 Amazon 评论检查点补充；它们不代表当前 Git 状态。
+> 以下快照和当时的提交范围记录于 2026-09-27，现已由上方 2026-09-29 Amazon 评论模块和 2026-09-30 寻龙诀验收快照补充；它们不代表当前 Git 状态。
 
 ### 快照基线
 
@@ -102,9 +105,9 @@ Git 状态随新提交和后续工作改变；新对话必须重新运行 `git s
 
 ### C. 寻龙诀 v4（当前源码实测通过；机会语义附条件）
 
-- 历史 `US-17242866011-20260927` 运行仍为部分完成，不能用来代表本次结果。新的完整双跑与回放证据见上方 2026-09-30 章节。
+- 历史 `US-17242866011-20260927` 运行仍为部分完成，不能用来代表本次结果。新证据见上方 2026-09-30 章节及 [`LOOP_STATUS.md`](../LOOP_STATUS.md)：`21551230011` 原版/工作台回放对照通过，`510240` 工作台扫描闭环通过，`284507` 部分完成且 `completion_ok=false`。
 - 本次运行过程中 `No data available.` 被适配层仅在已验证的非根节点、已完成量价趋势及有效树任务上下文下映射为空直接子类目；错误上下文保持失败，不会成为机会。Amazon 当前类目页面支持末端位置判断，但 Sorftime 官方尚未确认此纯文本响应与空子类目等价。
-- 运行和验收都使用隔离存储，不递增客户版本号、不推送。后续如需把条件性机会语义升级为官方确定，需要 Sorftime 明确书面说明响应约定；不要重复扫描同一节点来代替语义确认。
+- 运行和验收都使用隔离存储，不递增客户版本号、不推送。`510240` 是工作台闭环验证，没有原版对照；`284507` 不作为成功验收。后续如需把条件性机会语义升级为官方确定，需要 Sorftime 明确书面说明响应约定；不要重复扫描同一节点来代替语义确认。
 
 ### D. 核心商品打标工作台
 
@@ -112,13 +115,13 @@ Git 状态随新提交和后续工作改变；新对话必须重新运行 `git s
 - beta.7 验收文件记录当时后端 596 项通过及 Phase A/B 真实模型和安装/升级/回退验证。那是绑定旧提交的历史证据，不是当前脏工作区的完整回归结果。
 - `docs/CODEX_HANDOFF.md`、较早的 `PROJECT_HANDOFF.md` 正文、关键词交接文档中含旧 HEAD、分支 ahead 数、测试数或 staged 状态。它们保留作历史背景；若与本文件或实时 Git/health 冲突，以根目录 `AGENTS.md` 的核验流程和本次最新实时证据为准。
 
-## 5. 本机运行状态（本次探测）
+## 5. 本机运行状态（2026-09-30 本次探测）
 
 | 地址 | 本次结果 | 可得结论 |
 |---|---|---|
-| `http://127.0.0.1:8895/api/health` | `status=ok`；build `0.5.0-beta.7+28412b4fec54`；commit `28412b4…`；`dirty=true`；`build_mode=dev`；`storage=K:\GeWuTest\Data`；schema 8 | 绿色隔离测试实例正在响应；它基于 beta.7 版本号的开发构建，不是干净 release 包。 |
-| `http://127.0.0.1:8901/api/health` | `status=ok`；build `0.5.0-beta.7+38f4e7458760`；commit `38f4e745…`；`dirty=true`；`storage=%TEMP%\GeWu-XLJ-US-21551230011-20260929` | 寻龙诀隔离验收实例，已完成本次真实扫描，进程保留供手工查看。实际扫描源码 SHA 与页面运行记录一致。 |
-| `http://127.0.0.1:8895/api/amazon-scraper/jobs` | `[]` | 测试数据里当前没有已保存的 scraper job。 |
+| `http://127.0.0.1:8899/api/health` | TCP 连接被拒绝 | Amazon 评论临时页后端当前未运行；`builds/amazon-reviews-temp/run-76416cb5/workbench_data` 数据目录仍存在。 |
+| `http://127.0.0.1:8901/api/health` | `status=ok`；build `0.5.0-beta.7+38f4e7458760`；commit `38f4e745…`；`dirty=true`；`storage=C:\Users\Administrator\AppData\Local\Temp\GeWu-XLJ-US-21551230011-20260929` | 寻龙诀隔离验收实例仍在响应，绑定旧的 21551230011 数据目录；这不代表新候选 510240 共用该目录。 |
+| `http://127.0.0.1:8895/api/health` | TCP 连接被拒绝 | Listing 图片采集开发实例当前未运行；历史任务清单与 9/26 探测结果不代表本次运行状态。 |
 | `http://127.0.0.1:8765/api/health` | TCP 连接被拒绝 | 本次没有取得生产健康信息；不能据此推断正式安装或生产数据状态。发布台账中的 beta.7 交付记录仍是历史确认状态。 |
 
 `K:\Bobbytagging\Data` 是正式数据目录，继续只读保护。任何后续测试、升级或取数须使用 `K:\GeWuTest\Data` 或另一个明确隔离副本，不要把生产目录作为测试数据源。
