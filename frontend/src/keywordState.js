@@ -8,7 +8,7 @@
 // The run projection is driven by the event stream and never by a polling loop: the snapshot from
 // GET /runs/{id} is authoritative, and every streamed event is folded in by sequence.
 
-export const PAGE={HOME:'home',TAGGING:'tagging',KEYWORD:'keyword',XUNLONGJUE:'xunlongjue',SETTINGS:'settings'};
+export const PAGE={HOME:'home',TAGGING:'tagging',KEYWORD:'keyword',AMAZON_SCRAPER:'amazon-scraper',AMAZON_VOC:'amazon-voc',XUNLONGJUE:'xunlongjue',SETTINGS:'settings'};
 export const PAGE_HOME=PAGE.HOME;
 
 const ASIN_PATTERN=/^B0[A-Z0-9]{8}$/;

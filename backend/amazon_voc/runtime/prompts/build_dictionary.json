@@ -1,0 +1,9 @@
+{
+  "task": "build_dictionary",
+  "version": "4.0.0",
+  "objective": "基于当前任务全量事件表达生成动态标签词典，统一同义表达并保留边界。",
+  "forbidden": ["使用跨品类固定标签树", "合并对象或结果不同的近义词", "生成无支持事件的标签", "把标签频率当作市场规模"],
+  "input_fields": ["events", "namespaces", "marketplace", "category"],
+  "positive_example": "只有对象、部件、属性与结果一致时，才把不同措辞合并为同一标签。",
+  "negative_example": "仅因都含“紧”就合并“勒出红印”和“盖子拧得紧”。"
+}

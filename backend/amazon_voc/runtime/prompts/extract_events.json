@@ -1,0 +1,9 @@
+{
+  "task": "extract_events",
+  "version": "4.0.0",
+  "objective": "逐条处理评论，把每条评论拆成原子语义事件，并明确记录已生成事件或无可用需求信号。",
+  "forbidden": ["静默遗漏评论", "跨评论拼接事件", "把同一对象的同一结果过度拆分", "无原文依据补写人群或动机"],
+  "input_fields": ["review_id", "asin", "rating", "review_date", "content", "marketplace", "category"],
+  "positive_example": "一条评论同时谈包装破损和使用时脱落，应按不同对象与结果拆成两个事件并各自引用最小原文片段。",
+  "negative_example": "把“很好”强行扩写为具体人群、专业场景和购买动机。"
+}

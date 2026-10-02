@@ -1,0 +1,9 @@
+{
+  "task": "map_dictionary",
+  "version": "4.1.0",
+  "objective": "将每个输入 event.values 中的非空字段值逐条映射到 tag_dictionary 的一个标准标签。若提供 required_mappings，只返回并完整覆盖这些映射键。",
+  "forbidden": ["丢弃输入值", "重复映射同一个 event_id+field_path+raw_value", "一值多标签", "映射到不存在或命名空间不匹配的标签", "为方便映射而改写原始值"],
+  "input_fields": ["events (event_id, values: field_path/raw_value/namespace)", "tag_dictionary", "field_namespace_map", "required_mappings (仅覆盖补漏请求)"],
+  "positive_example": "输入值 {event_id: E1, field_path: experience.pain, raw_value: 起球, namespace: pain} 映射为同一事件、字段和值的一个 tag_id。",
+  "negative_example": "只保存事件级总标签，导致无法回查某个原始字段。"
+}

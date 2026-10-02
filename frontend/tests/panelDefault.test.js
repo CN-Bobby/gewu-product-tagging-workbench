@@ -53,6 +53,7 @@ test('the workbench has home, tagging, keyword, Xunlongjue, and settings routes'
   assert.ok(main.includes("import {KeywordResearch} from './keywordResearch'"),'the page is imported');
   assert.ok(main.includes('routeFromHash'),'deep links resolve from the hash');
   assert.ok(main.includes('PAGE.XUNLONGJUE'),'the Xunlongjue route is accepted');
+  assert.ok(main.includes('PAGE.AMAZON_VOC'),'the Amazon VOC route is accepted');
   assert.ok(main.includes("import {Xunlongjue} from './Xunlongjue'"),'the page is imported');
   assert.ok(main.includes('page===PAGE.XUNLONGJUE?<Xunlongjue'),'the Xunlongjue route renders the module');
   assert.ok(main.includes('page===PAGE.HOME')&&main.includes('page===PAGE.SETTINGS'),'home and settings render independently');
@@ -68,4 +69,32 @@ test('the topbar carries the entry to the keyword page',()=>{
 test('the topbar carries the entry to the Xunlongjue module',()=>{
   assert.ok(main.includes('寻龙诀'),'the entry label is in the topbar');
   assert.match(main,/<button className=\{page===PAGE\.XUNLONGJUE\?'active':''\} onClick=\{\(\)=>navigate\('xunlongjue'\)\}>寻龙诀<\/button>/,'the entry switches to the module');
+});
+
+test('the topbar opens the standalone Amazon VOC page',()=>{
+  assert.ok(main.includes("import {AmazonVOC} from './amazonVoc'"));
+  assert.match(main,/<button className=\{page===PAGE\.AMAZON_VOC\?'active':''\} onClick=\{\(\)=>navigate\('amazon-voc'\)\}>Amazon VOC<\/button>/);
+  assert.ok(main.includes('page===PAGE.AMAZON_VOC?<AmazonVOC api={api} initialRunId={route.runId} initialNotice={vocHandoffNotice} onNoticeConsumed={setVocHandoffNotice}/>'));
+});
+
+test('VOC deep links parse an exact run and pass it into the VOC page',()=>{
+  assert.ok(main.includes("import {parseAmazonVocRoute} from './amazonReviewsState'"));
+  assert.ok(main.includes('amazonVocRoute=parseAmazonVocRoute(location.hash)'));
+  assert.ok(main.includes('onNavigate={(path,message)=>{setVocHandoffNotice(message);navigate(path)}}'));
+  assert.ok(main.includes('initialNotice={vocHandoffNotice} onNoticeConsumed={setVocHandoffNotice}'));
+  const voc=source('amazonVoc.jsx');
+  assert.match(voc,/export function AmazonVOC\(\{api,initialRunId='',initialNotice='',onNoticeConsumed\}\)/);
+  assert.ok(voc.includes('ENDPOINTS.run(initialRunId)'));
+  assert.ok(voc.includes('runRef.current=linkedRun.id;setRunId(linkedRun.id)'));
+  assert.ok(voc.includes("setNotice(initialNotice);onNoticeConsumed?.('')"));
+});
+
+test('Amazon Reviews requires an explicit reviewed-workbook handoff and follows its returned run',()=>{
+  const reviews=source('amazonReviews.jsx');
+  assert.ok(reviews.includes('isAmazonReviewsVocEligible(selected)'));
+  assert.ok(reviews.includes('我已核对 Excel，确认并启动 VOC'));
+  assert.ok(reviews.includes('api(request.path,request.body)'));
+  assert.ok(reviews.includes('setJobs(items=>items.map(job=>job.id===selected.id?{...job,...value.source_job}:job))'));
+  assert.ok(reviews.includes('onNavigate?.(amazonVocRunHash(value.run.id),message)'));
+  assert.ok(reviews.includes('只分析已成功导出的评论，不包含失败 ASIN'));
 });

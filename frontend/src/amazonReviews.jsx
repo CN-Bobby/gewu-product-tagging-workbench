@@ -1,5 +1,6 @@
 import React,{useCallback,useEffect,useMemo,useRef,useState}from'react';
-import{ArrowDownToLine,BookOpenCheck,CheckCircle2,CircleAlert,LoaderCircle,Pause,Play,RefreshCw}from'lucide-react';
+import{ArrowDownToLine,ArrowRight,BookOpenCheck,CheckCircle2,CircleAlert,LoaderCircle,Pause,Play,RefreshCw}from'lucide-react';
+import{amazonVocRunHash,buildAmazonReviewsVocHandoffRequest,canStartAmazonReviewsVoc,isAmazonReviewsVocEligible,isAmazonReviewsVocPartial}from'./amazonReviewsState';
 
 const API='/api/amazon-reviews';
 const SITES=[['US','美国'],['GB','英国'],['DE','德国'],['FR','法国'],['IT','意大利'],['ES','西班牙'],['CA','加拿大'],['JP','日本'],['IN','印度'],['MX','墨西哥'],['BR','巴西'],['AU','澳大利亚'],['AE','阿联酋'],['SA','沙特']];
@@ -37,10 +38,11 @@ function itemTitle(item){return item.product_title||item.title||item.name||''}
 function itemCount(item){return item.review_count??item.reviews_count??item.count??item.total_reviews??null}
 function dateText(value){if(!value)return '—';const date=new Date(typeof value==='number'&&value<10000000000?value*1000:value);return Number.isNaN(date.getTime())?String(value):date.toLocaleString()}
 
-export function AmazonReviews({api}){
+export function AmazonReviews({api,onNavigate}){
  const[settings,setSettings]=useState(null),[mode,setMode]=useState('ranked'),[site,setSite]=useState('US'),[nodeId,setNodeId]=useState(''),[rankLimit,setRankLimit]=useState(50),[asinText,setAsinText]=useState(''),[model,setModel]=useState(''),[credentialId,setCredentialId]=useState('');
  const[jobs,setJobs]=useState([]),[selectedId,setSelectedId]=useState(''),[busy,setBusy]=useState(false),[loading,setLoading]=useState(true),[error,setError]=useState(''),[notice,setNotice]=useState('');
- const selectedRef=useRef('');
+ const[handoffPendingId,setHandoffPendingId]=useState('');
+ const selectedRef=useRef(''),handoffPendingRef=useRef('');
  const modelOptions=useMemo(()=>settingsOptions(settings),[settings]);
  const credentialOptions=useMemo(()=>credentialsFor(settings,model),[settings,model]);
  const sorftimeReady=Boolean(settings?.sorftime?.key_configured);
@@ -77,6 +79,20 @@ export function AmazonReviews({api}){
   catch(e){setError(e.message)}finally{setBusy(false)}
  };
  const act=async action=>{if(!selected)return;setBusy(true);setError('');setNotice('');try{const updated=await api(`${API}/jobs/${encodeURIComponent(selected.id)}/${action}`,{});setJobs(items=>items.map(job=>job.id===updated.id?updated:job));setNotice(action==='cancel'?'已请求取消任务。':'已提交重试。')}catch(e){setError(e.message)}finally{setBusy(false)}};
+ const sendToVoc=async()=>{
+  if(!canStartAmazonReviewsVoc(selected,handoffPendingRef.current))return;
+  handoffPendingRef.current=selected.id;
+  setHandoffPendingId(selected.id);setError('');setNotice('');
+  try{
+   const request=buildAmazonReviewsVocHandoffRequest(selected.id);
+   const value=await api(request.path,request.body);
+   if(!value?.run?.id||!value?.source_job)throw new Error('VOC 服务未返回已创建的任务信息，请刷新后检查任务状态。');
+   setJobs(items=>items.map(job=>job.id===selected.id?{...job,...value.source_job}:job));
+   const message=value.duplicate?'已存在对应的 Amazon VOC 任务，正在打开该任务。':'评论 Excel 已核对并提交，正在打开 Amazon VOC 任务。';
+   setNotice(message);
+   onNavigate?.(amazonVocRunHash(value.run.id),message);
+  }catch(e){setError(e.message)}finally{handoffPendingRef.current='';setHandoffPendingId('')}
+ };
  const progress=selected?jobProgress(selected):{done:0,total:0,pct:0,label:''},items=selected?jobItems(selected):[];
  const status=selected?.status||'';
  const canCancel=!!selected&&['queued','running','collecting','translating','created','pending'].includes(status);
@@ -101,7 +117,8 @@ export function AmazonReviews({api}){
    <section className="ar-card ar-job-card"><div className="ar-card-title"><div><span className="ar-step">02</span><h2>任务进度</h2></div><button className="ar-icon-button" onClick={()=>refreshJobs().catch(e=>setError(e.message))} aria-label="刷新任务列表"><RefreshCw size={15}/></button></div>
     {selected?<><div className="ar-job-summary"><div className="ar-job-line"><span className={'ar-status '+status}>{STATUS[status]||status||'未知'}</span><b>{progress.done}{progress.total?` / ${progress.total}`:''}{progress.total?' 个商品已处理':''}</b><small>{dateText(selected.created_at||selected.created_at_utc)}</small></div>{progress.total>0&&<div className="ar-progress"><i style={{width:`${progress.pct}%`}}/></div>}<div className="ar-job-meta"><span>{MODE_LABEL[selected.mode]||selected.mode||MODE_LABEL[mode]}</span><span>{selected.site||selected.amz_site||site}</span>{progress.label&&<span>{progress.label}</span>}{selected.review_count!=null&&<span>{selected.review_count} 条评论</span>}</div></div>
      {selected.error&&<div className="ar-job-error"><CircleAlert size={15}/>{typeof selected.error==='string'?selected.error:JSON.stringify(selected.error)}</div>}{errors.length>0&&<details className="ar-errors"><summary>失败详情 · {errors.length}</summary>{errors.map((item,index)=><p key={index}>{typeof item==='string'?item:JSON.stringify(item)}</p>)}</details>}
-     <div className="ar-job-actions">{canCancel&&<button onClick={()=>act('cancel')} disabled={busy}><Pause size={14}/>取消任务</button>}{canRetry&&<button onClick={()=>act('retry')} disabled={busy}><RefreshCw size={14}/>重试失败项</button>}{canDownload&&<a href={`${API}/jobs/${encodeURIComponent(selected.id)}/download`}><ArrowDownToLine size={14}/>下载结果</a>}</div>
+      <div className="ar-job-actions">{canCancel&&<button onClick={()=>act('cancel')} disabled={busy}><Pause size={14}/>取消任务</button>}{canRetry&&<button onClick={()=>act('retry')} disabled={busy}><RefreshCw size={14}/>重试失败项</button>}{canDownload&&<a href={`${API}/jobs/${encodeURIComponent(selected.id)}/download`}><ArrowDownToLine size={14}/>下载结果</a>}{isAmazonReviewsVocEligible(selected)&&<button className="ar-primary" onClick={sendToVoc} disabled={busy||handoffPendingId===selected.id}>{handoffPendingId===selected.id?<LoaderCircle className="ar-spin" size={14}/>:<ArrowRight size={14}/>}我已核对 Excel，确认并启动 VOC</button>}</div>
+      {canDownload&&isAmazonReviewsVocPartial(selected)&&!selected.voc_handoff&&Number(selected.review_count)>0&&<p className="ar-help ar-voc-partial-warning" role="note">该评论任务有失败 ASIN；送入 VOC 时只分析已成功导出的评论，不包含失败 ASIN。</p>}
      {items.length>0?<div className="ar-items"><div className="ar-items-heading"><b>商品进度</b><small>{items.length} 个 ASIN</small></div>{items.map((item,index)=><article className="ar-item" key={itemAsin(item)+'-'+index}><div><b>{itemAsin(item)}</b><small>{itemTitle(item)||'商品标题未返回'}</small></div><span className={'ar-item-status '+(item.status||'')}>{STATUS[item.status]||item.status||'待处理'}</span><small className="ar-item-count">{itemCount(item)!=null?`${itemCount(item)} 条评论`:''}</small>{(item.error||item.error_message)&&<p>{item.error||item.error_message}</p>}</article>)}</div>:<div className="ar-empty-items"><small>任务商品明细将在后端返回后显示。</small></div>}
     </>:<div className="ar-empty"><span><BookOpenCheck size={22}/></span><b>{loading?'正在读取任务':'暂无评论任务'}</b><p>配置站点、输入方式、模型和 Key 后即可创建任务。已创建任务会显示在此处。</p></div>}
     {jobs.length>1&&<label className="ar-history">最近任务<select value={selectedId} onChange={e=>selectJob(e.target.value)}>{jobs.map(job=><option key={job.id} value={job.id}>{STATUS[job.status]||job.status} · {job.site||job.amz_site||'Amazon'} · {dateText(job.created_at)}</option>)}</select></label>}

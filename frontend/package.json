@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "test": "node --test \"tests/**/*.test.js\""
+    "test": "node --test \"tests/**/*.test.js\"",
+    "test:amazon-voc": "node --test tests/amazonVocState.test.js tests/amazonReviewsState.test.js"
   },
   "dependencies": {
     "react": "^19.1.0",

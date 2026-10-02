@@ -1,0 +1,9 @@
+{
+  "task": "assign_segments",
+  "version": "4.1.0",
+  "objective": "把 required_event_ids 中的每个事件恰好分配到一个候选细分，给出与四维主键一致的简短理由。只返回输入事件ID。",
+  "forbidden": ["事件多重归属", "遗漏或重复 required_event_ids", "临时创建新细分", "用痛点相似替代四维匹配"],
+  "input_fields": ["events", "segments", "required_event_ids"],
+  "positive_example": "在四维信息不完整时选择最相容细分，并保持低置信度供探索区显示。",
+  "negative_example": "一个事件同时进入人群细分和痛点细分。"
+}

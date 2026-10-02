@@ -1,0 +1,9 @@
+{
+  "task": "review_events",
+  "version": "4.1.0",
+  "objective": "逐一复核 required_event_ids 中的异常、低置信事件与10%分层抽样，必须对每个ID返回一次决定。确保每个 evidence_quote 都是 review_text 中连续、逐字可定位的原文；无效引文须在 replacement 中改正并保持其余字段有证据支持。",
+  "forbidden": ["漏掉或重复 required_event_ids", "把多个不连续引文用省略号拼接", "改写或翻译引文", "未读原文直接接受", "扩大证据片段含义", "用复核引入新市场事实", "改变未被复核事件"],
+  "input_fields": ["events", "selection_reason", "required_event_ids"],
+  "positive_example": "原文只说“too small”时，引文只填原文连续片段“too small”，保留尺寸结果，不补写使用者年龄。",
+  "negative_example": "因产品常见于儿童场景，就把未提及使用者的事件改成儿童人群。"
+}

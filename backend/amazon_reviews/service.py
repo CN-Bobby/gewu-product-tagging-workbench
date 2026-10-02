@@ -57,16 +57,18 @@ def _atomic_json(path: Path, value: Any) -> None:
 
 
 def _read(job_id: str) -> dict[str, Any]:
-    path = _job_dir(job_id) / "job.json"
-    if not path.is_file():
-        raise ValueError("任务不存在")
-    return json.loads(path.read_text(encoding="utf-8"))
+    with LOCK:
+        path = _job_dir(job_id) / "job.json"
+        if not path.is_file():
+            raise ValueError("任务不存在")
+        return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _save(job: dict[str, Any]) -> dict[str, Any]:
-    job["updated_at"] = time.time()
-    _atomic_json(_job_dir(job["id"]) / "job.json", job)
-    return job
+    with LOCK:
+        job["updated_at"] = time.time()
+        _atomic_json(_job_dir(job["id"]) / "job.json", job)
+        return job
 
 
 def _safe_error(value: Any, *secrets: str) -> str:
@@ -121,7 +123,27 @@ def _job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
         "errors": job.get("errors", []),
         "review_collection_contract": job.get("review_collection_contract", REVIEW_CALL_CONTRACT),
         "metrics": job.get("metrics", {"review_tool_calls": 0, "raw_records": 0, "new_unique_records": 0}),
+        "voc_handoff": job.get("voc_handoff"),
     }
+
+
+def record_voc_handoff(job_id: str, summary: dict[str, Any]) -> dict[str, Any]:
+    """Persist a small, non-secret pointer to a VOC run created from this job."""
+    with LOCK:
+        job = _read(job_id)
+        handoff = job.get("voc_handoff")
+        if handoff:
+            if handoff.get("workbook_sha256") != summary.get("workbook_sha256"):
+                raise RuntimeError("该评论工作簿已变化，无法覆盖现有 VOC 交接记录")
+            # Preserve the first-created timestamp and stable identifiers.
+            summary = {**handoff, **summary}
+        job["voc_handoff"] = {
+            key: summary[key] for key in
+            ("source_job_id", "workbook_sha256", "project_id", "run_id", "created_at", "status")
+            if key in summary
+        }
+        _save(job)
+        return _job_snapshot(job)
 
 
 def _retryable_count(job: dict[str, Any]) -> int:

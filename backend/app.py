@@ -18,6 +18,7 @@ from .keyword_research import routes as keyword_research_routes
 from .keyword_research import registry as keyword_registry, runner as keyword_runner
 from . import amazon_scraper
 from .amazon_reviews import service as amazon_reviews
+from .amazon_voc import router as amazon_voc
 from .amazon_scraper_http import (AmazonRequestBodyTooLarge, InvalidAmazonContentLength,
                                   buffer_amazon_request_body)
 from .xunlongjue import router as xunlongjue_router, home_summary as xunlongjue_home_summary
@@ -34,7 +35,7 @@ AMAZON_REQUEST_BODY_LIMIT = 256 * 1024
 async def lifespan(app):
     app.state.stopping=False
     agent_application.start()
-    init_db();jobs.recover();batch.recover();keyword_registry.recover();amazon_scraper.recover();amazon_reviews.recover();xunlongjue_start();xunlongjue_recover()
+    init_db();jobs.recover();batch.recover();keyword_registry.recover();amazon_scraper.recover();amazon_reviews.recover();amazon_voc.recover();xunlongjue_start();xunlongjue_recover()
     with Session() as s:ids=list(s.scalars(select(Dataset.id)))
     for did in ids:draft.migrate(did)
     yield
@@ -47,9 +48,11 @@ async def lifespan(app):
     keyword_runner.stop_all()
     amazon_scraper.stop_all()
     amazon_reviews.stop_all()
+    amazon_voc.stop_all()
     xunlongjue_stop_all()
 
 app=FastAPI(title='商品特征工程工作台',version=VERSION,lifespan=lifespan)
+app.include_router(amazon_voc.router)
 
 @app.middleware('http')
 async def localhost(request:Request,call_next):
