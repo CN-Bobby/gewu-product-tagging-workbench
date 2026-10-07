@@ -1,9 +1,10 @@
 {
   "task": "map_dictionary",
-  "version": "4.1.0",
-  "objective": "将每个输入 event.values 中的非空字段值逐条映射到 tag_dictionary 的一个标准标签。若提供 required_mappings，只返回并完整覆盖这些映射键。",
-  "forbidden": ["丢弃输入值", "重复映射同一个 event_id+field_path+raw_value", "一值多标签", "映射到不存在或命名空间不匹配的标签", "为方便映射而改写原始值"],
-  "input_fields": ["events (event_id, values: field_path/raw_value/namespace)", "tag_dictionary", "field_namespace_map", "required_mappings (仅覆盖补漏请求)"],
-  "positive_example": "输入值 {event_id: E1, field_path: experience.pain, raw_value: 起球, namespace: pain} 映射为同一事件、字段和值的一个 tag_id。",
-  "negative_example": "只保存事件级总标签，导致无法回查某个原始字段。"
+  "version": "4.3.0",
+  "objective": "将每个唯一 candidate 映射到 tag_dictionary 的一个中英标准标签，只返回 candidate_id 和 tag_id。若提供 required_candidates，只返回并完整覆盖这些候选ID。",
+  "forbidden": ["遗漏candidate_id", "重复映射同一个candidate_id", "一值多标签", "映射到不存在或命名空间不匹配的标签", "为方便映射而改写原始值"],
+  "input_fields": ["candidates (candidate_id, field_path, raw_value, namespace)", "tag_dictionary (含中文标准名/定义和英文标准名/定义)", "field_namespace_map", "required_candidates (仅覆盖补漏请求)"],
+  "instructions": ["可参考中英文标准名和定义理解原始值；只映射语义真正匹配且命名空间一致的标准标签。", "两种语言标签含义相同；英文只是辅助理解，不得因此扩大标签适用范围。", "没有合适标准标签时选择本命名空间最保守的匹配策略，不得为了填满而错误合并。"],
+  "positive_example": "输入候选 {candidate_id: MAP-123, field_path: experience.pain, raw_value: 摩擦后发红, namespace: pain} 映射到定义相符的同命名空间标签ID。",
+  "negative_example": "输出原始值、字段路径或事件ID，或遗漏candidate_id，导致无法稳定回查和展开映射。"
 }

@@ -19,6 +19,7 @@ class ProjectInput(BaseModel):
     country: str = "US"
     language: str = "en"
     category: str = ""
+    workspace_id: str | None = None
 
 
 class CorrectionInput(BaseModel):
@@ -70,7 +71,7 @@ async def create_run(project_id: str, request: Request):
     try:
         if len(uploads) != 1 or uploads[0][0] != "reviews":
             raise HTTPException(422, "每个 VOC 任务只能上传一个评论Excel文件")
-        allowed = {"reviews", "model", "credential_id"}
+        allowed = {"reviews", "model", "credential_id", "force_refresh"}
         unexpected = [name for name, _ in form.multi_items() if name not in allowed]
         if unexpected:
             raise HTTPException(422, "评论Excel之外只能提交模型选项，不能上传其他分析数据源")
@@ -80,8 +81,13 @@ async def create_run(project_id: str, request: Request):
         data = await upload.read(MAX_REVIEW_BYTES + 1)
         if len(data) > MAX_REVIEW_BYTES:
             raise HTTPException(413, "评论Excel文件最大支持 50 MiB")
+        force_refresh_raw = str(form.get("force_refresh") or "false").casefold()
+        if force_refresh_raw not in ("true", "false", "1", "0"):
+            raise HTTPException(422, "force_refresh 只能为 true 或 false")
         return service.create_run(project_id, upload.filename or "reviews.xlsx", data,
-                                  form.get("model"), form.get("credential_id"))
+                                  form.get("model"), form.get("credential_id"),
+                                  force_refresh=force_refresh_raw in ("true", "1"),
+                                  analysis_mode="full_voc_v2")
     except HTTPException:
         raise
     except Exception as exc:

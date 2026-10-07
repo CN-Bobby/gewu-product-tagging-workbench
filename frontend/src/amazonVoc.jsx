@@ -11,7 +11,7 @@ const credentialsOf=(settings,model)=>providersOf(settings).find(p=>p.name===Str
 const defaultCredential=(settings,model)=>providersOf(settings).find(p=>p.name===String(model||'').split('/')[0])?.credentials?.find(c=>c.id&&c.enabled!==false&&c.authorized!==false)?.id||'';
 const dateText=value=>{if(!value)return'—';const date=new Date(value);return Number.isNaN(date.getTime())?String(value):date.toLocaleString()};
 
-export function AmazonVOC({api,initialRunId='',initialNotice='',onNoticeConsumed}){
+export function AmazonVOC({api,initialRunId='',initialNotice='',onNoticeConsumed,workspaceId='',forceRefresh=false}){
  const[settings,setSettings]=useState(null),[projects,setProjects]=useState([]),[projectId,setProjectId]=useState('');
  const[projectName,setProjectName]=useState(''),[marketplace,setMarketplace]=useState('US'),[country,setCountry]=useState('US'),[language,setLanguage]=useState('en'),[category,setCategory]=useState('');
  const[model,setModel]=useState(''),[credentialId,setCredentialId]=useState(''),[file,setFile]=useState(null),[runs,setRuns]=useState([]),[runId,setRunId]=useState('');
@@ -19,14 +19,16 @@ export function AmazonVOC({api,initialRunId='',initialNotice='',onNoticeConsumed
  const runRef=useRef('');
  const modelOptions=useMemo(()=>modelsOf(settings),[settings]);
  const credentialOptions=useMemo(()=>credentialsOf(settings,model),[settings,model]);
+ const scopedProjects=useMemo(()=>projects.filter(item=>String(item.workspace_id||'')===String(workspaceId||'')),[projects,workspaceId]);
  const selected=runs.find(item=>item.id===runId)||null;
  const canEdit=selected?.status==='completed'&&events.length>0;
  const reportReady=hasAmazonVocArtifacts(selected);
 
  const refreshProjects=useCallback(async()=>{
-  const value=await api(ENDPOINTS.projects(),undefined,'GET');setProjects(Array.isArray(value)?value:[]);
-  setProjectId(current=>current&&value.some(item=>item.id===current)?current:value[0]?.id||'');
- },[api]);
+  const value=await api(ENDPOINTS.projects(),undefined,'GET');const list=Array.isArray(value)?value:[];setProjects(list);
+  const scoped=list.filter(item=>String(item.workspace_id||'')===String(workspaceId||''));
+  setProjectId(current=>current&&scoped.some(item=>item.id===current)?current:scoped[0]?.id||'');
+ },[api,workspaceId]);
  const refreshRuns=useCallback(async(selectedProject=projectId)=>{
   const value=await api(ENDPOINTS.runs(selectedProject),undefined,'GET');const list=Array.isArray(value)?value:[];setRuns(list);
   const current=runRef.current||runId;const next=current&&list.some(item=>item.id===current)?current:list[0]?.id||'';
@@ -37,11 +39,15 @@ export function AmazonVOC({api,initialRunId='',initialNotice='',onNoticeConsumed
   const[config,projectList]=await Promise.all([api(ENDPOINTS.settings(),undefined,'GET'),api(ENDPOINTS.projects(),undefined,'GET')]);
   let linkedRun=null;
   if(initialRunId){try{linkedRun=await api(ENDPOINTS.run(initialRunId),undefined,'GET')}catch(e){if(alive)setError(`无法打开 VOC 任务 ${initialRunId}：${e.message}`)}}
-  if(!alive)return;setSettings(config);setProjects(projectList||[]);
-  if(linkedRun){setRuns([linkedRun]);runRef.current=linkedRun.id;setRunId(linkedRun.id);setProjectId(linkedRun.project_id||projectList?.find(item=>item.name===linkedRun.project_name)?.id||'')}
-  else setProjectId(projectList?.[0]?.id||'');
+  if(!alive)return;const list=Array.isArray(projectList)?projectList:[];setSettings(config);setProjects(list);
+  const scoped=list.filter(item=>String(item.workspace_id||'')===String(workspaceId||''));
+  if(linkedRun){setRuns([linkedRun]);runRef.current=linkedRun.id;setRunId(linkedRun.id);setProjectId(linkedRun.project_id||list.find(item=>item.name===linkedRun.project_name)?.id||'')}
+  else setProjectId(scoped[0]?.id||'');
   const initial=config?.default_model||modelsOf(config)[0]?.ref||'';setModel(initial);setCredentialId(config?.default_credential_id||defaultCredential(config,initial));
-  }catch(e){if(alive)setError(e.message)}finally{if(alive)setLoading(false)}})();return()=>{alive=false}},[api,initialRunId]);
+  }catch(e){if(alive)setError(e.message)}finally{if(alive)setLoading(false)}})();return()=>{alive=false}},[api,initialRunId,workspaceId]);
+ useEffect(()=>{
+  if(projectId&&!scopedProjects.some(item=>item.id===projectId))setProjectId(scopedProjects[0]?.id||'');
+ },[projectId,scopedProjects]);
  useEffect(()=>{refreshRuns(projectId).catch(e=>setError(e.message))},[projectId,refreshRuns]);
  useEffect(()=>{if(!initialNotice)return;setNotice(initialNotice);onNoticeConsumed?.('')},[initialNotice,onNoticeConsumed]);
  useEffect(()=>{if(!runId)return;let alive=true;const poll=async()=>{try{
@@ -52,13 +58,13 @@ export function AmazonVOC({api,initialRunId='',initialNotice='',onNoticeConsumed
 
  const createProject=async()=>{
   if(!projectName.trim()||!category.trim())return;
-  setBusy(true);setError('');try{const created=await api(ENDPOINTS.projects(),{name:projectName.trim(),marketplace,country,language,category:category.trim()});
+  setBusy(true);setError('');try{const created=await api(ENDPOINTS.projects(),{name:projectName.trim(),marketplace,country,language,category:category.trim(),workspace_id:workspaceId||null});
    await refreshProjects();setProjectId(created.id);setProjectName('');setNotice('项目已创建，可上传评论 Excel 开始分析。');
   }catch(e){setError(e.message)}finally{setBusy(false)}
  };
  const start=async()=>{
   if(!projectId||!file||busy)return;setBusy(true);setError('');setNotice('');
-  try{const body=buildAmazonVocRunForm({file,model,credentialId});const response=await fetch(ENDPOINTS.projectRuns(projectId),{method:'POST',body});
+  try{const body=buildAmazonVocRunForm({file,model,credentialId,forceRefresh});const response=await fetch(ENDPOINTS.projectRuns(projectId),{method:'POST',body});
    const value=await response.json().catch(()=>null);if(!response.ok)throw new Error(value?.detail?.message||value?.detail||`任务提交失败（HTTP ${response.status}）`);
    setRuns(current=>[value,...current.filter(item=>item.id!==value.id)]);runRef.current=value.id;setRunId(value.id);setFile(null);setNotice('评论分析任务已提交；工作台会自动运行并刷新结果。');
   }catch(e){setError(e.message)}finally{setBusy(false)}
@@ -79,7 +85,7 @@ export function AmazonVOC({api,initialRunId='',initialNotice='',onNoticeConsumed
   {error&&<div className="av-banner error" role="alert"><CircleAlert size={16}/><span>{error}</span><button onClick={()=>setError('')} aria-label="关闭错误">×</button></div>}{notice&&<div className="av-banner notice"><CheckCircle2 size={16}/>{notice}</div>}
   <div className="av-layout">
    <section className="av-card av-setup"><div className="av-card-title"><div><span className="av-step">01</span><h2>项目与输入</h2></div><small>分析数据只有评论 Excel</small></div>
-    <label className="av-field">选择项目<select value={projectId} onChange={e=>setProjectId(e.target.value)}><option value="">选择 VOC 项目</option>{projects.map(item=><option key={item.id} value={item.id}>{item.name} · {item.marketplace} · {item.category}</option>)}</select></label>
+    <label className="av-field">选择项目<select value={projectId} onChange={e=>setProjectId(e.target.value)}><option value="">选择 VOC 项目</option>{scopedProjects.map(item=><option key={item.id} value={item.id}>{item.name} · {item.marketplace} · {item.category}</option>)}</select></label>
     <details className="av-create-project"><summary>新建 VOC 项目</summary><div className="av-fields"><label>项目名<input value={projectName} onChange={e=>setProjectName(e.target.value)} placeholder="例如：Tankini 评论分析"/></label><label>品类<input value={category} onChange={e=>setCategory(e.target.value)} placeholder="例如：Swimwear"/></label><label>Amazon 站点<input value={marketplace} onChange={e=>setMarketplace(e.target.value.toUpperCase())} maxLength={16}/></label><label>国家/地区<input value={country} onChange={e=>setCountry(e.target.value)}/></label><label>评论语言<input value={language} onChange={e=>setLanguage(e.target.value)}/></label><button disabled={busy||!projectName.trim()||!category.trim()} onClick={createProject}>创建项目</button></div></details>
     <label className="av-field">评论 Excel（唯一分析输入）<input type="file" accept=".xlsx,.xlsm" onChange={e=>{const candidate=e.target.files?.[0]||null;setError('');if(candidate&&!/\.(xlsx|xlsm)$/i.test(candidate.name)){setFile(null);setError('仅支持 .xlsx 或 .xlsm 评论 Excel。')}else setFile(candidate)}}/><small>{file?`${file.name} · ${(file.size/1024/1024).toFixed(2)} MiB`:'支持工作台导出表及常见评论表头'}</small></label>
     <div className="av-model-fields"><label>共享文本模型<select value={model} onChange={e=>{setModel(e.target.value);setCredentialId(defaultCredential(settings,e.target.value))}}><option value="">选择模型</option>{modelOptions.map(item=><option key={item.ref} value={item.ref}>{item.ref}</option>)}</select></label><label>使用的凭据<select value={credentialId} onChange={e=>setCredentialId(e.target.value)}><option value="">选择已授权凭据</option>{credentialOptions.map(item=><option key={item.id} value={item.id}>{item.name||item.id}</option>)}</select></label></div>
@@ -88,7 +94,7 @@ export function AmazonVOC({api,initialRunId='',initialNotice='',onNoticeConsumed
    </section>
    <section className="av-card av-progress"><div className="av-card-title"><div><span className="av-step">02</span><h2>运行与交付</h2></div><button className="av-icon-button" aria-label="刷新任务" onClick={()=>refreshRuns(projectId).catch(e=>setError(e.message))}><RefreshCw size={15}/></button></div>
     <label className="av-field">项目任务<select value={runId} onChange={e=>{runRef.current=e.target.value;setRunId(e.target.value);setEvents([])}}><option value="">选择任务</option>{runs.map(item=><option key={item.id} value={item.id}>{item.id} · {STATUS[item.status]||item.status} · rev {item.current_revision}</option>)}</select></label>
-    {selected?<><div className="av-run-summary"><div className="av-run-line"><span className={'av-status '+selected.status}>{stage}</span><b>revision {selected.current_revision}</b><small>{dateText(selected.created_at)}</small></div><div className="av-run-meta"><span>{selected.project_name}</span><span>{selected.marketplace} · {selected.category}</span><span>{selected.sources?.reviews}</span><span>{selected.model_ref}</span></div>{selected.error&&<div className="av-run-error"><CircleAlert size={15}/>{selected.error}</div>}</div>
+    {selected?<><div className="av-run-summary"><div className="av-run-line"><span className={'av-status '+selected.status}>{stage}</span><b>revision {selected.current_revision}</b><small>{dateText(selected.created_at)}</small></div><div className="av-run-meta"><span>{selected.project_name}</span><span>{selected.marketplace} · {selected.category}</span><span>{selected.sources?.reviews}</span><span>{selected.model_ref}</span><span>{selected.workspace_id?'已隔离到所选工作区':'本地默认缓存范围'}</span></div>{selected.error&&<div className="av-run-error"><CircleAlert size={15}/>{selected.error}</div>}{selected.usage_ledger&&<details className="av-usage-ledger"><summary>费用与请求记录 · 实际费用 {selected.usage_ledger.cost_status==='unknown'?'未知':'已计费'}</summary><pre>{JSON.stringify(selected.usage_ledger,null,2)}</pre></details>}</div>
      {reportReady&&<div className="av-delivery"><b>分析结果已生成</b><small>包含六个评论洞察模块；Excel 证据库含 12 个工作表。</small><div className="av-downloads"><a href={ENDPOINTS.artifact(selected.id,'html')} target="_blank" rel="noreferrer"><ArrowDownToLine size={15}/>打开 HTML 报告</a><a href={ENDPOINTS.artifact(selected.id,'excel')}><ArrowDownToLine size={15}/>下载 Excel 证据库</a><a href={ENDPOINTS.artifact(selected.id,'quality')} target="_blank" rel="noreferrer">质量报告</a></div><div className="av-modules">{MODULES.map((item,index)=><span key={item}><i>{index+1}</i>{item}</span>)}</div></div>}
      <div className="av-run-actions">{isAmazonVocActive(selected.status)&&<button onClick={()=>act('cancel')} disabled={busy}><Pause size={14}/>取消</button>}{canRetry&&<button onClick={()=>act('retry')} disabled={busy}><RefreshCw size={14}/>重试</button>}{selected.status==='completed'&&<button onClick={loadEvents} disabled={busy}><BookOpenCheck size={14}/>检查/修订评论事件</button>}</div>
      {canEdit&&<div className="av-event-editor"><div className="av-editor-heading"><b>人工检查与修订</b><small>保存修订会生成新 revision 并自动重跑。</small></div><label>评论事件<select value={eventIndex} onChange={e=>changeEventIndex(Number(e.target.value))}>{events.map((event,index)=><option key={event.event_id||index} value={index}>{event.event_id||`事件 ${index+1}`} · {event.evidence_quote||''}</option>)}</select></label><textarea value={eventJson} onChange={e=>setEventJson(e.target.value)} placeholder="先点击“检查/修订评论事件”加载事件。"/><input value={note} onChange={e=>setNote(e.target.value)} placeholder="修订说明（可选）"/><button onClick={saveEvent} disabled={busy||!events.length}><Save size={14}/>保存修订并重跑</button></div>}

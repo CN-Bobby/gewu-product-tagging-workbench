@@ -71,10 +71,10 @@ test('the topbar carries the entry to the Xunlongjue module',()=>{
   assert.match(main,/<button className=\{page===PAGE\.XUNLONGJUE\?'active':''\} onClick=\{\(\)=>navigate\('xunlongjue'\)\}>寻龙诀<\/button>/,'the entry switches to the module');
 });
 
-test('the topbar opens the standalone Amazon VOC page',()=>{
-  assert.ok(main.includes("import {AmazonVOC} from './amazonVoc'"));
-  assert.match(main,/<button className=\{page===PAGE\.AMAZON_VOC\?'active':''\} onClick=\{\(\)=>navigate\('amazon-voc'\)\}>Amazon VOC<\/button>/);
-  assert.ok(main.includes('page===PAGE.AMAZON_VOC?<AmazonVOC api={api} initialRunId={route.runId} initialNotice={vocHandoffNotice} onNoticeConsumed={setVocHandoffNotice}/>'));
+test('the topbar opens one Amazon Reviews and VOC workspace',()=>{
+  assert.ok(main.includes("import {AmazonReviewsVoc} from './amazonReviewsVoc'"));
+  assert.match(main,/<button className=\{\['amazon-reviews','amazon-reviews-voc',PAGE\.AMAZON_VOC\]\.includes\(page\)\?'active':''\} onClick=\{\(\)=>navigate\('amazon-reviews-voc'\)\}>Amazon 评论 \+ VOC<\/button>/);
+  assert.ok(main.includes("['amazon-reviews','amazon-reviews-voc',PAGE.AMAZON_VOC].includes(page)?<AmazonReviewsVoc"));
 });
 
 test('VOC deep links parse an exact run and pass it into the VOC page',()=>{
@@ -83,7 +83,7 @@ test('VOC deep links parse an exact run and pass it into the VOC page',()=>{
   assert.ok(main.includes('onNavigate={(path,message)=>{setVocHandoffNotice(message);navigate(path)}}'));
   assert.ok(main.includes('initialNotice={vocHandoffNotice} onNoticeConsumed={setVocHandoffNotice}'));
   const voc=source('amazonVoc.jsx');
-  assert.match(voc,/export function AmazonVOC\(\{api,initialRunId='',initialNotice='',onNoticeConsumed\}\)/);
+  assert.match(voc,/export function AmazonVOC\(\{api,initialRunId='',initialNotice='',onNoticeConsumed,workspaceId='',forceRefresh=false\}\)/);
   assert.ok(voc.includes('ENDPOINTS.run(initialRunId)'));
   assert.ok(voc.includes('runRef.current=linkedRun.id;setRunId(linkedRun.id)'));
   assert.ok(voc.includes("setNotice(initialNotice);onNoticeConsumed?.('')"));

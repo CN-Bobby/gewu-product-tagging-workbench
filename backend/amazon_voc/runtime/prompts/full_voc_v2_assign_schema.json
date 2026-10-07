@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "properties": {
+    "event_assignments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "event_id": { "type": "string" },
+          "segment_id": { "type": "string" },
+          "journey_stage_id": { "type": "string" },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] }
+        },
+        "required": ["event_id", "segment_id", "journey_stage_id", "confidence"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["event_assignments"],
+  "additionalProperties": false
+}

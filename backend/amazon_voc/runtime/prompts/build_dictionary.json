@@ -1,9 +1,10 @@
 {
   "task": "build_dictionary",
-  "version": "4.0.0",
-  "objective": "基于当前任务全量事件表达生成动态标签词典，统一同义表达并保留边界。",
-  "forbidden": ["使用跨品类固定标签树", "合并对象或结果不同的近义词", "生成无支持事件的标签", "把标签频率当作市场规模"],
-  "input_fields": ["events", "namespaces", "marketplace", "category"],
-  "positive_example": "只有对象、部件、属性与结果一致时，才把不同措辞合并为同一标签。",
+  "version": "4.3.0",
+  "objective": "基于当前批次的事件字段和短证据引文生成动态双语标签；不同批次会在本地按命名空间和中文规范名合并。",
+  "forbidden": ["使用跨品类固定标签树", "合并对象或结果不同的近义词", "生成无支持事件的标签", "把标签频率当作市场规模", "声称已覆盖当前批次之外的事件"],
+  "input_fields": ["本批次稳定事件ID", "本批次事件结构化字段", "短证据引文", "namespaces", "marketplace", "category"],
+  "instructions": ["每个标签都必须同时输出 canonical_name / definition 的中文内容和 canonical_name_en / definition_en 的英文内容；英文应忠实表达中文语义，不增加证据。", "先在本批次内抽象合并语义相同或高度重叠的表达，禁止把同义原句逐条复制成标签；不同对象、部件、属性或结果必须分开。", "定义用简洁的概念描述说明标签边界，禁止列出评论清单、评论数量或产品建议。"],
+  "positive_example": "把“磨得疼”“摩擦后发红”归并为中文标准概念“摩擦不适”，英文为“friction discomfort”，并用中英定义解释共同证据边界。",
   "negative_example": "仅因都含“紧”就合并“勒出红印”和“盖子拧得紧”。"
 }

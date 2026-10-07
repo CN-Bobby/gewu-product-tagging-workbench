@@ -41,3 +41,6 @@
 .ar-spin{animation:ar-spin .9s linear infinite}@keyframes ar-spin{to{transform:rotate(360deg)}}
 @media(max-width:860px){.ar-layout{grid-template-columns:minmax(0,1fr)}.ar-heading{align-items:flex-start;flex-direction:column}.ar-settings-state{width:calc(100% - 26px);max-width:none}}
 @media(max-width:520px){.amazon-reviews-page{padding:22px 13px 34px}.ar-card{padding:17px 15px}.ar-heading h1{font-size:26px}.ar-heading h1 span{width:100%}.ar-mode{grid-template-columns:1fr}.ar-mode label{min-height:auto}.ar-form-grid,.ar-model-grid{grid-template-columns:1fr}.ar-job-line>small{width:100%;margin-left:0}}
+.ar-usage-ledger{margin:10px 0 0;padding:9px 11px;border:1px solid #dce5da;border-radius:8px;background:#f9fbf7;color:#526559;font-size:11px}
+.ar-usage-ledger summary{cursor:pointer;font-weight:650}
+.ar-usage-ledger pre{max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-word;padding:9px;border-radius:7px;background:#f0f4ef;font-size:10px}

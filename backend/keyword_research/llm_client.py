@@ -33,12 +33,13 @@ class LLMError(Exception):
 class LLMResult:
     def __init__(self, text: str, *, finish_reason: str | None = None,
                  model: str | None = None, mode: str = "chat",
-                 reasoning_tokens: int = 0) -> None:
+                 reasoning_tokens: int = 0, usage: dict[str, Any] | None = None) -> None:
         self.text = text
         self.finish_reason = finish_reason
         self.model = model
         self.mode = mode
         self.reasoning_tokens = reasoning_tokens
+        self.usage = dict(usage) if isinstance(usage, dict) else {}
 
     @property
     def truncated(self) -> bool:
@@ -160,7 +161,7 @@ class LLMClient:
             raise LLMError(f"Responses 调用失败: {data.get('error') or data}")
         return LLMResult(
             "\n".join(parts), finish_reason=finish, model=model, mode="responses",
-            reasoning_tokens=reasoning_tokens,
+            reasoning_tokens=reasoning_tokens, usage=data.get("usage") if isinstance(data.get("usage"), dict) else {},
         )
 
     # ---------- Chat Completions ----------
@@ -188,6 +189,7 @@ class LLMClient:
             finish_reason=finish,
             model=data.get("model"),
             mode="chat",
+            usage=data.get("usage") if isinstance(data.get("usage"), dict) else {},
         )
 
     # ---------- 对外 ----------

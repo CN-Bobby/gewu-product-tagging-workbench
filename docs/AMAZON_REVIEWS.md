@@ -13,9 +13,27 @@
 
 ## 工作台接入
 
-前端入口为主导航「Amazon 评论」，页面路由为 #/amazon-reviews。页面提供三种输入方式：类目榜单 Top 50/100、直接输入 ASIN、从类目榜单筛选指定 ASIN。站点、模型及已授权模型 Key 均在任务创建时冻结。
+费用优化分支的前端入口为主导航「Amazon 评论 + VOC」，页面路由为 `#/amazon-reviews-voc`；页面保留评论采集表单，并提供评论拉取 + VOC、仅评论拉取、仅 VOC 三种目标。评论采集提供三种输入方式：类目榜单 Top 50/100、直接输入 ASIN、从类目榜单筛选指定 ASIN。站点、模型及已授权模型 Key 均在任务创建时冻结。
 
 Sorftime MCP 配置复用工作台「寻龙诀」的设置；翻译模型与凭据复用「总设置」。页面仅检查连接是否配置，不读取或显示密钥。任务和逐商品检查点保存在当前 TAG_STORAGE/amazon-reviews/<job-id>/，支持进度查询、取消、重试和重启后恢复。单次最多并行两个评论任务。
+
+### Reviews + VOC 费用优化测试版
+
+在实验分支 `experiment/reviews-voc-cost-optimization` 中，Amazon 评论与 VOC 使用统一工作流页，提供默认“评论拉取 + VOC”、仅评论拉取、仅 VOC 三种目标。新建组合任务在评论 Excel 生成后自动启动 **VOC V2 一次性完整分析**；人工检查后交接和独立 VOC 上传也进入 V2。VOC 失败后可从已保存的评论结果继续，不重新拉取。仅 VOC 使用单份评论 Excel。评论翻译默认开启，可在任务设置中关闭。旧任务及显式标记为 `multi_stage_v4` 的回归仍使用原多阶段流水线。
+
+工作区可复用 7 天内的评论结果、翻译和 VOC 阶段结果；强制刷新会跳过本地结果复用。缓存键绑定输入、模型、提示词、schema 和设置版本。费用账本记录评论 API 调用及新增评论数、各模型阶段的输入/输出和缓存 token、重试次数；本地复用请求数单独记录。未收到供应商费用数据时不估算实际账单。
+
+确定性集成测试覆盖三个目标、默认自动串接、VOC 失败续跑、缓存命中/失效、翻译开关及阶段费用记录。完整回归可运行：
+
+```powershell
+python -m pytest tests/test_reviews_voc_cost_workflow.py tests/test_amazon_reviews.py tests/test_amazon_voc_reviews_bridge.py tests/test_amazon_voc_usage_metering.py -q
+npm --prefix frontend test
+npm --prefix frontend run build
+```
+
+VOC V2 在一次请求中完成评论覆盖、事件、动态词典与映射、细分、归属、旅程和报告数据，输出仍经过本地结构与证据校验，再生成原有六模块 HTML 和 12 工作表 Excel。独立语义复核保持待处理，必须人工检查后才能验收。V2 的确定性测试不会发起模型请求，也不证明大样本上下文容量。
+
+该分支是隔离测试版，不代表已经并入正式工作台或发布。
 
 API 路由：
 
