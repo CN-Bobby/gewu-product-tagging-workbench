@@ -10,9 +10,9 @@ import base64
 import io
 import json,os,re,subprocess,tomllib,uuid
 from urllib.parse import urlparse
-from dotenv import dotenv_values
 import httpx
 from .runtime_isolation import provider_home,_toml
+from .credential_vault import get_secret, set_secret, delete_secret
 
 
 class SettingsInUse(ValueError):
@@ -155,11 +155,8 @@ def read():
     config=tomllib.loads(path.read_text(encoding='utf-8-sig')) if path.exists() else {}
     config, changed = _canonical_config(config)
     # Migrate the malformed but otherwise valid configuration on first read.
-    # This is intentionally limited to provider model fields and keeps secrets
-    # in the existing write-only .env file.
     if changed and path.exists():
         _write_config(path, config)
-    keys=dotenv_values(home/'.env')
     providers=[]
     for p in config.get('providers',[]):
         provider={k:p.get(k) for k in ('name','kind','base_url','models','model','default','text_model','vision_model','validation','primary_credential_id')}
@@ -168,11 +165,11 @@ def read():
         provider['text_model']=local_model_name(p.get('name',''),p.get('text_model') or p.get('default') or (provider['models'][0] if provider['models'] else ''))
         provider['vision_model']=local_model_name(p.get('name',''),p.get('vision_model') or next((m for m in provider['models'] if 'vision' in m.lower()),None) or (provider['models'][1] if len(provider['models'])>1 else provider['text_model']))
         provider['model_refs']=[model_reference(p.get('name',''),m) for m in provider['models']]
-        provider['credentials']=[{'id':x.get('id'),'name':x.get('name') or 'Unnamed Key','enabled':x.get('enabled',True),'authorized':bool(keys.get(x.get('api_key_env'))),'validation':x.get('validation')} for x in p.get('credentials',[]) if isinstance(x,dict)]
-        provider['authorized']=any(x['authorized'] and x['enabled'] for x in provider['credentials']) or bool(keys.get(p.get('api_key_env')))
+        provider['credentials']=[{'id':x.get('id'),'name':x.get('name') or 'Unnamed Key','enabled':x.get('enabled',True),'authorized':bool(get_secret('model',x.get('api_key_env'))) if x.get('api_key_env') else False,'validation':x.get('validation')} for x in p.get('credentials',[]) if isinstance(x,dict)]
+        provider['authorized']=any(x['authorized'] and x['enabled'] for x in provider['credentials']) or (bool(get_secret('model',p.get('api_key_env'))) if p.get('api_key_env') else False)
         providers.append(provider)
     return {'configured':bool(providers),'providers':providers,
-        'default_model':config.get('default_model'),'credential_path':str(home/'.env')}
+        'default_model':config.get('default_model'),'credential_path':'Windows 当前用户 DPAPI 凭证库'}
 
 
 def defaults():
@@ -287,6 +284,8 @@ def _probe(endpoint,api_key,model,capability,content,expected_order=None):
 
 def validate_models(base_url, api_key, text_model, vision_model):
     """Probe text and vision independently, retaining both outcomes."""
+    from .external_effects import assert_allowed
+    assert_allowed('model_validation')
     endpoint=base_url.rstrip('/')+'/chat/completions'
     text=_probe(endpoint,api_key,text_model,'文本','连接测试，仅回复 OK')
     try:image=_vision_fixture()
@@ -346,10 +345,17 @@ def save(body):
     key_name=(current or {}).get('api_key_env') or ('WORKBENCH_'+name.upper().replace('-','_')+'_'+credential_id.upper().replace('-','_')+'_KEY')
     secret=body.get('api_key','')
     if not isinstance(secret,str) or any(c in secret for c in '\r\n\0'):raise ValueError('授权格式无效')
-    keys=dotenv_values(home/'.env')
-    if secret:keys[key_name]=secret
-    if not keys.get(key_name):raise ValueError('首次配置需要填写授权密钥')
-    validation=validate_models(base,keys[key_name],text_model,vision_model)
+    current_secret=get_secret('model',key_name)
+    selected_secret=secret or current_secret
+    if not selected_secret:raise ValueError('首次配置需要填写授权密钥')
+    try:
+        from .external_effects import effects_allowed
+        can_validate=effects_allowed('model_validation')
+    except ImportError:
+        # A partial/legacy package must not turn a missing policy module into an
+        # implicit permission to contact a paid model service.
+        can_validate=False
+    validation=validate_models(base,selected_secret,text_model,vision_model) if can_validate else {'status':'not_run','overall':'not_run','message':'当前环境默认离线；未发送模型请求'}
     credential={'id':credential_id,'name':str(body.get('credential_name') or (current or {}).get('name') or 'Default Key').strip()[:100] or 'Default Key','api_key_env':key_name,'enabled':body.get('credential_enabled',True),'validation':validation}
     credentials=[x for x in existing_credentials if x.get('id')!=credential_id]+[credential]
     models=list(dict.fromkeys([text_model,vision_model]+list(existing.get('models') or [])+[local_model_name(name,m) for m in legacy if local_model_name(name,m)]))
@@ -358,12 +364,15 @@ def save(body):
     config['providers']=[p for p in config.get('providers',[]) if p.get('name')!=name]+[provider]
     if body.get('set_default',True):config['default_model']=model_reference(name,text_model)
     # Preserve existing non-provider settings, including native client permissions and plugins.
-    _write_config(path,config)
-    secrets=home/'.env';secrets.write_text('\n'.join(k+'='+json.dumps(v) for k,v in keys.items() if isinstance(v,str)),encoding='utf-8')
-    if os.name=='nt':
-        user=subprocess.check_output(['whoami'],text=True,creationflags=subprocess.CREATE_NO_WINDOW).strip()
-        result=subprocess.run(['icacls',str(secrets),'/inheritance:r','/grant:r',user+':F'],capture_output=True,creationflags=subprocess.CREATE_NO_WINDOW)
-        if result.returncode:raise ValueError('授权文件访问权限设置失败')
+    previous_secret=current_secret
+    if secret:set_secret('model',key_name,secret)
+    try:
+        _write_config(path,config)
+    except BaseException:
+        if secret:
+            if previous_secret:set_secret('model',key_name,previous_secret)
+            else:delete_secret('model',key_name)
+        raise
     return read()
 
 
@@ -376,9 +385,9 @@ def credential_action(provider_name,credential_id,action):
     if not provider:raise ValueError('服务不存在')
     credentials=list(provider.get('credentials') or []);target=next((x for x in credentials if x.get('id')==credential_id),None)
     if not target:raise ValueError('Key 不存在')
-    keys=dotenv_values(home/'.env')
     if action=='delete':
-        credentials=[x for x in credentials if x.get('id')!=credential_id];keys.pop(target.get('api_key_env'),None)
+        credentials=[x for x in credentials if x.get('id')!=credential_id]
+        key_to_delete=target.get('api_key_env')
         provider['credentials']=credentials
         if credentials:
             provider['primary_credential_id']=credentials[0]['id'];provider['api_key_env']=credentials[0]['api_key_env']
@@ -390,5 +399,5 @@ def credential_action(provider_name,credential_id,action):
         provider['primary_credential_id']=credential_id;provider['api_key_env']=target['api_key_env']
     else:raise ValueError('未知 Key 操作')
     _write_config(path,config)
-    (home/'.env').write_text('\n'.join(k+'='+json.dumps(v) for k,v in keys.items() if isinstance(v,str)),encoding='utf-8')
+    if action=='delete' and key_to_delete:delete_secret('model',key_to_delete)
     return read()

@@ -26,6 +26,8 @@ class OpenAICompatibleProvider:
         self.settings = settings
 
     def call(self, task, model, instructions, payload, schema):
+        from backend.external_effects import assert_allowed
+        assert_allowed("model_api")
         if not self.settings.model_api_key:
             raise ModelError("未配置 VOC_MODEL_API_KEY")
         started = time.perf_counter()

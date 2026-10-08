@@ -84,6 +84,8 @@ def research(did,query='',urls=None,scope='',refresh=False):
     with Session() as s:
         cached=s.get(WorkbenchMeta,key)
         if cached and cached.data.get('status')=='ready' and not refresh:return dict(id=key,cached=True,**cached.data)
+    from .external_effects import assert_allowed
+    assert_allowed('external_research')
     started=time.perf_counter();sources=[];errors=[]
     if query.strip():
         language='zh' if any('\u4e00'<=c<='\u9fff' for c in query) else 'en'

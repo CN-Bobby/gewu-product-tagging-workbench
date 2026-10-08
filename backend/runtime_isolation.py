@@ -7,8 +7,25 @@ import re
 import shutil
 import subprocess
 import tomllib
-from dotenv import dotenv_values
 from .db import STORAGE, now
+from .credential_vault import get_secret
+from .external_effects import assert_allowed, profile as runtime_profile
+
+_EPHEMERAL_SECRET_FILES = set()
+
+
+def _runtime_home(dataset_id):
+    root = Path(os.environ.get('LOCALAPPDATA') or (Path.home() / 'AppData' / 'Local'))
+    return (root / 'GeWuWorkbench' / 'RunCenter' / 'reasonix' / runtime_profile() / dataset_id).resolve()
+
+
+def clear_ephemeral_credentials():
+    """Remove Reasonix's temporary selected-key files after owned runtimes have shut down."""
+    for raw_path in list(_EPHEMERAL_SECRET_FILES):
+        try:
+            Path(raw_path).unlink(missing_ok=True)
+        finally:
+            _EPHEMERAL_SECRET_FILES.discard(raw_path)
 
 
 def provider_home():
@@ -87,8 +104,14 @@ def credential_selection(model_ref,credential_id=None):
 
 def environment(dataset_id, session_id=None, credential_ids=None):
     if not re.fullmatch(r'[a-zA-Z0-9_-]+', dataset_id):raise ValueError('数据集目录标识无效')
+    assert_allowed('reasonix_runtime')
     source=provider_home()
-    home=STORAGE/'datasets'/dataset_id/'reasonix'
+    legacy_home=STORAGE/'datasets'/dataset_id/'reasonix'
+    home=_runtime_home(dataset_id)
+    if not home.exists() and legacy_home.is_dir():
+        # Keep the source untouched. Session state is copied out of business data once so the
+        # temporary selected-key file and the Reasonix process home stay outside data backups.
+        shutil.copytree(legacy_home,home,ignore=shutil.ignore_patterns('.env','*.tmp','*.lock','*.lease.json'))
     home.mkdir(parents=True,exist_ok=True)
     if not (source/'config.toml').is_file():raise ValueError('请先在网页模型设置中配置服务与授权')
     config=tomllib.loads((source/'config.toml').read_text(encoding='utf-8-sig'))
@@ -130,18 +153,30 @@ def environment(dataset_id, session_id=None, credential_ids=None):
             'backup':str(backup),'copied_at':now(),'files_sha256':hashes,'status':'copied_pending_acp_resume'},
             ensure_ascii=False,indent=2),encoding='utf-8')
     env=dict(os.environ,REASONIX_HOME=str(home),TAG_PROVIDER_HOME=str(source))
-    secrets=dotenv_values(source/'.env')
     credential_lines=[]
     for provider in providers:
+        selected_id=credential_ids.get(provider.get('name'))
+        if not selected_id:
+            continue
+        chosen=_effective_credential(provider,selected_id)
         key=provider.get('api_key_env')
-        if key and secrets.get(key):credential_lines.append(key+'='+json.dumps(secrets[key]))
-    # 1.25.1 resolves provider keys exclusively from its home .env (ignores env overrides).
-    # Keep only selected provider keys, refreshed on launch; never package or log this file.
+        if chosen:
+            key=chosen.get('api_key_env') or key
+        secret=get_secret('model',key) if key else None
+        if key and not secret:
+            raise CredentialUnavailable(f'服务 {provider.get("name")} 的所选 Key 尚未保存在当前凭证库中')
+        if key and secret:credential_lines.append(key+'='+json.dumps(secret))
+    # Reasonix 1.25.1 reads provider keys from REASONIX_HOME/.env and ignores environment
+    # overrides. This short-lived file is outside both the repository and business-data backups,
+    # contains only the credential selected for this runtime, and is removed during clean shutdown.
     secret_path=home/'.env'
     secret_path.write_text('\n'.join(dict.fromkeys(credential_lines))+'\n',encoding='utf-8')
+    _EPHEMERAL_SECRET_FILES.add(str(secret_path))
     if os.name=='nt':
         identity=subprocess.check_output(['whoami'],text=True,creationflags=subprocess.CREATE_NO_WINDOW).strip()
         result=subprocess.run(['icacls',str(secret_path),'/inheritance:r','/grant:r',identity+':F'],
                               capture_output=True,creationflags=subprocess.CREATE_NO_WINDOW)
-        if result.returncode:raise ValueError('无法限制数据集授权文件访问权限')
+        if result.returncode:
+            secret_path.unlink(missing_ok=True);_EPHEMERAL_SECRET_FILES.discard(str(secret_path))
+            raise ValueError('无法限制临时授权文件访问权限')
     return env

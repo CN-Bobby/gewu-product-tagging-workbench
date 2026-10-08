@@ -24,6 +24,8 @@ def result_items(result):
     return items
 
 def request_json(model_ref,messages,metrics,metric_lock,credential_id=None):
+    from .external_effects import assert_allowed
+    assert_allowed('model_api')
     endpoint,key,model=provider_config(model_ref,credential_id)
     body={'model':model,'messages':messages,'response_format':{'type':'json_object'},'max_tokens':8192}
     if 'deepseek' in model:body['thinking']={'type':'disabled'}

@@ -1,6 +1,15 @@
 # 格物工作台项目总进度
 
-快照时间：2026-10-02（Asia/Shanghai）
+快照时间：2026-10-09（Asia/Shanghai）
+
+## 本地开发与测试环境治理
+
+- **状态：环境治理实现完成，人工业务验收仍待用户执行。** 日常开发入口、冻结 TEST 构建、数据重置、回退、离线自动门禁、项目文件树浏览器回归和独立人工清单已形成固定流程，说明见 [`LOCAL_RUN_CENTER.md`](LOCAL_RUN_CENTER.md) 与 [`LOCAL_TEST_ACCEPTANCE.md`](LOCAL_TEST_ACCEPTANCE.md)。DEV/TEST 使用独立业务数据；TEST 夹具位于 `K:\GeWuFixtures\project-library-v1`，TEST 报告位于 `K:\GeWuTest\Reports`。
+- 实现位于隔离 worktree `C:\Users\Administrator\.codex\worktrees\local-test-governance\数据打标项目`，分支 `codex/local-testing-governance`。主工作目录 `D:\数据打标项目` 的既有未提交修改不属于本任务，未覆盖、清理或纳入提交。
+- 实现工作树提交前的离线全量门禁报告：`K:\GeWuTest\Reports\offline-20261008-235316-2964ba1929ac.json`。后端 **822 passed / 8 skipped**，前端 **141 passed**，Vite 构建通过，外部请求数为 0。TEST 冻结脚本会从指定的干净提交重新运行这套门禁并另外记录候选身份。
+- 从 `K:\Bobbytagging\Data-Test` 一次性导入模型与 SellerSprite 凭证至当前 Windows 用户 DPAPI vault，来源文件保留且未做密钥验证；DEV/TEST 状态为模型已配置、SellerSprite 已配置、Sorftime 未配置。提供方非秘密设置分别保存于每个环境的 Run Center 目录。旧目录和历史备份中的凭证只盘点、不自动删除。
+- 正式数据快照 `K:\Bobbytagging\Backups\pre-run-center-20261008` 已核验，553 个文件、19 个 SQLite 数据库快照、8 个凭证/日志副本排除；manifest SHA-256 `f2ddae84a0ba2618b57c3b3a4f086012c1eef5c32baf98fbed0fcdc4bf09e4f6`。生产数据源未迁移或重置。
+- 正式数据入口继续识别现有 beta.8 候选，状态 `pending_acceptance`；`VERSION.json`、`RELEASE_LEDGER.json` 未改变。TEST 候选和自动化报告均不代表用户的人工验收或客户发布。
 
 仓库：`D:\数据打标项目`
 用途：项目内新对话的接力入口。无需用户转发旧对话；先读本文件，再按 `AGENTS.md` 对需要继续的部分做实时复核。

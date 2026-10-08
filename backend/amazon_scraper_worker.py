@@ -13,10 +13,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
-os.environ["AMAZON_SCRAPER_WORKER"] = "1"
+if __name__ == "__main__":
+    # Mark only the short-lived child process; importing this module in the app/test harness must
+    # not switch the parent process into worker mode.
+    os.environ["AMAZON_SCRAPER_WORKER"] = "1"
 
 
 def _fetch(request: dict[str, Any]) -> dict[str, Any]:
+    from .external_effects import assert_allowed
+    assert_allowed('amazon_collection')
     from .amazon_scraper import _fetch_product
 
     result = _fetch_product(request["item"], request.get("proxy"), _NeverCancelled())

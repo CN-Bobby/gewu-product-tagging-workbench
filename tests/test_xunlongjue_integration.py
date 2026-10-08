@@ -32,19 +32,31 @@ class FakeSorftime:
 
 @pytest.fixture
 def xlj_home(tmp_path, monkeypatch):
+    service.stop_all()
+    worker = service._THREAD
+    if worker and worker.is_alive():
+        worker.join(timeout=15)
+    if worker and worker.is_alive():
+        raise RuntimeError('Previous Xunlongjue test worker did not stop; refusing to share its state.')
     monkeypatch.setattr(settings, '_root', lambda: tmp_path / 'xunlongjue')
     monkeypatch.setattr(service, 'root', lambda: tmp_path / 'xunlongjue')
-    service.stop_all()
     yield tmp_path / 'xunlongjue'
     service.stop_all()
+    worker = service._THREAD
+    if worker and worker.is_alive():
+        worker.join(timeout=15)
+    if worker and worker.is_alive():
+        raise RuntimeError('Xunlongjue test worker did not stop before fixture cleanup.')
 
 
 def test_settings_separate_endpoint_and_key_and_reject_query_secrets(xlj_home):
+    from backend.credential_vault import get_secret
     assert settings.save('https://mcp.example.test/mcp', 'secret-key-value') == {
         'endpoint': 'https://mcp.example.test/mcp', 'key_configured': True,
     }
     persisted = json.loads((xlj_home / 'settings.json').read_text(encoding='utf-8'))
-    assert persisted == {'endpoint': 'https://mcp.example.test/mcp', 'api_key': 'secret-key-value'}
+    assert persisted == {'endpoint': 'https://mcp.example.test/mcp'}
+    assert get_secret('sorftime','api_key') == 'secret-key-value'
     assert 'secret-key-value' not in str(settings.status())
     with pytest.raises(ValueError):
         settings.save('https://mcp.example.test/mcp?secret-key=embedded', 'other-key')

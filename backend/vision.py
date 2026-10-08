@@ -7,7 +7,6 @@ import os
 import tomllib
 from pathlib import Path
 import httpx
-from dotenv import dotenv_values
 from PIL import Image
 from sqlalchemy import select
 from .db import *
@@ -19,6 +18,7 @@ PROMPT='''你是商品图片事实提取工具。实际观察所提供的图片�
 
 def provider_config(model_ref,credential_id=None):
     from .runtime_isolation import provider_home
+    from .credential_vault import get_secret
     from .model_settings import local_model_name
     home=provider_home()
     config_path=home/'config.toml'
@@ -43,9 +43,8 @@ def provider_config(model_ref,credential_id=None):
     from .runtime_isolation import _effective_credential
     selected=_effective_credential(provider,credential_id)
     key_name=(selected or {}).get('api_key_env') or provider.get('api_key_env')
-    # Match Reasonix v1.25.1: provider secrets live in its global .env, never copy them.
-    key=(os.environ.get(key_name) or dotenv_values(home/'.env').get(key_name)) if key_name else None
-    if not key:raise ValueError('Reasonix 视觉 provider 尚未保存有效授权，请在 Reasonix 中配置')
+    key=get_secret('model',key_name) if key_name else None
+    if not key:raise ValueError('视觉模型所选 Key 未保存在当前环境的凭证库中')
     base=provider.get('base_url','').rstrip('/')
     endpoint=provider.get('request_url') or base+'/chat/completions'
     if not endpoint.startswith('https://'):raise ValueError('视觉服务需使用已配置的 HTTPS 端点')
@@ -64,6 +63,8 @@ def analyze(asset_id,model_ref):
     endpoint,key,model=provider_config(model_ref)
     body={'model':model,'messages':[{'role':'system','content':PROMPT},{'role':'user','content':[{'type':'text','text':'提取这张商品图的客观视觉特征。'},{'type':'image_url','image_url':{'url':'data:image/jpeg;base64,'+base64.b64encode(buf.getvalue()).decode()}}]}],'max_tokens':4096,'response_format':{'type':'json_object'}}
     if 'deepseek' in model:body['thinking']={'type':'disabled'}
+    from .external_effects import assert_allowed
+    assert_allowed('vision_model')
     with httpx.Client(timeout=180) as client:
         response=client.post(endpoint,headers={'Authorization':'Bearer '+key},json=body)
     if response.status_code!=200:

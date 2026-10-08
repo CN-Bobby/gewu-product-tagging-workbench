@@ -64,6 +64,9 @@ def providers(tmp_path,monkeypatch):
         (home/'.env').write_text('\n'.join('%s="%s-secret"'%(c['api_key_env'],c['id']) for c in credentials)+'\n',
                                  encoding='utf-8')
     write()
+    from backend.credential_vault import set_secret
+    for credential in state['credentials']:
+        set_secret('model', credential['api_key_env'], credential['id']+'-secret')
     monkeypatch.setenv('TAG_PROVIDER_HOME',str(home))
     state['home']=home;state['write']=write
     return state
@@ -118,7 +121,7 @@ def open_run(did,model=MODEL,products=3):
 
 
 def dataset_home(did):
-    return Path(STORAGE)/'datasets'/did/'reasonix'
+    return runtime_isolation._runtime_home(did)
 
 
 def home_bytes(did):

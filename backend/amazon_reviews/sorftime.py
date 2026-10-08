@@ -52,6 +52,8 @@ def _decode(result: Any, key: str) -> Any:
 
 
 async def _call(endpoint: str, key: str, name: str, arguments: dict[str, Any]) -> Any:
+    from ..external_effects import assert_allowed
+    assert_allowed('amazon_reviews_sorftime')
     if name not in TOOLS:
         raise ValueError("Unsupported Sorftime tool")
     auth_endpoint = endpoint + ("&" if "?" in endpoint else "?") + "key=" + quote(key, safe="")

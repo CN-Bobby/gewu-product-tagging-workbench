@@ -132,6 +132,8 @@ class MCPClient:
 
     async def _call_once(self, tool: str, arguments: dict) -> dict:
         """单次调用（不重试）。调用方负责限流等待与日志。"""
+        from ..external_effects import assert_allowed
+        assert_allowed('mcp')
         try:
             # 只取读写两条流：mcp 1.29.1 还会多 yield 一个 session-id 取值器（2.x 没有），
             # 这里对两者都成立，不需要固定解包长度。每次调用各自开一个会话，用不到它。
@@ -390,6 +392,8 @@ def test_mcp_connection(endpoint: str, timeout: float = 60.0,
     limiter = rate_limiter or _DEFAULT_TEST_LIMITER
 
     async def _run() -> int:
+        from ..external_effects import assert_allowed
+        assert_allowed('mcp_connection_test')
         limiter.wait_until_allowed()
         try:
             async with streamable_http_client(endpoint, terminate_on_close=False) as (

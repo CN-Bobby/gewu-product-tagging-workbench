@@ -118,11 +118,20 @@ def test_text_wait_and_dependency_resume(dataset,monkeypatch):
         calls.append(1)
         return {'results':[{'product_id':p['product_id'],'normalized_value':'2件套','evidence':'标题'} for p in json.loads(messages[-1]['content'])]}
     monkeypatch.setattr(batch,'request_json',dispatch)
-    batch.launch(tag['id']);batch.launch(pre['id']);assert started.wait(5)
-    assert not calls;release.set()
+    started_ok=False
+    try:
+        assert batch.launch(pre['id'])
+        started_ok=started.wait(15)
+        assert started_ok
+        assert batch.launch(tag['id'])
+        assert not calls
+    finally:
+        release.set()
     import time
-    deadline=time.time()+10
+    deadline=time.time()+15
     while (tag['id'] in batch.active or pre['id'] in batch.active) and time.time()<deadline:time.sleep(.05)
+    assert started_ok
+    assert tag['id'] not in batch.active and pre['id'] not in batch.active
     with Session() as s:assert require(s,BatchJob,tag['id']).status=='completed'
 
 def test_manual_multiple_collects_gap_then_user_proposes_expansion(dataset):

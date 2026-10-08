@@ -1,10 +1,16 @@
 # 格物商品打标工作台：接力开发交接文档
 
-更新时间：2026-09-27 21:03（Asia/Shanghai）
+更新时间：2026-10-09（Asia/Shanghai）
 
 工作目录：`D:\数据打标项目`
 
 当前开发分支：`feature/0.5.0-delivery`
+
+## 2026-10-09 本地开发与测试环境治理
+
+- 当前环境流程、端口、固定数据目录、凭证状态、离线门禁和实施状态以 [`docs/PROJECT_PROGRESS.md`](docs/PROJECT_PROGRESS.md) 的最新快照及 [`docs/LOCAL_RUN_CENTER.md`](docs/LOCAL_RUN_CENTER.md)、[`docs/LOCAL_TEST_ACCEPTANCE.md`](docs/LOCAL_TEST_ACCEPTANCE.md) 为准。
+- 治理实现位于独立 worktree 和分支 `codex/local-testing-governance`；本文件原有 `feature/0.5.0-delivery` 与下方 2026-09-27 内容是历史背景，不代表当前 DEV 代码。继续前重新检查实时 Git、桌面快捷方式、Run Center 状态与服务健康。
+- 完整离线门禁已通过；TEST 的固定候选流程仍需其当前候选报告与用户人工清单共同判定。不得把自动化通过、构建成功或运行状态误记为业务验收、PROD 发布或 beta 版本状态变更。
 
 > **新对话接力入口：先读 [`docs/PROJECT_PROGRESS.md`](docs/PROJECT_PROGRESS.md)。** 该文档是当前总进度快照，记录本机现场、Git 状态、已交付版本、在建模块和未完成验收；项目内新建对话无需用户分享旧对话。每次继续工作仍须按根目录 `AGENTS.md` 重新检查 Git 和实时环境。本文后续旧交接内容保留作背景资料，其中过期的分支、构建、测试计数和运行状态不可当作当前事实。
 

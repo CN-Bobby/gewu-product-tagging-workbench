@@ -1,0 +1,6 @@
+.runtime-trigger{display:block;border:0;background:transparent;padding:0;color:#8b988c;font-size:10px;font-weight:400;letter-spacing:1px;text-align:left}
+.runtime-trigger:hover{background:transparent;color:#345348;text-decoration:underline}
+.runtime-status-grid{display:grid;grid-template-columns:140px minmax(0,1fr);gap:10px 14px;margin:18px 0 22px;align-items:start}
+.runtime-status-grid>b{font-size:11px;color:#71836f}
+.runtime-status-grid>span{font-size:11px;color:#344d3e;overflow-wrap:anywhere;line-height:1.7}
+@media(max-width:560px){.runtime-status-grid{grid-template-columns:1fr;gap:5px}.runtime-status-grid>b:not(:first-child){margin-top:10px}}

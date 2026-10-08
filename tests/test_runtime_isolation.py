@@ -145,6 +145,8 @@ def test_legacy_qualified_model_names_are_migrated(tmp_path,monkeypatch):
 
 def test_provider_config_accepts_legacy_duplicate_reference(tmp_path,monkeypatch):
     home=source(tmp_path,monkeypatch)
+    from backend.credential_vault import set_secret
+    set_secret('model','TEST_KEY','synthetic-test-only')
     from backend.vision import provider_config
     endpoint,key,model=provider_config('test/test/text')
     assert endpoint=='https://test.invalid/v1/chat/completions'

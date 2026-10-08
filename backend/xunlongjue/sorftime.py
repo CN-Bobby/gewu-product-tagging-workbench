@@ -264,6 +264,8 @@ class SorftimeClient:
 
     async def call(self, name: str, arguments: dict, *,
                    audit_context: dict | None = None) -> dict:
+        from ..external_effects import assert_allowed
+        assert_allowed('sorftime_mcp')
         if name not in ('category_tree', 'category_trend'):
             raise ValueError('不支持的 Sorftime 工具')
         deadline = None

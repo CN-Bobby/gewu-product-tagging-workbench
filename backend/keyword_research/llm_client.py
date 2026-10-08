@@ -85,6 +85,8 @@ class LLMClient:
         }
 
     def _post(self, path: str, body: dict) -> httpx.Response:
+        from ..external_effects import assert_allowed
+        assert_allowed('model_api')
         url = f"{self.base_url}{path}"
         for attempt in range(CONNECT_ATTEMPTS):
             try:

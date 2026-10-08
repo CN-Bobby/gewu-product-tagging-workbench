@@ -345,6 +345,8 @@ def _fake_provider_home(tmp_path):
         'providers': [{'name': 'fake', 'kind': 'openai', 'base_url': 'https://fake.invalid',
                        'api_key_env': 'FAKE_KEY', 'models': ['m1']}]})
     (home / '.env').write_text('FAKE_KEY=sk-fake\n', encoding='utf-8')
+    from backend.credential_vault import set_secret
+    set_secret('model', 'FAKE_KEY', 'sk-fake')
     credentials.save_secret('sk-live-1')
 
 

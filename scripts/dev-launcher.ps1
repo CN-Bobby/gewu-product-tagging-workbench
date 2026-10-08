@@ -1,7 +1,7 @@
 param(
-    [string]$Storage = 'K:\Bobbytagging\Data-Test',
-    [string]$Cache = '',
-    [int]$Port = 0,
+    [string]$Storage = 'K:\GeWuTest\Data',
+    [string]$Cache = 'K:\GeWuTest\Cache',
+    [int]$Port = 8895,
     [string]$Build = '',
     [switch]$Stop,
     [switch]$Acceptance,
@@ -33,6 +33,11 @@ if (-not (Test-Path -LiteralPath $exe)) { throw "This build has no Workbench.exe
 if (-not (Test-Path -LiteralPath $manifestPath)) { throw "This build has no build-manifest.json: $manifestPath (the only source of program identity)" }
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 $has = { param($name) $manifest.PSObject.Properties.Name -contains $name }
+if (-not $manifest.commit -or $manifest.dirty -ne $false -or $manifest.build_mode -ne 'dev' -or
+    -not (Test-Path -LiteralPath (Join-Path $appDir 'backend\external_effects.py')) -or
+    -not (Select-String -LiteralPath (Join-Path $appDir 'backend\app.py') -Pattern '/api/runtime/status' -Quiet)) {
+    throw 'This TEST entry requires a clean build with offline policy and runtime-status support. Build a new frozen TEST candidate first.'
+}
 
 $storagePath = [IO.Path]::GetFullPath($Storage)
 $cachePath = if ($Cache) { [IO.Path]::GetFullPath($Cache) } else { Join-Path (Split-Path -Parent $storagePath) 'Cache-Test' }
@@ -112,9 +117,16 @@ if ($existing -and $existing.application -eq 'product-tagging-workbench') {
     if ($existing.commit -ne $manifest.commit -or $existing.build_id -ne $manifest.build_id) {
         throw "Data directory $storagePath is still used by another version (running $($existing.build_id), this build $($manifest.build_id)). Stop that instance first so the upgrade can back up safely."
     }
+    $runtime = $null
+    try { $runtime = Invoke-RestMethod -Uri "$baseUrl/api/runtime/status" -TimeoutSec 2 } catch { }
+    if (-not $runtime -or $runtime.profile -ne 'test' -or $runtime.external_effects.policy -ne 'offline') {
+        throw 'The listener does not prove it is an offline TEST instance. Nothing was stopped or adopted.'
+    }
     Write-Output "Already running: $baseUrl"
 } else {
     $launchArgs = @('--data', $storagePath, '--cache', $cachePath, '--port', "$port", '--no-open')
+    $env:GEWU_PROFILE = 'test'
+    Remove-Item Env:GEWU_ALLOW_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
     Start-Process -FilePath $exe -ArgumentList $launchArgs -WorkingDirectory $appDir | Out-Null
     $health = $null
     for ($attempt = 0; $attempt -lt 90; $attempt++) {
