@@ -116,7 +116,12 @@ class AmazonVOCService:
             raise ValueError("项目名称必填且不能超过 120 个字符")
         if len(marketplace) > 16 or len(country) > 80 or len(language) > 40 or len(category) > 120:
             raise ValueError("站点、国家、语言或品类设置过长")
-        return self.db.create_project(name, marketplace, country, language, category)
+        workspace_id = str(body.get("workspace_id") or "").strip() or None
+        if workspace_id:
+            from ..db import Session, Workspace, require
+            with Session() as session:
+                require(session, Workspace, workspace_id)
+        return self.db.create_project(name, marketplace, country, language, category, workspace_id)
 
     def create_run(self, project_id: str, filename: str, data: bytes,
                    model_ref: str | None = None, credential_id: str | None = None) -> dict[str, Any]:
@@ -269,7 +274,18 @@ class AmazonVOCService:
                 message = message.replace(selected["api_key"], "[redacted]")
             self.db.update_run(run_id, status="failed", error=message[:1500], completed_at=utcnow())
             raise
-        return self.get_run(run_id)
+        result = self.get_run(run_id)
+        workspace_id = result.get("workspace_id") if result else None
+        if workspace_id and result and result.get("status") == "completed":
+            from .. import project_files
+            revision = int(result.get("current_revision") or 1)
+            path = self.storage.artifact(result["project_id"], run_id, revision, "html")
+            if path and path.is_file():
+                project_files.register_file(workspace_id, "voc", path,
+                    source_type="amazon_voc_output", source_id=f"{run_id}:rev{revision}:html",
+                    name="VOC-report.html", metadata={"voc_project_id": result["project_id"],
+                        "run_id": run_id, "revision": revision})
+        return result
 
     def recover(self) -> None:
         now = utcnow()

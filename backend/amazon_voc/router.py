@@ -19,6 +19,7 @@ class ProjectInput(BaseModel):
     country: str = "US"
     language: str = "en"
     category: str = ""
+    workspace_id: str | None = None
 
 
 class CorrectionInput(BaseModel):

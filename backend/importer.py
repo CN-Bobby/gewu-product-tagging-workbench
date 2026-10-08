@@ -138,7 +138,10 @@ def import_file(data, filename, sheet=None, workspace_id=None, mapping=None):
             if isinstance(url,str) and url.startswith(('https://','http://')):
                 s.add(Asset(product_id=product.id, source='url', url=url, image_type='reference' if seen else 'main'))
         audit(s, ident, 'dataset_imported', {'rows':len(p['rows']), 'sha256':dataset.sha256,'format':'WPS DISPIMG / DrawingML'})
-        return obj(dataset)
+        result = obj(dataset)
+    from . import project_files
+    project_files.register_dataset(result['workspace_id'], ident, original, Path(filename).name, result['sha256'])
+    return result
 
 def attach_images(dataset_id, files):
     matched, unmatched=0, []

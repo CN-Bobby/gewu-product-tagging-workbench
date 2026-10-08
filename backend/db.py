@@ -29,6 +29,19 @@ class Workspace(Record, Base):
     __tablename__ = 'workspace'
     name = Column(String, nullable=False)
 
+class ProjectArtifact(Record, Base):
+    """Immutable, project-scoped copy/reference to a workflow artifact."""
+    __tablename__ = 'project_artifact'
+    workspace_id = Column(String, ForeignKey('workspace.id'), nullable=False, index=True)
+    kind = Column(String, nullable=False, index=True)
+    source_type = Column(String, nullable=False)
+    source_id = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    relative_path = Column(String, nullable=False)
+    sha256 = Column(String, nullable=False)
+    size = Column(Integer, nullable=False, default=0)
+    metadata_json = Column(JSON, nullable=False, default=dict)
+
 class TagTemplate(Record, Base):
     __tablename__ = 'tag_template'
     workspace_id = Column(String, ForeignKey('workspace.id'), nullable=False)

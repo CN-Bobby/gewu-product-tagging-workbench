@@ -571,6 +571,7 @@ def _run(job_id: str, cancel: threading.Event) -> None:
             job["errors"] = [{"asin": item["asin"], "error": item.get("error", "")} for item in failed]
             _export(job)
             _save(job)
+            _register_project_artifacts(job)
     except Exception as exc:  # noqa: BLE001
         job = _read(job_id)
         job["status"] = "failed"
@@ -597,6 +598,19 @@ def _all_reviews(job: dict[str, Any]) -> list[dict[str, Any]]:
             review.setdefault("product_title", item.get("title", ""))
             result.append(review)
     return result
+
+
+def _register_project_artifacts(job: dict[str, Any]) -> None:
+    workspace_id = job.get("workspace_id")
+    if not workspace_id:
+        return
+    from .. import project_files
+    path = _job_dir(job["id"]) / "result.xlsx"
+    if path.is_file():
+        project_files.register_file(workspace_id, "reviews", path,
+            source_type="amazon_reviews", source_id=job["id"] + ":result.xlsx",
+            name="Amazon-Reviews.xlsx", metadata={"job_id": job["id"],
+                "status": job.get("status"), "source_dataset_id": job.get("source_dataset_id")})
 
 
 def _export(job: dict[str, Any]) -> None:

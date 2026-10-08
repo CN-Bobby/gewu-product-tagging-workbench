@@ -19,7 +19,7 @@ PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, marketplace TEXT NOT NULL,
   country TEXT NOT NULL, language TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  workspace_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), status TEXT NOT NULL,
@@ -61,6 +61,9 @@ class Database:
         self._lock = threading.RLock()
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
+            if "workspace_id" not in columns:
+                conn.execute("ALTER TABLE projects ADD COLUMN workspace_id TEXT")
 
     @contextmanager
     def connect(self):
@@ -85,11 +88,12 @@ class Database:
         with self.connect() as conn:
             return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
-    def create_project(self, name, marketplace, country, language, category):
+    def create_project(self, name, marketplace, country, language, category, workspace_id=None):
         project_id = "prj_" + uuid.uuid4().hex[:12]
         now = utcnow()
-        self.execute("INSERT INTO projects VALUES(?,?,?,?,?,?,?,?)",
-                     (project_id, name, marketplace, country, language, category, now, now))
+        self.execute("INSERT INTO projects(id,name,marketplace,country,language,category,workspace_id,created_at,updated_at) "
+                     "VALUES(?,?,?,?,?,?,?,?,?)",
+                     (project_id, name, marketplace, country, language, category, workspace_id, now, now))
         return self.one("SELECT * FROM projects WHERE id=?", (project_id,))
 
     def create_run(self, project_id, sources):
@@ -100,7 +104,7 @@ class Database:
         return self.get_run(run_id)
 
     def get_run(self, run_id):
-        row = self.one("SELECT r.*,p.name project_name,p.marketplace,p.country,p.language,p.category "
+        row = self.one("SELECT r.*,p.name project_name,p.marketplace,p.country,p.language,p.category,p.workspace_id "
                        "FROM runs r JOIN projects p ON p.id=r.project_id WHERE r.id=?", (run_id,))
         if row:
             row["sources"] = json.loads(row.pop("source_json"))

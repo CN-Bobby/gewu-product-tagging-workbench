@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -12,7 +12,7 @@ from .db import *
 from . import importer, service, jobs, harness
 from .exporter import export_run
 from . import draft,batch,draft_export,text_facts
-from . import field_catalog,worksheet_query,task_control
+from . import field_catalog,worksheet_query,task_control,project_files,project_library
 from . import knowledge,templates,storage_management,model_settings,capabilities
 from .keyword_research import routes as keyword_research_routes
 from .keyword_research import registry as keyword_registry, runner as keyword_runner
@@ -326,6 +326,42 @@ def project_list():return templates.projects()
 @app.post('/api/projects')
 def project_create(body:dict):return templates.create_project(body.get('name'))
 
+@app.get('/api/projects/{wid}/artifacts')
+def project_artifacts(wid:str,kind:str|None=None):return project_files.list_artifacts(wid,kind)
+
+@app.get('/api/projects/{wid}/artifacts/{artifact_id}/download')
+def project_artifact_download(wid:str,artifact_id:str):
+    path=project_files.artifact_path(wid,artifact_id)
+    with Session() as s:item=require(s,ProjectArtifact,artifact_id)
+    return FileResponse(path,filename=item.name)
+
+@app.get('/api/projects/{wid}/files')
+def project_files_index(wid:str):
+    project=project_files.public_project(wid)
+    artifacts=project_files.list_artifacts(wid)
+    folders=[{'kind':kind,'path':path,'count':sum(1 for item in artifacts if item['kind']==kind)}
+             for kind,path in project_files.FOLDERS.items()]
+    return {'project':project,'folders':folders,'artifacts':artifacts}
+
+@app.get('/api/projects/{wid}/library')
+def project_library_index(wid:str):return project_library.list_library(wid)
+
+@app.get('/api/projects/{wid}/library/{artifact_id}/workbook')
+def project_library_workbook(wid:str,artifact_id:str,sheet:str='',offset:int=0,
+                             limit:int=50,query:str=''):
+    return project_library.workbook_page(wid,artifact_id,sheet=sheet,offset=offset,
+                                         limit=limit,query=query)
+
+@app.get('/api/projects/{wid}/library/{artifact_id}/images/{image_id}')
+def project_library_image(wid:str,artifact_id:str,image_id:str):
+    return project_library.image_thumbnail(wid,artifact_id,image_id)
+
+@app.get('/api/projects/{wid}/library/{artifact_id}/html')
+def project_library_html(wid:str,artifact_id:str):
+    return PlainTextResponse(project_library.html_text(wid,artifact_id),
+                             media_type='text/plain; charset=utf-8',
+                             headers={'X-Content-Type-Options':'nosniff'})
+
 @app.get('/api/projects/{wid}/templates')
 def template_list(wid:str):return templates.list_templates(wid)
 
@@ -489,7 +525,17 @@ def draft_reject(did:str,pid:str):
 def draft_correct(did:str,product_id:str,column_id:str,body:dict):return draft.correct(did,product_id,column_id,body.get('value'),body.get('expected_edit'))
 
 @app.post('/api/drafts/{did}/versions')
-def draft_version(did:str):return draft.save_version(did)
+def draft_version(did:str):
+    item=draft.save_version(did)
+    data=draft.sheet(did,item['id'])
+    workspace_id=(data.get('dataset') or {}).get('workspace_id')
+    if workspace_id:
+        export_path=draft_export.export(did,[column['id'] for column in data.get('columns',[])],
+                                        item['id'],unknown_as_blank=True)
+        item['project_artifact']=project_files.register_file(workspace_id,'data_x',export_path,
+            source_type='data_x_snapshot',source_id=item['id'],name=f"Data-X-V{item['version']}.xlsx",
+            metadata={'dataset_id':did,'version':item['version']})
+    return item
 
 @app.get('/api/drafts/{did}/compare')
 def draft_compare(did:str,left:str,right:str|None=None):return draft.compare(did,left,right)
