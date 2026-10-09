@@ -27,7 +27,11 @@ python .\scripts\import_provider_settings.py --apply
 
 DEV 使用 Python 自动重载和 Vite 热更新。当前机器已有非运行中心管理的 Vite 服务占用 5173，因此固定开发入口采用 5174，原进程保持不动。Vite 代理目标固定读取 `GEWU_DEV_API_URL`，默认 `http://127.0.0.1:8896`，只接受回环 HTTP 的 8896 端口；代理请求要求本地 5174 Host，若带 Origin 则必须是 `localhost` 或 `127.0.0.1` 的 5174 Origin。仓库 Vite 配置不再默认代理正式端口 8765。
 
-DEV/TEST 进程会继承 `GEWU_PROFILE=dev|test` 与 `GEWU_ALLOW_EXTERNAL_EFFECTS=0`。PROD 使用 `GEWU_PROFILE=prod`。DEV/TEST 数据与 PROD 路径相同、服务端口被未知进程占用、构建清单缺失或运行身份不符时，启动器停止并保留现有进程。停止操作仅读取运行中心登记的 PID，并核验可执行文件与命令行身份；身份不符时不会结束该进程。
+DEV 始终以 `GEWU_PROFILE=dev` 和离线策略启动，并清除继承的 `GEWU_TEST_EXTERNAL_EFFECTS`。每次 Run Center 启动 TEST 都会弹出外部调用模式确认框：**是**允许本次单个 TEST 进程使用 `live_validation` 集成调用；**否**为默认选择，保持 `offline`；**取消或关闭**会中止 TEST 启动。live validation 可能调用模型、MCP 或 Amazon 并产生费用，使用隔离的 `K:\GeWuTest\Data` 与 `K:\GeWuTest\Cache`。此开关不会计量或强制请求/费用上限；用户应只在功能中输入明确授权的小范围，并在人工记录中写下授权上限和结果。Run Center 只在启动该 TEST 子进程时设置 `GEWU_TEST_EXTERNAL_EFFECTS=live_validation`，启动后立即恢复自身环境；实例 ID 为 `TEST-LIVE-VALIDATION`。offline TEST 的实例 ID 为 `TEST`。两种模式都关闭 TEST 任务恢复。
+
+桌面入口使用默认 `-TestExternalEffectsMode prompt`。候选冻结脚本及自动化健康检查显式传入 `-TestExternalEffectsMode offline`，不会弹出确认框，也不能启用真实调用；不要通过手工设置环境变量替代桌面确认。
+
+Run Center 启动后读取 `/api/runtime/status`，核对 `profile`、所选 `external_effects.policy` 和实例 ID。若 8895 已有 listener 但运行策略或身份与此次选择不符，启动器会报错并保留现有进程；它不会停止或替换该实例。切换模式须先显式停止身份匹配的 TEST，再启动并重新选择。DEV/TEST 数据与 PROD 路径重叠、服务端口被未知进程占用、构建清单缺失或运行身份不符时，同样拒绝启动。停止操作仅读取运行中心登记的 PID，并核验可执行文件与命令行身份；TEST 允许停止身份匹配的 offline 或 live_validation 进程，身份不符时不会结束进程。
 
 运行中心配置和 PID 记录位于当前 Windows 用户的 `%LOCALAPPDATA%\GeWuWorkbench\RunCenter`。启动入口持有同一独占维护锁；TEST 重置、冻结或回退期间，新启动会安全失败，不能与目录切换并发。停止只验证登记身份，不受维护锁阻挡。可手动查询或停止某个已登记入口：
 

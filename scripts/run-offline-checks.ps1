@@ -33,6 +33,7 @@ $sandbox = Join-Path $env:TEMP "GeWuOfflineChecks\$runId"
 $env:GEWU_PROFILE = 'test'
 $env:GEWU_INSTANCE_ID = 'OFFLINE-CHECKS'
 $env:GEWU_ALLOW_EXTERNAL_EFFECTS = '0'
+Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
 $env:TAG_STORAGE = Join-Path $sandbox 'Data'
 $env:TAG_CACHE = Join-Path $sandbox 'Cache'
 $env:GEWU_REPORTS_DIR = $ReportDir

@@ -5,10 +5,10 @@
 | 环境 | 入口 | 端口 | 业务数据 | 外部任务 |
 | --- | --- | --- | --- | --- |
 | DEV | 桌面“格物 · 打开开发版” | 页面 5174，API 8896 | `K:\GeWuDev\Data` | 默认关闭 |
-| TEST | 桌面“格物 · 打开验收版” | 8895 | `K:\GeWuTest\Data` | 默认关闭 |
+| TEST | 桌面“格物 · 打开验收版” | 8895 | `K:\GeWuTest\Data` | 每次启动选择 `offline`（默认）或单进程 `live_validation` |
 | PROD | 桌面“格物 · 正式工作台” | 8765 | `K:\Bobbytagging\Data` | 按正式环境既有权限 |
 
-每个快捷方式由 `%LOCALAPPDATA%\GeWuWorkbench\RunCenter\run-center.ps1` 管理。端口冲突、数据目录重叠、TEST 清单与代码不一致、进程身份不符时会停止并保留现有进程。开发版热更新只在 DEV 使用；TEST 只指向 `K:\GeWuTest\Current\app` 的冻结清单。入口启动与 TEST 维护使用同一独占锁，重置、冻结和回退期间不会有新实例并发打开数据或程序目录。
+每个快捷方式由 `%LOCALAPPDATA%\GeWuWorkbench\RunCenter\run-center.ps1` 管理。端口冲突、数据目录重叠、TEST 清单与代码不一致、进程身份或外部调用策略不符时会停止本次启动并保留现有进程，不会停止或替换不匹配的 listener。开发版热更新只在 DEV 使用；TEST 只指向 `K:\GeWuTest\Current\app` 的冻结清单。入口启动与 TEST 维护使用同一独占锁，重置、冻结和回退期间不会有新实例并发打开数据或程序目录。
 
 DEV/TEST 在当前 Windows 用户的 DPAPI 凭证库中共享测试凭证，PROD 使用独立 scope。模型提供方配置在 Run Center 下按 DEV/TEST 分开保存，避免 TEST 重置业务数据时丢失模型选择。首次迁移只从 `K:\Bobbytagging\Data-Test` 导入模型与 SellerSprite 凭证；来源文件保留且不验证 Key。PROD 不在本轮迁移。业务数据库、缓存、构建目录仍然分离。版本面板只显示凭证是否配置，不返回值。
 
@@ -20,7 +20,7 @@ DEV/TEST 在当前 Windows 用户的 DPAPI 凭证库中共享测试凭证，PROD
 powershell -NoProfile -File .\scripts\run-offline-checks.ps1
 ```
 
-脚本设置 `GEWU_PROFILE=test`，运行后端 pytest、前端测试和生产前端构建，不会启动工作台、模型、MCP、Amazon 采集或付费任务。pytest 为兼容既有假服务测试，隔离每个用例的 DPAPI 与 Reasonix 路径，并只允许回环网络；外网请求会在套接字层失败。`test_runtime_governance.py` 单独验证 TEST 写接口返回离线阻断且启动恢复不执行。JSON 报告保存在 `K:\GeWuTest\Reports`，包含 commit、构建 ID、脏状态、回环网络保护与各步骤状态，不保存原始密钥或终端输出。
+脚本设置 `GEWU_PROFILE=test`，清除继承的 `GEWU_TEST_EXTERNAL_EFFECTS`，运行后端 pytest、前端测试和生产前端构建，不会启动工作台、模型、MCP、Amazon 采集或付费任务。pytest 为兼容既有假服务测试，隔离每个用例的 DPAPI 与 Reasonix 路径，并只允许回环网络；外网请求会在套接字层失败。`test_runtime_governance.py` 单独验证 TEST 写接口返回离线阻断且启动恢复不执行。JSON 报告保存在 `K:\GeWuTest\Reports`，包含 commit、构建 ID、脏状态、回环网络保护与各步骤状态，不保存原始密钥或终端输出。自动回归始终保持 offline，即使之后人工启动了 live-validation TEST。
 
 ## 固定样本
 
@@ -47,7 +47,7 @@ $commit = git rev-parse HEAD
 powershell -NoProfile -File .\scripts\freeze-test-candidate.ps1 -Commit $commit
 ```
 
-脚本先跑离线回归，再使用 `build_windows.py --dev` 生成无安装器的干净构建，逐项验证 `build-manifest.json` 的文件哈希。普通日常修改不更新客户版本号。只有审阅自动报告后，才加 `-Activate` 更新 TEST；程序先进入 staging，数据与缓存建立排除凭证和日志的备份，原程序保留在 `Rollback\Previous`。`-StartAfter` 可在激活后做一次健康与离线身份检查。
+脚本先跑离线回归，再使用 `build_windows.py --dev` 生成无安装器的干净构建，逐项验证 `build-manifest.json` 的文件哈希。候选构建和 `-StartAfter` 都显式选择 offline，不会等待模式对话框或启用真实调用。普通日常修改不更新客户版本号。只有审阅自动报告后，才加 `-Activate` 更新 TEST；程序先进入 staging，数据与缓存建立排除凭证和日志的备份，原程序保留在 `Rollback\Previous`。`-StartAfter` 可在激活后做一次健康与离线身份检查。
 
 更新候选工作树前先确认 `git status --short` 为空，再将它以 detached HEAD 切到已选定的完整提交。冻结脚本会核对它与 `candidateProjectRoot` 完全一致，不接受 DEV 或主工作树作为替代来源。
 
@@ -57,13 +57,15 @@ powershell -NoProfile -File .\scripts\freeze-test-candidate.ps1 -Commit $commit
 
 ## 人工验收
 
-TEST 候选启动后创建独立清单：
+TEST 候选启动后，桌面入口会每次询问外部调用模式：按 **否**（默认）使用 offline；按 **是**允许本次单进程 `live_validation` 集成调用；按 **取消**或关闭窗口则不启动。live validation 会启用模型、MCP 或 Amazon 等外部调用，可能产生费用。业务数据仍只使用隔离 `K:\GeWuTest\Data`，缓存使用 `K:\GeWuTest\Cache`。环境变量仅传给本次 TEST 进程，运行身份必须显示 `TEST-LIVE-VALIDATION/live_validation`；offline 身份为 `TEST/offline`。该模式开关不计量或强制请求/费用上限；用户须在功能中只提交明确授权的小范围，并在清单填写授权上限和结果。若 8895 已有实例但模式与这次选择不一致，Run Center 保留该进程并拒绝启动，不能自动切换或替换。
+
+创建独立人工清单：
 
 ```powershell
 powershell -NoProfile -File .\scripts\new-manual-acceptance.ps1
 ```
 
-在 `K:\GeWuTest\Reports` 生成的 Markdown 清单中逐项操作、将通过项改为 `[x]`，并在有问题时记录页面位置和复现步骤。它绑定当前 TEST build、commit、夹具清单哈希和自动回归报告哈希。确认每项都完成后归档：
+在 `K:\GeWuTest\Reports` 生成的 Markdown 清单中逐项操作、将通过项改为 `[x]`，并在有问题时记录页面位置和复现步骤。它绑定当前 TEST policy/build/commit、夹具清单哈希和同 commit 的离线自动回归报告哈希。offline 清单记录 0 次外部调用预期。live-validation 清单必须由用户填写清楚的 live-call 记录：服务、workflow/run ID、选定输入范围、授权额度、用户观察到的调用情况和结果路径；Run Center 不会测量或推断调用数。没有执行外部调用时，明确填写“未执行”和相应结果路径。自动回归报告仍必须是通过且 0 外部请求的 offline 报告。确认每项都完成后归档：
 
 ```powershell
 powershell -NoProfile -File .\scripts\finalize-manual-acceptance.ps1 -Checklist 'K:\GeWuTest\Reports\manual-acceptance-....md' -Status passed
@@ -77,12 +79,12 @@ powershell -NoProfile -File .\scripts\finalize-manual-acceptance.ps1 -Checklist 
 
 以下功能属于本项目的长期验收回归：
 
-- 通过 TEST 桌面入口启动；运行状态面板的 build、commit、数据目录与 offline 策略一致。
+- 通过 TEST 桌面入口启动；每次选择 offline 或 live validation，并核对运行状态面板的 policy、instance ID、build、commit 和隔离数据目录。
 - 展开和收起全局项目树、进入项目资料、浏览器后退/前进后仍停留在正确页面与项目。
 - 泳衣源 Excel 的工作表切换、内嵌图片缩略图与图片预览。
 - 狗狗玩具 Data X V1、泳衣和狗狗玩具评论 Excel、VOC HTML 预览。
 - 约 375px 窄屏下树、页面导航和预览不遮挡关键操作。
-- DEV/TEST 关闭模型、MCP、Amazon 采集、评论采集、VOC 和任务恢复；本地预览仍可用。
+- DEV 始终关闭模型、MCP、Amazon 采集、评论采集与 VOC；offline TEST 同样关闭这些外部调用。live-validation TEST 只在本次进程中开放经用户记录范围内的外部验证；TEST 的自动任务恢复在两种模式下都关闭，本地预览仍可用。
 - 重启 TEST 后身份与凭证状态持续；所有报告只记录“已配置/未配置”。
 - 发生 TEST 数据重置时，正式数据哨兵和哈希不变。
 

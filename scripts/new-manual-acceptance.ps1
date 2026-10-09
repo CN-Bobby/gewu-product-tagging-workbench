@@ -12,9 +12,18 @@ if (-not $reports.StartsWith('K:\GeWuTest\Reports', [StringComparison]::OrdinalI
 }
 New-Item -ItemType Directory -Force -Path $reports | Out-Null
 $status = Invoke-RestMethod -Uri "$Url/api/runtime/status" -TimeoutSec 5
-if ($status.profile -ne 'test' -or $status.external_effects.policy -ne 'offline' -or
+if ($status.profile -ne 'test' -or $status.external_effects.policy -notin @('offline', 'live_validation') -or
     $status.source.dirty -ne $false -or -not $status.source.commit) {
-    throw 'The current listener is not a clean, offline TEST build. No checklist was created.'
+    throw 'The current listener is not a clean TEST build with a supported runtime policy. No checklist was created.'
+}
+$expectedData = [IO.Path]::GetFullPath([string]$config.profiles.TEST.data).TrimEnd('\')
+$actualData = [IO.Path]::GetFullPath([string]$status.data.path).TrimEnd('\')
+if ($expectedData -ine [IO.Path]::GetFullPath('K:\GeWuTest\Data').TrimEnd('\') -or $actualData -ine $expectedData) {
+    throw "The current listener does not use the isolated TEST data directory: $actualData"
+}
+$expectedInstanceId = if ($status.external_effects.policy -eq 'live_validation') { 'TEST-LIVE-VALIDATION' } else { 'TEST' }
+if ($status.instance_id -ne $expectedInstanceId) {
+    throw "The current listener instance id does not match policy $($status.external_effects.policy). No checklist was created."
 }
 $fixtureManifest = 'K:\GeWuFixtures\project-library-v1\fixture-manifest.json'
 if (-not (Test-Path -LiteralPath $fixtureManifest -PathType Leaf)) { throw "Fixture manifest is missing: $fixtureManifest" }
@@ -45,25 +54,48 @@ $items = @(
     '打开两个样本项目的评论 Excel，检查工作表与搜索；打开泳衣与狗狗玩具 VOC HTML 预览。',
     '窄屏约 375px 检查导航、项目树和预览面板，无横向溢出或遮挡关键操作。',
     '确认 DEV/TEST 的模型与 SellerSprite 状态只显示“已配置/未配置”，页面、日志与验收报告没有密钥。',
-    '在 TEST 尝试启动模型、MCP、Amazon 采集或 VOC 任务，确认收到离线阻断；仅执行本地预览。',
-    '退出并重新打开 TEST，确认提交、构建、数据目录、凭证状态和离线策略保持一致。',
     '若执行 TEST 数据重置，确认目标为 K:\GeWuTest\Data，旧目录保存在 K:\GeWuTest\Backups，PROD 哨兵不变。'
 )
+$items[0] = ('从桌面“格物 · 打开验收版”进入；版本面板显示 TEST、冻结提交、隔离数据目录 K:\GeWuTest\Data 和 ' + $status.external_effects.policy + '。')
+if ($status.external_effects.policy -eq 'offline') {
+    $items += '在 TEST 尝试启动模型、MCP、Amazon 采集或 VOC 任务，确认收到离线阻断；仅执行本地预览。'
+} else {
+    $items += '仅按下方用户填写的 live-call 记录执行外部验证，并确认实际输入范围和额度没有超出记录。'
+}
+$items += '退出并重新打开 TEST；每次启动都重新选择模式，确认本次 build、数据目录、实例 ID 和策略一致。'
+$liveCallRecord = @(
+    '## User-entered live-call record (required for live_validation)',
+    '- Live-call service: [fill in service or N/A]',
+    '- Live-call workflow/run ID: [fill in workflow or run ID]',
+    '- Live-call selected input scope: [fill in exact input scope]',
+    '- Live-call authorized ceiling: [fill in approved call/cost ceiling]',
+    '- Live-call observed calls (user-entered, not machine-measured): [fill in after run]',
+    '- Live-call result path (user-entered): [fill in report or artifact path]', ''
+)
+$liveCallSection = if ($status.external_effects.policy -eq 'live_validation') { $liveCallRecord } else { @() }
 $content = @(
     '# 格物 TEST 人工验收', '',
     "- Run ID: $runId",
     "- Build ID: $($status.source.build_id)",
     "- Commit: $($status.source.commit)",
     "- Data: $($status.data.path)",
+    "- TEST policy: $($status.external_effects.policy)",
     "- Fixture: $($fixture.fixture_version)",
     "- Fixture manifest SHA-256: $fixtureHash",
-    "- Offline report: $($automated.file.FullName)",
-    "- Offline report SHA-256: $automatedHash",
+    "- Automated report: $($automated.file.FullName)",
+    "- Automated report SHA-256: $automatedHash",
     "- Browser report: $($browser.file.FullName)",
-    "- Browser report SHA-256: $browserHash",
-    '- External calls: 0 expected (DEV/TEST offline policy)', '',
-    '逐项完成后把 `[ ]` 改为 `[x]`，发现问题时写明复现步骤和页面位置。', ''
+    "- Browser report SHA-256: $browserHash"
 )
+if ($status.external_effects.policy -eq 'offline') {
+    $content += '- External calls: 0 expected (offline policy).'
+} else {
+    $content += '- External calls: use the user-entered record below; Run Center does not measure call counts.'
+}
+$content += ''
+foreach ($line in $liveCallSection) { $content += $line }
+$content += '逐项完成后把 `[ ]` 改为 `[x]`，发现问题时写明复现步骤和页面位置。'
+$content += ''
 foreach ($item in $items) { $content += "- [ ] $item"; $content += '' }
 Set-Content -LiteralPath $path -Value ($content -join "`r`n") -Encoding UTF8
 Write-Output "Manual checklist created: $path"

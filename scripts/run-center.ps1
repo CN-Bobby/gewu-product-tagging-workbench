@@ -2,6 +2,7 @@
 param(
     [Parameter(Mandatory = $true)][ValidateSet('DEV', 'TEST', 'PROD')][string]$Profile,
     [ValidateSet('Start', 'Stop', 'Status')][string]$Action = 'Start',
+    [ValidateSet('prompt', 'offline')][string]$TestExternalEffectsMode = 'prompt',
     [string]$ConfigPath = (Join-Path $env:LOCALAPPDATA 'GeWuWorkbench\RunCenter\config.json'),
     [switch]$NoOpen
 )
@@ -62,11 +63,33 @@ function Get-Health([string]$Url) {
 function Get-RuntimeStatus([string]$Url) {
     try { Invoke-RestMethod -Uri "$Url/api/runtime/status" -TimeoutSec 2 } catch { $null }
 }
-function Test-ProfileRuntime([string]$Url, [string]$ExpectedProfile) {
+function Test-ProfileRuntime([string]$Url, [string]$ExpectedProfile, [string[]]$ExpectedPolicies = @('offline'), [string[]]$ExpectedInstanceIds = @()) {
     $status = Get-RuntimeStatus $Url
     if (-not $status -or $status.profile -ne $ExpectedProfile) { return $false }
-    if ($ExpectedProfile -ne 'prod' -and $status.external_effects.policy -ne 'offline') { return $false }
+    if ($ExpectedProfile -ne 'prod' -and $status.external_effects.policy -notin $ExpectedPolicies) { return $false }
+    if ($ExpectedInstanceIds.Count -gt 0 -and $status.instance_id -notin $ExpectedInstanceIds) { return $false }
     return $true
+}
+function Select-TestRuntimePolicy {
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    $message = @'
+TEST 即将使用隔离数据 K:\GeWuTest\Data 和独立缓存 K:\GeWuTest\Cache。
+
+“是”允许本次 TEST 进程发起 live-validation 集成调用。模型、MCP 或 Amazon 调用可能产生费用。此开关不会计量或强制请求/费用上限；请只在功能中输入明确授权的小范围，并在人工验收清单记录授权上限与结果。
+
+“否”保持 offline（默认）。取消或关闭对话框将中止启动 TEST。
+'@
+    $choice = [System.Windows.Forms.MessageBox]::Show(
+        $message,
+        '格物运行中心 · TEST 外部调用模式',
+        [System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
+        [System.Windows.Forms.MessageBoxIcon]::Warning,
+        [System.Windows.Forms.MessageBoxDefaultButton]::Button2)
+    switch ($choice) {
+        ([System.Windows.Forms.DialogResult]::Yes) { return 'live_validation' }
+        ([System.Windows.Forms.DialogResult]::No) { return 'offline' }
+        default { throw 'TEST startup canceled; nothing was started or stopped.' }
+    }
 }
 function Show-ProdPendingNotice($Health) {
     if ($Profile -ne 'PROD' -or $Health.release_status -ne 'pending_acceptance') { return }
@@ -172,7 +195,7 @@ if ($Action -eq 'Status') {
     $healthUrl = if ($Profile -eq 'DEV') { "http://127.0.0.1:$($entry.apiPort)" } else { $url }
     $health = Get-Health $healthUrl
     $runtime = Get-RuntimeStatus $healthUrl
-    $runtimeIdentity = if ($runtime) { "$($runtime.profile)/$($runtime.external_effects.policy)" } else { 'runtime-status-unavailable' }
+    $runtimeIdentity = if ($runtime) { "$($runtime.profile)/$($runtime.external_effects.policy); instance_id=$($runtime.instance_id)" } else { 'runtime-status-unavailable' }
     [pscustomobject]@{ profile = $Profile; url = $url; api_url = $healthUrl; page_status = if ($Profile -eq 'DEV') { if (Get-PortOwner ([int]$entry.webPort)) { 'listening' } else { 'stopped' } } else { if ($health) { 'ready' } else { 'stopped' } }; api_status = if ($health) { $health.status } else { 'stopped' }; runtime = $runtimeIdentity; build_id = $health.build_id; commit = $health.commit; storage = $health.storage; record = $recordPath } | Format-List
     exit 0
 }
@@ -184,6 +207,19 @@ if ($Action -eq 'Start') {
     $lockPath = Join-Path $runCenterRoot 'maintenance.lock'
     try { $startupLock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
     catch { throw 'Another Run Center start or TEST maintenance operation is active. Nothing was started.' }
+}
+
+$testRuntimePolicy = 'offline'
+$testRuntimeInstanceId = 'TEST'
+if ($Action -eq 'Start' -and $Profile -eq 'TEST') {
+    if ($TestExternalEffectsMode -eq 'prompt') {
+        try { $testRuntimePolicy = Select-TestRuntimePolicy }
+        catch {
+            if ($startupLock) { $startupLock.Dispose(); $startupLock = $null }
+            throw
+        }
+    }
+    if ($testRuntimePolicy -eq 'live_validation') { $testRuntimeInstanceId = 'TEST-LIVE-VALIDATION' }
 }
 
 if ($Action -eq 'Start' -and $record) {
@@ -218,7 +254,11 @@ if ($Action -eq 'Start' -and $record) {
     $recordMatches = $runningHealth -and $runningHealth.application -eq 'product-tagging-workbench' -and
         (Get-CanonicalPath $runningHealth.storage) -eq (Get-CanonicalPath $record.data) -and
         $runningHealth.commit -eq $record.commit -and $runningHealth.build_id -eq $record.build_id
-    if ($recordMatches -and $Profile -ne 'PROD') { $recordMatches = Test-ProfileRuntime $healthUrl $Profile.ToLowerInvariant() }
+    if ($recordMatches -and $Profile -ne 'PROD') {
+        $expectedPolicy = if ($Profile -eq 'TEST') { @($testRuntimePolicy) } else { @('offline') }
+        $expectedInstance = if ($Profile -eq 'TEST') { @($testRuntimeInstanceId) } else { @('DEV') }
+        $recordMatches = Test-ProfileRuntime $healthUrl $Profile.ToLowerInvariant() $expectedPolicy $expectedInstance
+    }
     if ($recordMatches) {
         $servicePort = if ($Profile -eq 'DEV') { [int]$entry.apiPort } else { [int]$entry.port }
         $serviceOwner = Get-PortOwner $servicePort
@@ -265,8 +305,12 @@ if ($Action -eq 'Stop') {
     }
     $released = -not $serviceOwner
     if ($health) {
-        if ($Profile -ne 'PROD' -and -not (Test-ProfileRuntime $url $Profile.ToLowerInvariant())) {
-            throw "Runtime profile does not match this $Profile entry, or it is not explicitly offline. Nothing was stopped."
+        if ($Profile -ne 'PROD') {
+            $allowedPolicies = if ($Profile -eq 'TEST') { @('offline', 'live_validation') } else { @('offline') }
+            $allowedInstances = if ($Profile -eq 'TEST') { @('TEST', 'TEST-LIVE-VALIDATION') } else { @('DEV') }
+            if (-not (Test-ProfileRuntime $url $Profile.ToLowerInvariant() $allowedPolicies $allowedInstances)) {
+                throw "Runtime profile or policy does not match this $Profile entry. Nothing was stopped."
+            }
         }
         try { Invoke-RestMethod -Method Post -Uri "$url/api/server/stop" -TimeoutSec 3 | Out-Null } catch { }
         for ($i=0; $i -lt 20; $i++) {
@@ -370,7 +414,14 @@ if ($Profile -eq 'DEV') {
     $env:GEWU_REPORTS_DIR = $config.profiles.TEST.reports
     Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue
     $apiArgs = @('-m','uvicorn','backend.app:app','--host','127.0.0.1','--port',"$apiPort",'--reload')
-    $api = Start-Process -FilePath $python -ArgumentList $apiArgs -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logRoot 'api.out.log') -RedirectStandardError (Join-Path $logRoot 'api.err.log') -PassThru
+    $previousTestExternalEffects = [Environment]::GetEnvironmentVariable('GEWU_TEST_EXTERNAL_EFFECTS', 'Process')
+    try {
+        Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
+        $api = Start-Process -FilePath $python -ArgumentList $apiArgs -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logRoot 'api.out.log') -RedirectStandardError (Join-Path $logRoot 'api.err.log') -PassThru
+    } finally {
+        if ($null -eq $previousTestExternalEffects) { Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue }
+        else { $env:GEWU_TEST_EXTERNAL_EFFECTS = $previousTestExternalEffects }
+    }
     Add-ProcessRecord $processes 'api' $api $python "--port $apiPort"
     $record = New-RunRecord $Profile "http://127.0.0.1:$webPort" $dataPath $cachePath '' '' $root $processes
     Save-Record $record $recordPath
@@ -432,8 +483,10 @@ if ($Profile -eq 'DEV') {
         if (-not (Test-FrozenListenerIdentity ([int]$portOwner) $manifest)) {
             throw "$Profile listener PID $portOwner does not match the embedded Python/bootstrap identity and verified build manifest. Nothing was stopped or adopted."
         }
-        if ($Profile -ne 'PROD' -and -not (Test-ProfileRuntime $entry.url $Profile.ToLowerInvariant())) {
-            throw "$Profile port is serving a build without the required offline runtime identity. Nothing was stopped or adopted."
+        $expectedPolicy = if ($Profile -eq 'TEST') { @($testRuntimePolicy) } else { @('offline') }
+        $expectedInstance = if ($Profile -eq 'TEST') { @($testRuntimeInstanceId) } else { @('DEV') }
+        if ($Profile -ne 'PROD' -and -not (Test-ProfileRuntime $entry.url $Profile.ToLowerInvariant() $expectedPolicy $expectedInstance)) {
+            throw "$Profile port does not match the selected runtime policy/instance. The existing process was left running; nothing was stopped or adopted."
         }
         Write-Output "$Profile is already serving the exact frozen build and data directory, but was not launched by this Run Center. Its process is not claimed for Stop."
         if (-not $NoOpen) { Start-Process $entry.url; Show-ProdPendingNotice $health }
@@ -443,11 +496,25 @@ if ($Profile -eq 'DEV') {
     $env:TAG_PROVIDER_HOME = if ($entry.providerHome) { [IO.Path]::GetFullPath([string]$entry.providerHome) } else { Join-Path $dataPath 'providers' }
     $env:GEWU_API_URL = $entry.url
     $env:GEWU_FRONTEND_URL = $entry.url
-    $env:GEWU_INSTANCE_ID = $Profile
     $env:GEWU_REPORTS_DIR = $config.profiles.TEST.reports
     if ($Profile -ne 'PROD') { $env:GEWU_ALLOW_EXTERNAL_EFFECTS = '0' } else { Remove-Item Env:GEWU_ALLOW_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue }
     $args = @('--data',$dataPath,'--cache',$cachePath,'--port',"$port",'--no-open')
-    $app = Start-Process -FilePath $exe -ArgumentList $args -WorkingDirectory $appDir -WindowStyle Hidden -PassThru
+    $previousTestExternalEffects = [Environment]::GetEnvironmentVariable('GEWU_TEST_EXTERNAL_EFFECTS', 'Process')
+    $previousInstanceId = [Environment]::GetEnvironmentVariable('GEWU_INSTANCE_ID', 'Process')
+    try {
+        $env:GEWU_INSTANCE_ID = if ($Profile -eq 'TEST') { $testRuntimeInstanceId } else { $Profile }
+        if ($Profile -eq 'TEST' -and $testRuntimePolicy -eq 'live_validation') {
+            $env:GEWU_TEST_EXTERNAL_EFFECTS = 'live_validation'
+        } else {
+            Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
+        }
+        $app = Start-Process -FilePath $exe -ArgumentList $args -WorkingDirectory $appDir -WindowStyle Hidden -PassThru
+    } finally {
+        if ($null -eq $previousTestExternalEffects) { Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue }
+        else { $env:GEWU_TEST_EXTERNAL_EFFECTS = $previousTestExternalEffects }
+        if ($null -eq $previousInstanceId) { Remove-Item Env:GEWU_INSTANCE_ID -ErrorAction SilentlyContinue }
+        else { $env:GEWU_INSTANCE_ID = $previousInstanceId }
+    }
     Add-ProcessRecord $processes 'app' $app $exe '--data'
     $record = New-RunRecord $Profile $entry.url $dataPath $cachePath $buildId $manifest.commit '' $processes
     Save-Record $record $recordPath
@@ -455,8 +522,10 @@ if ($Profile -eq 'DEV') {
     for ($i=0; $i -lt 90; $i++) { $health = Get-Health $entry.url; if ($health -and $health.application -eq 'product-tagging-workbench') { $ready = $true; break }; Start-Sleep -Milliseconds 500 }
     if (-not $ready) { throw "$Profile failed to start. Inspect its data\logs\desktop.log" }
     if ((Get-CanonicalPath $health.storage) -ne $dataPath -or $health.build_id -ne $buildId -or $health.commit -ne $manifest.commit) { throw "$Profile runtime identity does not match its manifest or data path." }
-    if ($Profile -ne 'PROD' -and -not (Test-ProfileRuntime $entry.url $Profile.ToLowerInvariant())) {
-        throw "$Profile did not report the expected offline runtime profile after startup. It remains untouched for inspection."
+    $expectedPolicy = if ($Profile -eq 'TEST') { @($testRuntimePolicy) } else { @('offline') }
+    $expectedInstance = if ($Profile -eq 'TEST') { @($testRuntimeInstanceId) } else { @('DEV') }
+    if ($Profile -ne 'PROD' -and -not (Test-ProfileRuntime $entry.url $Profile.ToLowerInvariant() $expectedPolicy $expectedInstance)) {
+        throw "$Profile did not report the selected runtime profile, policy and instance id after startup. It remains untouched for inspection."
     }
     $runtimeOwner = Get-PortOwner $port
     $runtimeProc = if ($runtimeOwner) { Get-ProcessIdentity ([int]$runtimeOwner) } else { $null }
