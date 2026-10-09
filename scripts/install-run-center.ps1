@@ -54,7 +54,7 @@ $config = [ordered]@{
 }
 $configPath = Join-Path $InstallRoot 'config.json'
 if (Test-Path -LiteralPath $configPath) {
-    $existingConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    $existingConfig = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($existingConfig.schema -ne 1 -or -not $existingConfig.profiles) {
         throw "Existing Run Center config is not recognized and was left unchanged: $configPath"
     }

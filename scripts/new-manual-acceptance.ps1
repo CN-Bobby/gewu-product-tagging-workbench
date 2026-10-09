@@ -5,7 +5,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { throw "Run Center config is missing: $ConfigPath" }
-$config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+$config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $reports = [IO.Path]::GetFullPath($config.profiles.TEST.reports)
 if (-not $reports.StartsWith('K:\GeWuTest\Reports', [StringComparison]::OrdinalIgnoreCase)) {
     throw "Manual evidence must stay in K:\GeWuTest\Reports: $reports"
@@ -18,10 +18,10 @@ if ($status.profile -ne 'test' -or $status.external_effects.policy -ne 'offline'
 }
 $fixtureManifest = 'K:\GeWuFixtures\project-library-v1\fixture-manifest.json'
 if (-not (Test-Path -LiteralPath $fixtureManifest -PathType Leaf)) { throw "Fixture manifest is missing: $fixtureManifest" }
-$fixture = Get-Content -LiteralPath $fixtureManifest -Raw | ConvertFrom-Json
+$fixture = Get-Content -LiteralPath $fixtureManifest -Raw -Encoding UTF8 | ConvertFrom-Json
 $fixtureHash = (Get-FileHash -LiteralPath $fixtureManifest -Algorithm SHA256).Hash.ToLowerInvariant()
 $automated = Get-ChildItem -LiteralPath $reports -Filter '*.json' -File -ErrorAction SilentlyContinue |
-    ForEach-Object { try { [pscustomobject]@{ file = $_; data = (Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json) } } catch { $null } } |
+    ForEach-Object { try { [pscustomobject]@{ file = $_; data = (Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json) } } catch { $null } } |
     Where-Object { $_ -and $_.data.status -eq 'passed' -and $_.data.commit -eq $status.source.commit } |
     Sort-Object { $_.file.LastWriteTime } -Descending | Select-Object -First 1
 if (-not $automated) { throw 'No passing automated report exists for the running TEST commit.' }

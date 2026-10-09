@@ -80,7 +80,7 @@ function Test-FrozenListenerIdentity([int]$ProcessId, $ExpectedManifest) {
     $manifestPath = Join-Path $root 'build-manifest.json'
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return $false }
     try {
-        $actual = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        $actual = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($actual.build_id -ne $ExpectedManifest.build_id -or $actual.commit -ne $ExpectedManifest.commit -or
             $actual.source_sha256 -ne $ExpectedManifest.source_sha256) { return $false }
         Test-AppManifestFiles $root $actual
@@ -134,13 +134,13 @@ function Add-ProcessRecord($List, [string]$Role, [System.Diagnostics.Process]$Pr
 }
 
 if (-not (Test-Path -LiteralPath $ConfigPath)) { throw "Run Center is not installed. Run scripts\install-run-center.ps1 first. Missing: $ConfigPath" }
-$config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+$config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $entry = Get-ProfileConfig $config $Profile
 if (-not $entry) { throw "No $Profile profile is configured in $ConfigPath" }
 $runRoot = Join-Path $runCenterRoot 'runtime'
 New-Item -ItemType Directory -Force -Path $runRoot | Out-Null
 $recordPath = Join-Path $runRoot "$Profile.json"
-$record = if (Test-Path -LiteralPath $recordPath) { Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json } else { $null }
+$record = if (Test-Path -LiteralPath $recordPath) { Get-Content -LiteralPath $recordPath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
 
 if ($Action -eq 'Status') {
     $url = $entry.url
@@ -334,7 +334,7 @@ if ($Profile -eq 'DEV') {
     $exe = Join-Path $appDir 'Workbench.exe'
     $manifestPath = Join-Path $appDir 'build-manifest.json'
     if (-not (Test-Path -LiteralPath $exe) -or -not (Test-Path -LiteralPath $manifestPath)) { throw "$Profile frozen app or build manifest is missing: $appDir" }
-    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $buildId = $manifest.build_id
     if (-not $buildId) { throw "Build manifest has no build_id: $manifestPath" }
     Test-AppManifestFiles $appDir $manifest

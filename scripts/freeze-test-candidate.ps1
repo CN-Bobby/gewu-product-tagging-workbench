@@ -97,7 +97,7 @@ if (-not (Test-Path -LiteralPath $python)) { throw "Project Python environment i
 if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot 'frontend\node_modules\vite\bin\vite.js'))) { throw 'Vite dependencies are missing from this fixed candidate worktree.' }
 if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot 'storage\build-tools\reasonix.exe'))) { throw 'Pinned build inputs are missing from this fixed candidate worktree.' }
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { throw "Run Center config is missing: $ConfigPath" }
-$config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+$config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $fixedCandidateRoot = if ($config.candidateProjectRoot) { Canonical $config.candidateProjectRoot } else { '' }
 if (-not $fixedCandidateRoot -or $ProjectRoot -ne $fixedCandidateRoot) {
     throw "TEST candidates must be built from the fixed clean source worktree in Run Center config: $fixedCandidateRoot"
@@ -123,7 +123,7 @@ if ($Activate) {
     if ($sameCommitReports.Count -gt 1) { throw 'Multiple candidate reports exist for this commit; resolve the report identity before activation.' }
     if ($sameCommitReports.Count -eq 1) {
         $reviewedReportPath = Canonical $sameCommitReports[0].FullName
-        $reviewedReport = Get-Content -LiteralPath $reviewedReportPath -Raw | ConvertFrom-Json
+        $reviewedReport = Get-Content -LiteralPath $reviewedReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($reviewedReport.status -ne 'built_pending_activation' -or $reviewedReport.commit -ne $Commit -or
             $reviewedReport.dirty -ne $false -or $reviewedReport.external_requests -ne 0) {
             throw 'Existing candidate report is not an untouched, clean, offline report awaiting activation.'
@@ -135,7 +135,7 @@ if ($Activate) {
             throw 'Reviewed offline report is missing or its SHA-256 changed; activation was refused.'
         }
         $checkReport = Get-Item -LiteralPath $reviewedCheckPath
-        $checkDoc = Get-Content -LiteralPath $reviewedCheckPath -Raw | ConvertFrom-Json
+        $checkDoc = Get-Content -LiteralPath $reviewedCheckPath -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($checkDoc.commit -ne $Commit -or $checkDoc.status -ne 'passed' -or $checkDoc.profile -ne 'test' -or
             $checkDoc.dirty -ne $false -or $checkDoc.external_requests -ne 0) {
             throw 'Reviewed offline report does not prove a clean offline pass for this commit.'
@@ -150,7 +150,7 @@ if (-not $reviewedReport) {
     $checkReport = Get-ChildItem -LiteralPath $ReportDir -Filter 'offline-*.json' -ErrorAction SilentlyContinue |
         Where-Object { $_.LastWriteTime -ge $started } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $checkReport) { throw 'Offline check report was not produced.' }
-    $checkDoc = Get-Content -LiteralPath $checkReport.FullName -Raw | ConvertFrom-Json
+    $checkDoc = Get-Content -LiteralPath $checkReport.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($checkDoc.commit -ne $Commit -or $checkDoc.status -ne 'passed' -or $checkDoc.profile -ne 'test' -or
         $checkDoc.dirty -ne $false -or $checkDoc.external_requests -ne 0) {
         throw 'Offline check report does not match a clean, offline pass for the requested commit.'
@@ -166,9 +166,9 @@ if ($reviewedReport) {
         (Sha256 $manifestPath) -ne ([string]$reviewedReport.manifest_sha256).ToLowerInvariant()) {
         throw 'Frozen build manifest is missing or changed since review; activation was refused.'
     }
-    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 } else {
-    $version = (Get-Content -LiteralPath (Join-Path $ProjectRoot 'VERSION.json') -Raw | ConvertFrom-Json).version
+    $version = (Get-Content -LiteralPath (Join-Path $ProjectRoot 'VERSION.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
     $candidateDirectory = "$version+$($Commit.Substring(0,12))"
     $candidateBuildRoot = Join-Path (Join-Path $ProjectRoot 'builds') $candidateDirectory
     $candidateApp = Canonical (Join-Path $candidateBuildRoot 'app')
@@ -177,14 +177,14 @@ if ($reviewedReport) {
         if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
             throw "An incomplete build directory already exists and was preserved: $candidateBuildRoot"
         }
-        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $sourceHashOutput = @(& $python '-c' "from backend.build_info import build_info; print(build_info()['source_sha256'])")
         if ($LASTEXITCODE -ne 0 -or $sourceHashOutput.Count -ne 1 -or
             ([string]$manifest.source_sha256) -ne ([string]$sourceHashOutput[0]).Trim()) {
             throw 'Existing build source hash does not match this clean candidate worktree; it was left untouched.'
         }
         $pinsPath = Join-Path $ProjectRoot 'build-tools.lock.json'
-        $pins = Get-Content -LiteralPath $pinsPath -Raw | ConvertFrom-Json
+        $pins = Get-Content -LiteralPath $pinsPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $pythonPin = [string]$pins.'python-3.14.3-embed-amd64.zip'.sha256
         $reasonixPin = [string]$pins.'reasonix.exe'.sha256
         if ($manifest.python.sha256 -ne $pythonPin -or $manifest.reasonix.sha256 -ne $reasonixPin) {
@@ -209,7 +209,7 @@ if ($reviewedReport) {
         # Rebuild the path from the local fixed worktree. Native stdout can corrupt non-ASCII paths.
         $candidateApp = Canonical (Join-Path $candidateBuildRoot 'app')
         $manifestPath = Join-Path $candidateApp 'build-manifest.json'
-        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     }
 }
 if ($manifest.commit -ne $Commit -or $manifest.dirty -ne $false -or $manifest.build_mode -ne 'dev' -or $manifest.storage_mode -ne 'isolated') {
@@ -221,7 +221,7 @@ if ($manifest.files.'backend/credential_vault.py' -and $manifest.files.'backend/
 $fixtureVersion = 'not-available'
 $fixtureHash = $null
 if (Test-Path -LiteralPath $FixtureManifest -PathType Leaf) {
-    $fixtureDoc = Get-Content -LiteralPath $FixtureManifest -Raw | ConvertFrom-Json
+    $fixtureDoc = Get-Content -LiteralPath $FixtureManifest -Raw -Encoding UTF8 | ConvertFrom-Json
     $fixtureVersion = [string]$fixtureDoc.fixture_version
     $fixtureHash = Sha256 $FixtureManifest
 }
@@ -287,7 +287,7 @@ if ($Activate) {
     $previousManifestPath = Join-Path $currentApp 'build-manifest.json'
     if (Test-Path -LiteralPath $currentApp) {
         if (-not (Test-Path -LiteralPath $previousManifestPath)) { throw 'Current TEST program has no build manifest; it was not replaced.' }
-        $previousManifest = Get-Content -LiteralPath $previousManifestPath -Raw | ConvertFrom-Json
+        $previousManifest = Get-Content -LiteralPath $previousManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
         Test-ManifestFiles $currentApp $previousManifest
         $report.previous_build_id = $previousManifest.build_id
         $report.previous_commit = $previousManifest.commit

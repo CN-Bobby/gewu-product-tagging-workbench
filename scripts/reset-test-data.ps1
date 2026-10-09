@@ -24,7 +24,7 @@ function Assert-Within([string]$Path, [string]$Root) {
 function Sha256([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { throw "Run Center config is missing: $ConfigPath" }
-$config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+$config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $target = Canonical $config.profiles.TEST.data
 $cache = Canonical $config.profiles.TEST.cache
 $app = Canonical $config.profiles.TEST.app
@@ -41,7 +41,7 @@ if ($reports -eq $target -or $reports.StartsWith($target + '\', [StringCompariso
 if (-not (Test-Path -LiteralPath $fixture -PathType Container)) { throw "Fixture package is missing: $fixture" }
 $manifestPath = Join-Path $fixture 'fixture-manifest.json'
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Fixture manifest is missing.' }
-$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+$manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($manifest.fixture_version -ne 'project-library-v1' -or -not $manifest.files -or $manifest.files.Count -lt 2) {
     throw 'Fixture version or inventory is invalid.'
 }

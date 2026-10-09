@@ -15,7 +15,7 @@ function Sha256([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA
 function Verify-App($AppPath) {
     $manifestPath = Join-Path $AppPath 'build-manifest.json'
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Build manifest is missing: $AppPath" }
-    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if (-not $manifest.files) { throw "Build manifest has no file inventory: $manifestPath" }
     $expected = @($manifest.files.PSObject.Properties | ForEach-Object { $_.Name })
     foreach ($relative in $expected) {
@@ -51,7 +51,7 @@ if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { throw "Run Cente
 $lockPath = Join-Path $runCenterRoot 'maintenance.lock'
 try { $maintenanceLock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
 catch { throw 'Another Run Center start or TEST maintenance operation is active. Nothing was rolled back.' }
-$config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+$config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $currentApp = Canonical $config.profiles.TEST.app
 $data = Canonical $config.profiles.TEST.data
 $cache = Canonical $config.profiles.TEST.cache
@@ -66,7 +66,7 @@ $previousApp = 'K:\GeWuTest\Rollback\Previous\app'
 $previousManifest = Verify-App $previousApp
 $candidateRecord = Join-Path $config.profiles.TEST.reports "candidate-$BuildId-$($currentManifest.commit.Substring(0,12)).json"
 if (-not (Test-Path -LiteralPath $candidateRecord -PathType Leaf)) { throw 'Activation record is missing; refusing an untracked rollback.' }
-$candidate = Get-Content -LiteralPath $candidateRecord -Raw | ConvertFrom-Json
+$candidate = Get-Content -LiteralPath $candidateRecord -Raw -Encoding UTF8 | ConvertFrom-Json
 $backupRoot = Join-Path 'K:\GeWuTest\Backups' $BuildId
 $dataBackup = Join-Path $backupRoot 'Data'
 $cacheBackup = Join-Path $backupRoot 'Cache'

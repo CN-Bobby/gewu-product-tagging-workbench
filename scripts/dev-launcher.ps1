@@ -23,7 +23,7 @@ if ($Build) {
     if (-not (Test-Path -LiteralPath $pointer)) {
         throw "No current pointer yet: $pointer. Run scripts\build-test.ps1 first."
     }
-    $directory = (Get-Content -LiteralPath $pointer -Raw | ConvertFrom-Json).current
+    $directory = (Get-Content -LiteralPath $pointer -Raw -Encoding UTF8 | ConvertFrom-Json).current
 }
 $buildDir = if ([IO.Path]::IsPathRooted($directory)) { $directory } else { Join-Path $buildsRoot $directory }
 $appDir = Join-Path $buildDir 'app'
@@ -31,7 +31,7 @@ $exe = Join-Path $appDir 'Workbench.exe'
 $manifestPath = Join-Path $appDir 'build-manifest.json'
 if (-not (Test-Path -LiteralPath $exe)) { throw "This build has no Workbench.exe: $exe" }
 if (-not (Test-Path -LiteralPath $manifestPath)) { throw "This build has no build-manifest.json: $manifestPath (the only source of program identity)" }
-$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+$manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $has = { param($name) $manifest.PSObject.Properties.Name -contains $name }
 if (-not $manifest.commit -or $manifest.dirty -ne $false -or $manifest.build_mode -ne 'dev' -or
     -not (Test-Path -LiteralPath (Join-Path $appDir 'backend\external_effects.py')) -or
@@ -49,7 +49,7 @@ $installedSettings = Join-Path $env:LOCALAPPDATA 'GeWuWorkbench\desktop.json'
 if (Test-Path -LiteralPath $installedSettings) {
     # Fail closed: when this file exists we cannot prove the target is not the installed product's
     # data directory, so an unreadable value refuses the launch instead of dropping the guard.
-    try { $installedData = (Get-Content -LiteralPath $installedSettings -Raw | ConvertFrom-Json).data }
+    try { $installedData = (Get-Content -LiteralPath $installedSettings -Raw -Encoding UTF8 | ConvertFrom-Json).data }
     catch { throw "Cannot read the installed product's settings at $installedSettings ($($_.Exception.Message)). Refusing to guess which data directory is safe." }
     if (-not $installedData) { throw "The installed product's settings at $installedSettings name no data directory. Refusing to guess which data directory is safe." }
     $installedStorage = [IO.Path]::GetFullPath($installedData)

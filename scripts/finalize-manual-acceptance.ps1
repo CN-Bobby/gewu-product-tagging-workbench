@@ -9,11 +9,11 @@ $ErrorActionPreference = 'Stop'
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf) -or -not (Test-Path -LiteralPath $Checklist -PathType Leaf)) {
     throw 'Run Center config or checklist is missing.'
 }
-$config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+$config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $reports = [IO.Path]::GetFullPath($config.profiles.TEST.reports).TrimEnd('\')
 $path = [IO.Path]::GetFullPath($Checklist)
 if (-not $path.StartsWith($reports + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Checklist is outside K:\GeWuTest\Reports.' }
-$text = Get-Content -LiteralPath $path -Raw
+$text = Get-Content -LiteralPath $path -Raw -Encoding UTF8
 $build = [regex]::Match($text, '(?m)^- Build ID: (.+)$').Groups[1].Value.Trim()
 $commit = [regex]::Match($text, '(?m)^- Commit: ([0-9a-f]{40})$').Groups[1].Value.Trim()
 $fixture = [regex]::Match($text, '(?m)^- Fixture: (.+)$').Groups[1].Value.Trim()
