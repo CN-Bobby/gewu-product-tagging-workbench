@@ -19,6 +19,7 @@ from .keyword_research import registry as keyword_registry, runner as keyword_ru
 from . import amazon_scraper
 from .amazon_reviews import service as amazon_reviews
 from .amazon_voc.router import router as amazon_voc_router, recover as amazon_voc_recover, stop_all as amazon_voc_stop_all
+from .product_archive import router as product_archive_router
 from .amazon_scraper_http import (AmazonRequestBodyTooLarge, InvalidAmazonContentLength,
                                   buffer_amazon_request_body)
 from .xunlongjue import router as xunlongjue_router, home_summary as xunlongjue_home_summary
@@ -63,6 +64,7 @@ async def lifespan(app):
 
 app=FastAPI(title='商品特征工程工作台',version=VERSION,lifespan=lifespan)
 app.include_router(amazon_voc_router)
+app.include_router(product_archive_router)
 
 def _external_service_for_request(method: str, path: str, body: bytes = b'') -> str | None:
     """Classify writes that may start a paid or external task; previews and cancellation stay local."""
@@ -77,6 +79,8 @@ def _external_service_for_request(method: str, path: str, body: bytes = b'') -> 
         return None if path.endswith('/cancel') else 'amazon_collection'
     if path.startswith('/api/amazon-reviews/jobs'):
         return None if path.endswith('/cancel') else 'amazon_reviews_or_translation'
+    if path.startswith('/api/amazon-reviews/from-product-archive/'):
+        return 'amazon_reviews_or_translation'
     if path.startswith('/api/amazon-voc/'):
         if path.endswith('/cancel') or (method == 'PATCH' and '/events/' in path):
             return None
@@ -225,6 +229,21 @@ def amazon_reviews_settings():return amazon_reviews.model_settings_public()
 
 @app.post('/api/amazon-reviews/jobs')
 def amazon_reviews_start(body:dict):return amazon_reviews.create(body)
+
+@app.post('/api/amazon-reviews/from-product-archive/{archive_id}')
+def amazon_reviews_from_archive(archive_id:str,body:dict):
+    from .product_archive import service as archive_service
+    body=body or {}
+    targets=archive_service.dispatch_targets(archive_id,body.get('product_ids') or [],
+                                              child_only=bool(body.get('child_only',False)))
+    requested_workspace=str(body.get('workspace_id') or targets.get('workspace_id') or '')
+    if requested_workspace!=str(targets.get('workspace_id') or ''):
+        raise ValueError('档案和选中行不属于同一项目')
+    archive=archive_service._read(archive_id)
+    return amazon_reviews.create({'mode':'asins','site':archive.get('marketplace') or 'US',
+        'asins':targets['asins'],'model':body.get('model'),'credential_id':body.get('credential_id'),
+        'workspace_id':targets.get('workspace_id'),'source_dataset_id':targets.get('dataset_id'),
+        'source_archive_id':archive_id,'auto_voc_policy':body.get('auto_voc_policy','none')})
 
 @app.get('/api/amazon-reviews/jobs')
 def amazon_reviews_jobs():return amazon_reviews.list_jobs()

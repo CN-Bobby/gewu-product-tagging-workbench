@@ -8,6 +8,7 @@ import json
 import threading
 
 from . import credentials, engine_runner, registry
+from .. import project_files
 from .config import EngineConfig
 from .pipeline import Pipeline
 
@@ -254,6 +255,20 @@ def _artifacts(run_id):
     return items
 
 
+def _register_project_artifacts(run_id, status=None):
+    state = registry.read(run_id) or {}
+    workspace_id = state.get('workspace_id')
+    if not workspace_id:
+        return
+    output = registry.run_dir(run_id) / 'output'
+    if output.is_dir():
+        for path in sorted(output.iterdir()):
+            if path.is_file():
+                project_files.register_file(workspace_id, 'keywords', path,
+                    source_type='keyword_run_output', source_id=run_id + ':' + path.name,
+                    name=path.name, metadata={'run_id': run_id, 'status': status or state.get('status')})
+
+
 def execute(run_id, cancel_event=None):
     """运行一次。测试可直接在本线程调用它，不必起线程。"""
     state = registry.read(run_id)
@@ -300,19 +315,23 @@ def execute(run_id, cancel_event=None):
                 else:
                     registry.write(run_id, status=registry.FAILED, error=message)
                     registry.append_event(run_id, 'run_failed', {'error': message})
+        _register_project_artifacts(run_id, registry.read(run_id).get('status'))
         raise
     run_log.finish()
     if run_id in SHUTTING_DOWN:
         message = '工作台正在关闭，运行已中断'
         _mark_interrupted(run_id, message)
+        _register_project_artifacts(run_id, registry.INTERRUPTED)
         return {'status': registry.INTERRUPTED}
     if str((result or {}).get('status')) == 'canceled':
         with _LOCK:
             if run_id in SHUTTING_DOWN:
                 _mark_interrupted(run_id)
+                _register_project_artifacts(run_id, registry.INTERRUPTED)
                 return {'status': registry.INTERRUPTED}
             registry.write(run_id, status=registry.CANCELLED, message='已取消')
             registry.append_event(run_id, 'run_cancelled', {})
+        _register_project_artifacts(run_id, registry.CANCELLED)
         return {'status': registry.CANCELLED}
     artifacts = _artifacts(run_id)
     # 模板是报告的直接输入，连同引擎资产一起冻结进运行记录
@@ -320,10 +339,22 @@ def execute(run_id, cancel_event=None):
     with _LOCK:
         if run_id in SHUTTING_DOWN:
             _mark_interrupted(run_id)
+            _register_project_artifacts(run_id, registry.INTERRUPTED)
             return {'status': registry.INTERRUPTED}
         registry.write(run_id, status=registry.DONE, artifacts=artifacts, message='任务完成',
                        report_template=template)
     for item in artifacts:
         registry.append_event(run_id, 'artifact_ready', item)
     registry.append_event(run_id, 'run_finished', {'artifacts': [x['name'] for x in artifacts]})
+    _register_project_artifacts(run_id, registry.DONE)
+    state = registry.read(run_id) or {}
+    archive_id = str(state.get('source_archive_id') or '')
+    if archive_id:
+        try:
+            from ..product_archive.sync import sync_keyword_archive
+            sync_result = sync_keyword_archive(archive_id)
+            registry.append_event(run_id, 'product_archive_synced', sync_result)
+        except Exception as exc:  # Archive enrichment must not change keyword-run completion.
+            registry.append_event(run_id, 'product_archive_sync_failed',
+                                  {'error_type': type(exc).__name__})
     return {'status': registry.DONE, 'artifacts': artifacts}

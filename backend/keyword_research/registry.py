@@ -103,7 +103,7 @@ def _save_queue(state):
         return state
 
 
-def create(input_data, plan, display_name=None, dispatch='create'):
+def create(input_data, plan, display_name=None, dispatch='create', workspace_id=None):
     run_id = uid()
     path = run_dir(run_id)
     (path / 'raw').mkdir(parents=True)
@@ -116,6 +116,7 @@ def create(input_data, plan, display_name=None, dispatch='create'):
     _write_json(path / 'run.json', {
         'run_id': run_id, 'status': CREATED, 'stage': '', 'message': '',
         'created_at': stamp, 'updated_at': stamp, 'display_name': str(display_name or '').strip()[:120],
+        'workspace_id': str(workspace_id or '').strip() or None,
         'artifacts': [], 'error': '', 'attempt': 0,
         'progress': {'stage': '', 'done': None, 'total': None, 'unit': None, 'message': ''},
         'latest_sequence': 0, 'hidden': False,
@@ -209,6 +210,7 @@ def public_summary(state):
                                                    if group.get('marketplace')))}
     summary['marketplace'] = summary['marketplaces'][0] if len(summary['marketplaces']) == 1 else None
     result = dict(state)
+    result['workspace_id'] = state.get('workspace_id')
     result['input_summary'] = summary
     result.update(summary)
     result['budget'] = plan.get('budget') or {}

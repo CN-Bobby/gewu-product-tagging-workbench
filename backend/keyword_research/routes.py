@@ -10,10 +10,12 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 
-from ..db import now
+from ..db import now, Session, Workspace, require
+from .. import project_files
 from . import budget, credentials, registry, runner, stream
 from .input_validator import MARKETPLACES, ValidationError as InputError
 from .pipeline import prepare_task_input
+from ..product_archive import service as archive_service
 
 router = APIRouter(prefix='/api/keyword-research')
 
@@ -36,14 +38,31 @@ def _task_input(body):
         _refuse(*exc.errors)
 
 
-def _plan_hash(task_input, selection=None):
-    canonical = json.dumps({'input': task_input, 'selection': selection or {}},
+def _plan_hash(task_input, selection=None, workspace_id=None):
+    canonical = json.dumps({'input': task_input, 'selection': selection or {},
+                            'workspace_id': workspace_id or None},
                            sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def _workspace_id(body):
+    workspace_id = str((body or {}).get('workspace_id') or '').strip() or None
+    if workspace_id:
+        with Session() as session:
+            require(session, Workspace, workspace_id)
+    return workspace_id
+
+
 def _budget_of(task_input):
     return budget.plan_budget(task_input['groups'], task_input['options']).as_dict()
+
+
+def _archive_budget_of(task_input):
+    """Archive-dispatched live runs never retry a SellerSprite business call."""
+    result = _budget_of(task_input)
+    result['retry_budget'] = 0
+    result['hard_cap'] = max(200, int(result.get('planned_total') or 0))
+    return result
 
 
 def _snapshot(run_id):
@@ -92,16 +111,18 @@ def credential_clear():
 def plan(body: dict):
     task_input = _task_input(body)
     selection = _selection(body)
-    return {'plan_hash': _plan_hash(task_input, selection), 'selected': selection,
+    workspace_id = _workspace_id(body)
+    return {'plan_hash': _plan_hash(task_input, selection, workspace_id), 'selected': selection,
             'model_ref': selection['model_ref'], 'credential_id': selection['credential_id'],
-            'budget': _budget_of(task_input)}
+            'budget': _budget_of(task_input), 'workspace_id': workspace_id}
 
 
 @router.post('/runs')
 def create_run(body: dict):
     task_input = _task_input(body)
     selection = _selection(body)
-    if str((body or {}).get('plan_hash') or '') != _plan_hash(task_input, selection):
+    workspace_id = _workspace_id(body)
+    if str((body or {}).get('plan_hash') or '') != _plan_hash(task_input, selection, workspace_id):
         _refuse('预算已变化，请重新核算后再发起')
     dispatch = (body or {}).get('dispatch') or 'enqueue'  # legacy clients execute after confirmation
     if dispatch not in ('create', 'enqueue'):
@@ -109,12 +130,68 @@ def create_run(body: dict):
     run_id = registry.create(task_input, {'confirmed': True, 'created_at': now(),
                                           'budget': _budget_of(task_input),
                                           'selection': selection,
-                                          'plan_hash': _plan_hash(task_input, selection)},
-                             display_name=(body or {}).get('display_name'))
+                                          'plan_hash': _plan_hash(task_input, selection, workspace_id)},
+                             display_name=(body or {}).get('display_name'), workspace_id=workspace_id)
+    if workspace_id:
+        run_folder = registry.run_dir(run_id)
+        project_files.register_file(workspace_id, 'keywords', run_folder / 'input.json',
+            source_type='keyword_run_input', source_id=run_id, name=f'{run_id}-input.json')
+        project_files.register_file(workspace_id, 'keywords', run_folder / 'plan.json',
+            source_type='keyword_run_plan', source_id=run_id, name=f'{run_id}-plan.json')
     if dispatch == 'enqueue':
         runner.start_queue([run_id])
     state = registry.read(run_id)
     return {'run_id': run_id, 'status': state['status'], 'attempt': state.get('attempt', 0)}
+
+
+@router.post('/from-product-archive/{archive_id}/runs')
+def create_archive_runs(archive_id: str, body: dict):
+    """Create one matrix-free keyword run per 20 selected archive links."""
+    try:
+        targets = archive_service.dispatch_targets(archive_id, (body or {}).get('product_ids') or [],
+                                                   child_only=bool((body or {}).get('child_only', False)))
+    except ValueError as exc:
+        _refuse(str(exc))
+    expected_workspace = str((body or {}).get('workspace_id') or targets.get('workspace_id') or '')
+    if expected_workspace != str(targets.get('workspace_id') or ''):
+        _refuse('档案和选中行不属于同一项目')
+    dispatch = str((body or {}).get('dispatch') or 'create')
+    if dispatch not in ('create', 'enqueue'):
+        _refuse('dispatch 只能是 create 或 enqueue')
+    selection = _selection(body)
+    chunks = [targets['asins'][offset:offset + 20] for offset in range(0, len(targets['asins']), 20)]
+    if not chunks:
+        _refuse('没有可用的 ASIN')
+    created = []
+    for index, chunk in enumerate(chunks, start=1):
+        task_input = _task_input({'groups': [{'marketplace': archive_service._read(archive_id).get('marketplace', 'US'),
+            'mode': 'asin', 'asins': chunk, 'node_ids': [], 'node_top_n': 50}],
+            'matrix_enabled': False})
+        workspace_id = targets.get('workspace_id')
+        run_budget = _archive_budget_of(task_input)
+        plan = {'confirmed': True, 'created_at': now(), 'budget': run_budget,
+                'selection': selection, 'plan_hash': _plan_hash(task_input, selection, workspace_id),
+                'source_archive_id': archive_id, 'source_dataset_id': targets['dataset_id']}
+        run_id = registry.create(task_input, plan, display_name=f"档案关键词 {index}/{len(chunks)}",
+                                 workspace_id=workspace_id)
+        registry.write(run_id, source_archive_id=archive_id, source_dataset_id=targets['dataset_id'])
+        if workspace_id:
+            folder = registry.run_dir(run_id)
+            project_files.register_file(workspace_id, 'keywords', folder / 'input.json',
+                source_type='keyword_run_input', source_id=run_id, name=f'{run_id}-input.json')
+            project_files.register_file(workspace_id, 'keywords', folder / 'plan.json',
+                source_type='keyword_run_plan', source_id=run_id, name=f'{run_id}-plan.json')
+        state = registry.read(run_id)
+        created.append({'run_id': run_id, 'status': state['status'], 'attempt': state.get('attempt', 0),
+                        'workspace_id': workspace_id, 'group_number': index,
+                        'asin_count': len(chunk), 'budget': run_budget})
+    if dispatch == 'enqueue':
+        runner.start_queue([item['run_id'] for item in created])
+        for item in created:
+            item['status'] = registry.read(item['run_id']).get('status')
+    return {'archive_id': archive_id, 'source_dataset_id': targets['dataset_id'],
+            'workspace_id': targets.get('workspace_id'), 'selected_rows': targets['selected_rows'],
+            'unique_asins': targets['unique_asins'], 'matrix_enabled': False, 'runs': created}
 
 
 @router.get('/runs')

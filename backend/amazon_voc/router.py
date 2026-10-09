@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, StrictBool
 from starlette.datastructures import UploadFile
 
@@ -136,6 +136,8 @@ def retry(run_id: str):
 def artifact(run_id: str, kind: str):
     try:
         path = service.artifact_path(run_id, kind)
+        if kind == "html":
+            return HTMLResponse(content=path.read_text(encoding="utf-8-sig"))
         media = {"html": "text/html; charset=utf-8", "excel": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                  "quality": "application/json"}[kind]
         return FileResponse(path, filename=path.name, media_type=media)

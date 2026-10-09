@@ -15,7 +15,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from ..db import STORAGE
+from ..db import STORAGE, Session, Workspace, Dataset, require
 from ..keyword_research.credentials import model_target
 from ..keyword_research.llm_client import LLMClient, LLMError
 from ..model_settings import defaults, read as read_model_settings, require_validated
@@ -113,7 +113,8 @@ def _job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
     total = len(items)
     done = sum(item["status"] in ("completed", "failed", "cancelled") for item in items)
     return {key: job.get(key) for key in ("id", "status", "mode", "site", "created_at", "updated_at",
-                                           "stage", "error", "review_count", "attempt", "model", "credential_id")} | {
+                                           "stage", "error", "review_count", "attempt", "model", "credential_id",
+                                           "workspace_id", "source_dataset_id", "source_archive_id", "auto_voc_policy")} | {
         "items": items, "total": total, "completed": sum(x["status"] == "completed" for x in items),
         "failed": sum(x["status"] == "failed" for x in items),
         "retryable": _retryable_count(job),
@@ -139,7 +140,7 @@ def record_voc_handoff(job_id: str, summary: dict[str, Any]) -> dict[str, Any]:
             summary = {**handoff, **summary}
         job["voc_handoff"] = {
             key: summary[key] for key in
-            ("source_job_id", "workbook_sha256", "project_id", "run_id", "created_at", "status")
+            ("source_job_id", "workbook_sha256", "project_id", "run_id", "created_at", "status", "automatic")
             if key in summary
         }
         _save(job)
@@ -572,6 +573,7 @@ def _run(job_id: str, cancel: threading.Event) -> None:
             _export(job)
             _save(job)
             _register_project_artifacts(job)
+            _auto_voc_handoff(job)
     except Exception as exc:  # noqa: BLE001
         job = _read(job_id)
         job["status"] = "failed"
@@ -605,12 +607,42 @@ def _register_project_artifacts(job: dict[str, Any]) -> None:
     if not workspace_id:
         return
     from .. import project_files
-    path = _job_dir(job["id"]) / "result.xlsx"
-    if path.is_file():
-        project_files.register_file(workspace_id, "reviews", path,
-            source_type="amazon_reviews", source_id=job["id"] + ":result.xlsx",
-            name="Amazon-Reviews.xlsx", metadata={"job_id": job["id"],
-                "status": job.get("status"), "source_dataset_id": job.get("source_dataset_id")})
+    folder = _job_dir(job["id"])
+    for filename, label in (("result.xlsx", "Amazon-Reviews.xlsx"), ("raw.json", "Amazon-Reviews-raw.json")):
+        path = folder / filename
+        if path.is_file():
+            project_files.register_file(workspace_id, "reviews", path,
+                source_type="amazon_reviews", source_id=job["id"] + ":" + filename,
+                name=label, metadata={"job_id": job["id"], "status": job.get("status"),
+                                     "source_dataset_id": job.get("source_dataset_id"),
+                                     "source_archive_id": job.get("source_archive_id")})
+
+
+def _auto_voc_handoff(job: dict[str, Any]) -> None:
+    policy = job.get("auto_voc_policy") or "none"
+    status = job.get("status")
+    eligible = status == "completed" if policy == "completed_only" else status in {
+        "completed", "completed_with_errors", "partial"} if policy == "any_exported" else False
+    workbook = _job_dir(job["id"]) / "result.xlsx"
+    if not eligible or not workbook.is_file() or int(job.get("review_count") or 0) <= 0:
+        return
+    try:
+        from ..amazon_voc.service import service as voc_service
+        result = voc_service.create_run_from_amazon_reviews(job["id"], confirmed_reviewed=True)
+        summary = {"source_job_id": job["id"],
+                   "workbook_sha256": hashlib.sha256(workbook.read_bytes()).hexdigest(),
+                   "project_id": result["project"]["id"], "run_id": result["run"]["id"],
+                   "created_at": result["run"].get("created_at"),
+                   "status": "started", "automatic": True}
+        record_voc_handoff(job["id"], summary)
+    except Exception:
+        # Collection success remains independently visible; VOC can be retried from its source.
+        with LOCK:
+            current = _read(job["id"])
+            current["voc_handoff"] = {"source_job_id": job["id"], "status": "failed",
+                                      "automatic": True,
+                                      "error": "自动创建 VOC 失败；可从评论任务详情重试交接"}
+            _save(current)
 
 
 def _export(job: dict[str, Any]) -> None:
@@ -782,6 +814,33 @@ def create(body: dict[str, Any]) -> dict[str, Any]:
     credential_id = str(body.get("credential_id") or "").strip()
     if not model or not credential_id:
         raise ValueError("请选择翻译模型和已授权 Key")
+    workspace_id = str(body.get("workspace_id") or "").strip() or None
+    dataset_id = str(body.get("source_dataset_id") or "").strip() or None
+    archive_id = str(body.get("source_archive_id") or "").strip() or None
+    if dataset_id or workspace_id:
+        with Session() as session:
+            if dataset_id:
+                dataset = require(session, Dataset, dataset_id)
+                if workspace_id and dataset.workspace_id != workspace_id:
+                    raise ValueError("来源 Dataset 不属于当前项目")
+                workspace_id = dataset.workspace_id
+            elif workspace_id:
+                require(session, Workspace, workspace_id)
+    if archive_id:
+        from ..product_archive import service as archive_service
+        archive = archive_service._read(archive_id)
+        archive_workspace = archive.get("workspace_id")
+        if workspace_id and archive_workspace != workspace_id:
+            raise ValueError("来源档案不属于当前项目")
+        if dataset_id and archive.get("dataset_id") != dataset_id:
+            raise ValueError("来源档案与 Dataset 不匹配")
+        workspace_id = archive_workspace or workspace_id
+        dataset_id = dataset_id or archive.get("dataset_id")
+    auto_voc_policy = str(body.get("auto_voc_policy") or "none").strip()
+    if auto_voc_policy not in ("none", "completed_only", "any_exported"):
+        raise ValueError("自动 VOC 策略无效")
+    if auto_voc_policy != "none" and not workspace_id:
+        raise ValueError("自动 VOC 需要绑定项目")
     sorftime_settings.connection()
     target = model_target(model, credential_id)
     del target
@@ -791,10 +850,14 @@ def create(body: dict[str, Any]) -> dict[str, Any]:
     folder = _job_dir(job_id)
     (folder / "raw").mkdir(parents=True)
     _atomic_json(folder / "request.json", {"mode": mode, "site": site, "node_id": node_id,
-                                           "asins": selected_asins, "rank_limit": rank_limit})
+                                           "asins": selected_asins, "rank_limit": rank_limit,
+                                           "workspace_id": workspace_id, "source_dataset_id": dataset_id,
+                                           "source_archive_id": archive_id, "auto_voc_policy": auto_voc_policy})
     job = {"id": job_id, "status": "queued", "mode": mode, "site": site, "node_id": node_id,
            "asins": selected_asins, "rank_limit": rank_limit, "model": model,
-           "credential_id": credential_id, "created_at": now, "updated_at": now,
+           "credential_id": credential_id, "workspace_id": workspace_id,
+           "source_dataset_id": dataset_id, "source_archive_id": archive_id,
+           "auto_voc_policy": auto_voc_policy, "created_at": now, "updated_at": now,
            "stage": "等待执行", "attempt": 0, "items": [], "errors": [], "review_count": 0,
            "review_collection_contract": REVIEW_CALL_CONTRACT,
            "metrics": {"review_tool_calls": 0, "raw_records": 0, "new_unique_records": 0}}
@@ -804,13 +867,26 @@ def create(body: dict[str, Any]) -> dict[str, Any]:
     return _job_snapshot(job)
 
 
-def list_jobs() -> list[dict[str, Any]]:
+def list_jobs(*, workspace_id: str | None = None, source_archive_id: str | None = None,
+              source_dataset_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
     if not ROOT.exists():
         return []
     jobs = []
-    for path in sorted(ROOT.glob("*/job.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:50]:
+    for path in sorted(ROOT.glob("*/job.json"), key=lambda p: p.stat().st_mtime, reverse=True):
         try:
-            jobs.append(_job_snapshot(_read(path.parent.name)))
+            job = _read(path.parent.name)
+            if workspace_id and str(job.get("workspace_id") or "") != workspace_id:
+                continue
+            if source_archive_id:
+                job_archive_id = str(job.get("source_archive_id") or "")
+                job_dataset_id = str(job.get("source_dataset_id") or "")
+                legacy_dataset_match = not job_archive_id and (
+                    not job_dataset_id or (source_dataset_id and job_dataset_id == source_dataset_id))
+                if job_archive_id != source_archive_id and not legacy_dataset_match:
+                    continue
+            jobs.append(_job_snapshot(job))
+            if len(jobs) >= max(1, min(int(limit), 1000)):
+                break
         except Exception:
             continue
     return jobs
