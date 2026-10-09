@@ -100,7 +100,10 @@ def main() -> int:
 
             # Excel source preview must render workbook rows and embedded product images.
             page.get_by_role("button", name=re.compile(re.escape(swimwear["name"]))).click()
-            page.get_by_role("button", name=re.compile("原始上传数据")).click()
+            swimwear_node = page.locator(".ps-project").filter(
+                has=page.get_by_role("button", name=re.compile(re.escape(swimwear["name"])))
+            )
+            swimwear_node.get_by_role("button", name=re.compile("原始上传数据")).click()
             page.locator(".pm-file-select").first.click()
             page.locator(".pp-table tbody tr").first.wait_for(timeout=15000)
             page.wait_for_function("document.querySelectorAll('.pp-cell-image').length > 0", timeout=15000)

@@ -20,12 +20,21 @@ $fixtureManifest = 'K:\GeWuFixtures\project-library-v1\fixture-manifest.json'
 if (-not (Test-Path -LiteralPath $fixtureManifest -PathType Leaf)) { throw "Fixture manifest is missing: $fixtureManifest" }
 $fixture = Get-Content -LiteralPath $fixtureManifest -Raw -Encoding UTF8 | ConvertFrom-Json
 $fixtureHash = (Get-FileHash -LiteralPath $fixtureManifest -Algorithm SHA256).Hash.ToLowerInvariant()
-$automated = Get-ChildItem -LiteralPath $reports -Filter '*.json' -File -ErrorAction SilentlyContinue |
+$automated = Get-ChildItem -LiteralPath $reports -Filter 'offline-*.json' -File -ErrorAction SilentlyContinue |
     ForEach-Object { try { [pscustomobject]@{ file = $_; data = (Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json) } } catch { $null } } |
-    Where-Object { $_ -and $_.data.status -eq 'passed' -and $_.data.commit -eq $status.source.commit } |
+    Where-Object { $_ -and $_.data.status -eq 'passed' -and $_.data.profile -eq 'test' -and
+        $_.data.dirty -eq $false -and $_.data.external_requests -eq 0 -and $_.data.commit -eq $status.source.commit } |
     Sort-Object { $_.file.LastWriteTime } -Descending | Select-Object -First 1
-if (-not $automated) { throw 'No passing automated report exists for the running TEST commit.' }
+if (-not $automated) { throw 'No passing clean offline report exists for the running TEST commit.' }
 $automatedHash = (Get-FileHash -LiteralPath $automated.file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+$browser = Get-ChildItem -LiteralPath $reports -Filter 'browser-project-library-*.json' -File -ErrorAction SilentlyContinue |
+    ForEach-Object { try { [pscustomobject]@{ file = $_; data = (Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json) } } catch { $null } } |
+    Where-Object { $_ -and $_.data.status -eq 'passed' -and $_.data.profile -eq 'test' -and
+        $_.data.external_requests -eq 0 -and $_.data.commit -eq $status.source.commit -and
+        $_.data.build_id -eq $status.source.build_id -and $_.data.fixture_manifest_sha256 -eq $fixtureHash } |
+    Sort-Object { $_.file.LastWriteTime } -Descending | Select-Object -First 1
+if (-not $browser) { throw 'No passing loopback browser report exists for this TEST build and fixture.' }
+$browserHash = (Get-FileHash -LiteralPath $browser.file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 $runId = [Guid]::NewGuid().ToString('N')
 $path = Join-Path $reports "manual-acceptance-$($status.source.build_id)-$runId.md"
 $items = @(
@@ -48,12 +57,14 @@ $content = @(
     "- Data: $($status.data.path)",
     "- Fixture: $($fixture.fixture_version)",
     "- Fixture manifest SHA-256: $fixtureHash",
-    "- Automated report: $($automated.file.FullName)",
-    "- Automated report SHA-256: $automatedHash",
+    "- Offline report: $($automated.file.FullName)",
+    "- Offline report SHA-256: $automatedHash",
+    "- Browser report: $($browser.file.FullName)",
+    "- Browser report SHA-256: $browserHash",
     '- External calls: 0 expected (DEV/TEST offline policy)', '',
     '逐项完成后把 `[ ]` 改为 `[x]`，发现问题时写明复现步骤和页面位置。', ''
 )
 foreach ($item in $items) { $content += "- [ ] $item"; $content += '' }
 Set-Content -LiteralPath $path -Value ($content -join "`r`n") -Encoding UTF8
 Write-Output "Manual checklist created: $path"
-Write-Output "Build: $($status.source.build_id); fixture: $($fixture.fixture_version); automated report hash: $automatedHash"
+Write-Output "Build: $($status.source.build_id); fixture: $($fixture.fixture_version); offline report hash: $automatedHash; browser report hash: $browserHash"
