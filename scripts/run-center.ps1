@@ -37,8 +37,8 @@ function Get-VenvBasePython([string]$VenvPython) {
     if (Test-Path -LiteralPath $configPath -PathType Leaf) {
         $homeLine = Get-Content -LiteralPath $configPath -Encoding UTF8 | Where-Object { $_ -match '^\s*home\s*=' } | Select-Object -First 1
         if ($homeLine) {
-            $home = ($homeLine -replace '^\s*home\s*=\s*', '').Trim()
-            $basePython = Join-Path $home 'python.exe'
+            $venvBaseDir = ($homeLine -replace '^\s*home\s*=\s*', '').Trim()
+            $basePython = Join-Path $venvBaseDir 'python.exe'
             if (Test-Path -LiteralPath $basePython -PathType Leaf) { return Get-CanonicalPath $basePython }
         }
     }
