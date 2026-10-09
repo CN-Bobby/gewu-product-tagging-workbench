@@ -44,10 +44,18 @@ $steps = [System.Collections.Generic.List[object]]::new()
 function Invoke-Check([string]$Name, [string]$FilePath, [string[]]$Arguments, [string]$WorkingDirectory) {
     Write-Host "[offline] $Name"
     Push-Location $WorkingDirectory
+    $previousErrorActionPreference = $ErrorActionPreference
     try {
+        # Native tools such as Vite write non-fatal warnings to stderr. Capture those
+        # lines and decide success from the process exit code below, not PowerShell's
+        # inherited Stop preference.
+        $ErrorActionPreference = 'Continue'
         $lines = @(& $FilePath @Arguments 2>&1 | ForEach-Object { $_.ToString() })
         $exitCode = $LASTEXITCODE
-    } finally { Pop-Location }
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        Pop-Location
+    }
     foreach ($line in $lines) { Write-Host $line }
     $summary = switch -Regex ($lines) {
         'passed[, ]+[^\r\n]+skipped' { $_; break }
