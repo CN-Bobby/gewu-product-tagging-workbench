@@ -37,7 +37,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $CandidateProjectRoot 'backend\app.p
 $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
 $nodeExe = if ($nodeCommand) { $nodeCommand.Source } else { '' }
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run-center.ps1') -Destination (Join-Path $InstallRoot 'run-center.ps1') -Force
+$runnerSource = Join-Path $PSScriptRoot 'run-center.ps1'
+$runnerDestination = Join-Path $InstallRoot 'run-center.ps1'
+$runnerText = [IO.File]::ReadAllText($runnerSource, [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText($runnerDestination, $runnerText, [Text.UTF8Encoding]::new($true))
 $config = [ordered]@{
     schema = 1
     projectRoot = $ProjectRoot
