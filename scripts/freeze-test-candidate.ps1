@@ -196,8 +196,16 @@ if ($reviewedReport) {
         Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
         $env:TAG_STORAGE = Join-Path $env:TEMP 'GeWuCandidateBuildSandbox\Data'
         $env:TAG_CACHE = Join-Path $env:TEMP 'GeWuCandidateBuildSandbox\Cache'
-        $buildOutput = @(& $python (Join-Path $ProjectRoot 'scripts\build_windows.py') --dev 2>&1 | ForEach-Object { $_.ToString() })
-        $buildExit = $LASTEXITCODE
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            # Python packaging tools write routine progress and advisory messages to stderr.
+            # Capture those lines and decide success from Python's exit code, like the offline gate.
+            $ErrorActionPreference = 'Continue'
+            $buildOutput = @(& $python (Join-Path $ProjectRoot 'scripts\build_windows.py') --dev 2>&1 | ForEach-Object { $_.ToString() })
+            $buildExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
         foreach ($line in $buildOutput) { Write-Host $line }
         if ($buildExit -ne 0) { throw "Clean TEST candidate build failed (exit $buildExit)." }
         $jsonLine = $buildOutput | Where-Object { $_ -match '^\s*\{' } | Select-Object -Last 1
