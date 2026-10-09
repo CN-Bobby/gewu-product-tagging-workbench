@@ -4,7 +4,7 @@
 
 | 环境 | 入口 | 端口 | 业务数据 | 外部任务 |
 | --- | --- | --- | --- | --- |
-| DEV | 桌面“格物 · 打开开发版” | 页面 5174，API 8896 | `K:\GeWuDev\Data` | 默认关闭 |
+| DEV | 桌面“格物 · 打开开发版” | 页面 5174，API 8896 | `K:\GeWuDev\Data` | 每次启动选择 `offline`（默认）或单进程 `live_validation` |
 | TEST | 桌面“格物 · 打开验收版” | 8895 | `K:\GeWuTest\Data` | 每次启动选择 `offline`（默认）或单进程 `live_validation` |
 | PROD | 桌面“格物 · 正式工作台” | 8765 | `K:\Bobbytagging\Data` | 按正式环境既有权限 |
 
@@ -20,7 +20,7 @@ DEV/TEST 在当前 Windows 用户的 DPAPI 凭证库中共享测试凭证，PROD
 powershell -NoProfile -File .\scripts\run-offline-checks.ps1
 ```
 
-脚本设置 `GEWU_PROFILE=test`，清除继承的 `GEWU_TEST_EXTERNAL_EFFECTS`，运行后端 pytest、前端测试和生产前端构建，不会启动工作台、模型、MCP、Amazon 采集或付费任务。pytest 为兼容既有假服务测试，隔离每个用例的 DPAPI 与 Reasonix 路径，并只允许回环网络；外网请求会在套接字层失败。`test_runtime_governance.py` 单独验证 TEST 写接口返回离线阻断且启动恢复不执行。JSON 报告保存在 `K:\GeWuTest\Reports`，包含 commit、构建 ID、脏状态、回环网络保护与各步骤状态，不保存原始密钥或终端输出。自动回归始终保持 offline，即使之后人工启动了 live-validation TEST。
+脚本设置 `GEWU_PROFILE=test`，清除继承的 DEV/TEST live-validation 标记，运行后端 pytest、前端测试和生产前端构建，不会启动工作台、模型、MCP、Amazon 采集或付费任务。pytest 为兼容既有假服务测试，隔离每个用例的 DPAPI 与 Reasonix 路径，并只允许回环网络；外网请求会在套接字层失败。`test_runtime_governance.py` 验证 DEV/TEST 的 profile 专属开关、默认离线、路由门禁与启动恢复不执行。JSON 报告保存在 `K:\GeWuTest\Reports`，包含 commit、构建 ID、脏状态、回环网络保护与各步骤状态，不保存原始密钥或终端输出。自动回归始终保持 offline，即使之后人工启动了 live-validation DEV 或 TEST。
 
 ## 固定样本
 
@@ -84,7 +84,7 @@ powershell -NoProfile -File .\scripts\finalize-manual-acceptance.ps1 -Checklist 
 - 泳衣源 Excel 的工作表切换、内嵌图片缩略图与图片预览。
 - 狗狗玩具 Data X V1、泳衣和狗狗玩具评论 Excel、VOC HTML 预览。
 - 约 375px 窄屏下树、页面导航和预览不遮挡关键操作。
-- DEV 始终关闭模型、MCP、Amazon 采集、评论采集与 VOC；offline TEST 同样关闭这些外部调用。live-validation TEST 只在本次进程中开放经用户记录范围内的外部验证；TEST 的自动任务恢复在两种模式下都关闭，本地预览仍可用。
+- DEV/TEST 默认 offline；每次启动可分别选择 live-validation，以真实 API/MCP 完成明确发起的功能流程。运行中心不执行调用额度上限；TEST 人工验收清单记录范围与用户观察结果。两种模式下 DEV/TEST 的自动任务恢复都关闭，本地预览仍可用。
 - 重启 TEST 后身份与凭证状态持续；所有报告只记录“已配置/未配置”。
 - 发生 TEST 数据重置时，正式数据哨兵和哈希不变。
 

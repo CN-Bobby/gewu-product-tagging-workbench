@@ -194,6 +194,7 @@ if ($reviewedReport) {
     } else {
         $env:GEWU_PROFILE = 'test'; $env:GEWU_ALLOW_EXTERNAL_EFFECTS = '0'
         Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
+        Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
         $env:TAG_STORAGE = Join-Path $env:TEMP 'GeWuCandidateBuildSandbox\Data'
         $env:TAG_CACHE = Join-Path $env:TEMP 'GeWuCandidateBuildSandbox\Cache'
         $previousErrorActionPreference = $ErrorActionPreference
@@ -329,7 +330,7 @@ if ($Activate) {
     Save-CandidateReport $report $reportPath
     if ($StartAfter) {
         $maintenanceLock.Dispose(); $maintenanceLock = $null
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Profile TEST -Action Start -TestExternalEffectsMode offline -ConfigPath $ConfigPath -NoOpen
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner -Profile TEST -Action Start -ExternalEffectsMode offline -ConfigPath $ConfigPath -NoOpen
         if ($LASTEXITCODE -ne 0) {
             $report.status = 'start_failed_rollback_available'
             $report.start_failure = 'Run Center did not confirm the candidate as an offline TEST runtime.'

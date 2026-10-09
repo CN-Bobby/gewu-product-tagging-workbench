@@ -4,7 +4,7 @@
 
 ## 本地开发与测试环境治理
 
-- **状态：环境治理实现完成，人工业务验收仍待用户执行。** 日常开发入口、冻结 TEST 构建、数据重置、回退、离线自动门禁、项目文件树浏览器回归和独立人工清单已形成固定流程，说明见 [`LOCAL_RUN_CENTER.md`](LOCAL_RUN_CENTER.md) 与 [`LOCAL_TEST_ACCEPTANCE.md`](LOCAL_TEST_ACCEPTANCE.md)。DEV 始终 offline；每次桌面 TEST 启动均显式选择 offline（默认）或单进程 `live_validation`，取消/关闭对话框会中止启动。两种模式都使用隔离业务数据，且 TEST 任务恢复保持关闭；自动回归与候选 `StartAfter` 始终 offline。TEST 夹具位于 `K:\GeWuFixtures\project-library-v1`，TEST 报告位于 `K:\GeWuTest\Reports`。
+- **状态：环境治理实现完成，人工业务验收仍待用户执行。** 日常开发入口、冻结 TEST 构建、数据重置、回退、离线自动门禁、项目文件树浏览器回归和独立人工清单已形成固定流程，说明见 [`LOCAL_RUN_CENTER.md`](LOCAL_RUN_CENTER.md) 与 [`LOCAL_TEST_ACCEPTANCE.md`](LOCAL_TEST_ACCEPTANCE.md)。DEV 与 TEST 每次桌面启动都显式选择 offline（默认）或单进程 `live_validation`，取消/关闭对话框会中止启动。两种模式都使用隔离业务数据，且不恢复旧任务；自动回归与候选 `StartAfter` 始终 offline。TEST 夹具位于 `K:\GeWuFixtures\project-library-v1`，TEST 报告位于 `K:\GeWuTest\Reports`。
 - 实现位于隔离 worktree `C:\Users\Administrator\.codex\worktrees\local-test-governance\数据打标项目`，分支 `codex/local-testing-governance`。主工作目录 `D:\数据打标项目` 的既有未提交修改不属于本任务，未覆盖、清理或纳入提交。
 - 实现工作树提交前的离线全量门禁报告：`K:\GeWuTest\Reports\offline-20261008-235316-2964ba1929ac.json`。后端 **822 passed / 8 skipped**，前端 **141 passed**，Vite 构建通过，外部请求数为 0。TEST 冻结脚本会从指定的干净提交重新运行这套门禁并另外记录候选身份。
 - 从 `K:\Bobbytagging\Data-Test` 一次性导入模型与 SellerSprite 凭证至当前 Windows 用户 DPAPI vault，来源文件保留且未做密钥验证；DEV/TEST 状态为模型已配置、SellerSprite 已配置、Sorftime 未配置。提供方非秘密设置分别保存于每个环境的 Run Center 目录。旧目录和历史备份中的凭证只盘点、不自动删除。

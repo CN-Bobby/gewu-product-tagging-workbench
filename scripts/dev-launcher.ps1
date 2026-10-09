@@ -9,6 +9,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
+Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
 
 # Fixed entry for development builds. It reads the current pointer, starts that build directly
 # (no installer, no upgrade step) and refuses to attach to the storage the installed product

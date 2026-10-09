@@ -14,6 +14,7 @@ _effects_allowed = external_effects.effects_allowed
 
 def _client(monkeypatch, profile='test'):
     monkeypatch.setenv('GEWU_PROFILE', profile)
+    monkeypatch.delenv('GEWU_DEV_EXTERNAL_EFFECTS', raising=False)
     monkeypatch.delenv('GEWU_TEST_EXTERNAL_EFFECTS', raising=False)
     from backend import app as app_module
     monkeypatch.setattr(external_effects, 'effects_allowed', _effects_allowed)
@@ -24,11 +25,12 @@ def test_unknown_and_missing_profiles_fail_closed(monkeypatch):
     monkeypatch.setattr(external_effects, 'effects_allowed', _effects_allowed)
 
     monkeypatch.delenv('GEWU_PROFILE', raising=False)
+    monkeypatch.setenv('GEWU_DEV_EXTERNAL_EFFECTS', 'live_validation')
     monkeypatch.setenv('GEWU_TEST_EXTERNAL_EFFECTS', 'live_validation')
     assert external_effects.profile() == 'dev'
     assert not external_effects.effects_allowed()
     monkeypatch.setenv('GEWU_PROFILE', 'typo')
-    assert external_effects.profile() == 'dev'
+    assert external_effects.profile() == 'unknown'
     assert not external_effects.effects_allowed()
     monkeypatch.setenv('GEWU_PROFILE', 'prod')
     assert external_effects.effects_allowed('model_api')
@@ -38,6 +40,7 @@ def test_test_profile_external_effects_default_off(monkeypatch):
     monkeypatch.setattr(external_effects, 'effects_allowed', _effects_allowed)
 
     monkeypatch.setenv('GEWU_PROFILE', 'test')
+    monkeypatch.delenv('GEWU_DEV_EXTERNAL_EFFECTS', raising=False)
     monkeypatch.delenv('GEWU_TEST_EXTERNAL_EFFECTS', raising=False)
     assert not external_effects.effects_allowed('model_api')
     assert not external_effects.effects_allowed('mcp')
@@ -58,7 +61,31 @@ def test_test_profile_external_effects_default_off(monkeypatch):
     assert '停止当前离线 TEST' in str(blocked.value)
 
 
-def test_live_validation_opt_in_is_test_only_and_requires_exact_value(monkeypatch):
+def test_dev_profile_external_effects_default_off(monkeypatch):
+    monkeypatch.setattr(external_effects, 'effects_allowed', _effects_allowed)
+
+    monkeypatch.setenv('GEWU_PROFILE', 'dev')
+    monkeypatch.delenv('GEWU_DEV_EXTERNAL_EFFECTS', raising=False)
+    assert not external_effects.effects_allowed('model_api')
+    assert not external_effects.effects_allowed('mcp')
+    assert external_effects.public_status() == {
+        'profile': 'dev',
+        'external_effects_allowed': False,
+        'policy': 'offline',
+        'services': {
+            'model_api': False,
+            'mcp': False,
+            'amazon_collection': False,
+            'other_external_tasks': False,
+        },
+    }
+    with pytest.raises(external_effects.ExternalEffectsDisabled) as blocked:
+        external_effects.assert_allowed('model_api')
+    assert '没有发起调用' in str(blocked.value)
+    assert '桌面 DEV 入口' in str(blocked.value)
+
+
+def test_live_validation_opt_in_is_profile_specific_and_requires_exact_value(monkeypatch):
     monkeypatch.setattr(external_effects, 'effects_allowed', _effects_allowed)
 
     monkeypatch.setenv('GEWU_TEST_EXTERNAL_EFFECTS', 'live_validation')
@@ -81,16 +108,47 @@ def test_live_validation_opt_in_is_test_only_and_requires_exact_value(monkeypatc
     monkeypatch.setenv('GEWU_PROFILE', 'dev')
     assert not external_effects.effects_allowed('model_api')
     assert external_effects.public_status()['policy'] == 'offline'
+
+    monkeypatch.setenv('GEWU_DEV_EXTERNAL_EFFECTS', 'live_validation')
+    assert external_effects.effects_allowed('model_api')
+    assert external_effects.effects_allowed('mcp')
+    assert external_effects.public_status() == {
+        'profile': 'dev',
+        'external_effects_allowed': True,
+        'policy': 'live_validation',
+        'services': {
+            'model_api': True,
+            'mcp': True,
+            'amazon_collection': True,
+            'other_external_tasks': True,
+        },
+    }
+    external_effects.assert_allowed('model_api')
+
+    monkeypatch.delenv('GEWU_PROFILE', raising=False)
+    assert external_effects.profile() == 'dev'
+    assert not external_effects.effects_allowed('model_api')
     monkeypatch.setenv('GEWU_PROFILE', 'unknown')
+    assert external_effects.profile() == 'unknown'
     assert not external_effects.effects_allowed('mcp')
     monkeypatch.setenv('GEWU_PROFILE', 'test')
-    monkeypatch.setenv('GEWU_TEST_EXTERNAL_EFFECTS', ' live_validation')
+    monkeypatch.delenv('GEWU_TEST_EXTERNAL_EFFECTS', raising=False)
+    assert not external_effects.effects_allowed('model_api')
+    monkeypatch.setenv('GEWU_TEST_EXTERNAL_EFFECTS', 'live_validation')
+    monkeypatch.delenv('GEWU_DEV_EXTERNAL_EFFECTS', raising=False)
+    monkeypatch.setenv('GEWU_PROFILE', 'dev')
+    assert not external_effects.effects_allowed('model_api')
+    monkeypatch.setenv('GEWU_DEV_EXTERNAL_EFFECTS', ' live_validation')
     assert not external_effects.effects_allowed('mcp')
 
 
-def test_live_validation_allows_local_route_checks_without_network(monkeypatch):
-    app_module, client = _client(monkeypatch)
-    monkeypatch.setenv('GEWU_TEST_EXTERNAL_EFFECTS', 'live_validation')
+@pytest.mark.parametrize(('profile', 'flag'), [
+    ('dev', 'GEWU_DEV_EXTERNAL_EFFECTS'),
+    ('test', 'GEWU_TEST_EXTERNAL_EFFECTS'),
+])
+def test_live_validation_allows_local_route_checks_without_network(monkeypatch, profile, flag):
+    app_module, client = _client(monkeypatch, profile=profile)
+    monkeypatch.setenv(flag, 'live_validation')
     reached = []
     monkeypatch.setattr(app_module.amazon_reviews, 'create',
                         lambda body: reached.append(body) or {'job_id': 'stub-run', 'status': 'queued'})
@@ -179,9 +237,13 @@ def test_runtime_status_reads_windows_utf8_report_without_exposing_report_conten
     assert 'NEVER_RETURN_THIS_VALUE' not in json.dumps(value)
 
 
-def test_test_profile_never_recovers_queued_external_jobs(monkeypatch):
-    app_module, client = _client(monkeypatch)
-    monkeypatch.setenv('GEWU_TEST_EXTERNAL_EFFECTS', 'live_validation')
+@pytest.mark.parametrize(('profile', 'flag'), [
+    ('dev', 'GEWU_DEV_EXTERNAL_EFFECTS'),
+    ('test', 'GEWU_TEST_EXTERNAL_EFFECTS'),
+])
+def test_dev_and_test_live_profiles_never_recover_queued_external_jobs(monkeypatch, profile, flag):
+    app_module, client = _client(monkeypatch, profile=profile)
+    monkeypatch.setenv(flag, 'live_validation')
     recovered = []
 
     def mark(name):

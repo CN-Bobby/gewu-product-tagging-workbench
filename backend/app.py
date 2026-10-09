@@ -37,8 +37,8 @@ AMAZON_REQUEST_BODY_LIMIT = 256 * 1024
 async def lifespan(app):
     app.state.stopping=False
     init_db()
-    # DEV and TEST are deliberately offline. Persisted queued/interrupted tasks must never resume
-    # merely because one of these environments restarted.
+    # DEV and TEST are offline by default and may opt in only for this process. Persisted
+    # queued/interrupted tasks must never resume merely because one of these environments restarted.
     # Persisted work is recovered only by the real production profile. Test harnesses may
     # explicitly exercise mocked provider paths, but that must never trigger queued-job recovery.
     if external_effects.profile() == 'prod':
@@ -127,9 +127,11 @@ async def localhost(request:Request,call_next):
     if origin and urlparse(origin).netloc!=request.headers.get('host'):return JSONResponse({'detail':'不接受跨站请求'},status_code=403)
     request_body = await request.body() if request.url.path.endswith('/templates/copy') else b''
     service_name = _external_service_for_request(request.method, request.url.path, request_body)
-    if service_name and not external_effects.effects_allowed(service_name):
-        return JSONResponse({'detail':{'code':'external_effects_disabled',
-            'message':f"{external_effects.profile().upper()} 环境已关闭外部调用（{service_name}）；请使用独立、限额的专项验证流程。"}},status_code=403)
+    if service_name:
+        try:
+            external_effects.assert_allowed(service_name)
+        except external_effects.ExternalEffectsDisabled as exc:
+            return JSONResponse({'detail':{'code':exc.code,'message':str(exc)}},status_code=403)
     if request.method=='POST' and request.url.path.startswith('/api/amazon-scraper/'):
         try:
             await buffer_amazon_request_body(request,AMAZON_REQUEST_BODY_LIMIT)

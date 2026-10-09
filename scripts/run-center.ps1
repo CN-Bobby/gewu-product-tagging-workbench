@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory = $true)][ValidateSet('DEV', 'TEST', 'PROD')][string]$Profile,
     [ValidateSet('Start', 'Stop', 'Status')][string]$Action = 'Start',
-    [ValidateSet('prompt', 'offline')][string]$TestExternalEffectsMode = 'prompt',
+    [ValidateSet('prompt', 'offline')][string]$ExternalEffectsMode = 'prompt',
     [string]$ConfigPath = (Join-Path $env:LOCALAPPDATA 'GeWuWorkbench\RunCenter\config.json'),
     [switch]$NoOpen
 )
@@ -89,6 +89,27 @@ TEST 即将使用隔离数据 K:\GeWuTest\Data 和独立缓存 K:\GeWuTest\Cache
         ([System.Windows.Forms.DialogResult]::Yes) { return 'live_validation' }
         ([System.Windows.Forms.DialogResult]::No) { return 'offline' }
         default { throw 'TEST startup canceled; nothing was started or stopped.' }
+    }
+}
+function Select-DevRuntimePolicy {
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    $message = @"
+DEV 即将使用隔离数据 K:\GeWuDev\Data 和独立缓存 K:\GeWuDev\Cache。
+
+“是”允许本次 DEV 后端进程发起 live-validation 集成调用。模型、MCP 或 Amazon 调用可能产生费用。此开关不会计量或强制请求/费用上限；请只在功能中输入明确授权的小范围。
+
+“否”保持 offline（默认）。取消或关闭对话框将中止启动 DEV。
+"@
+    $choice = [System.Windows.Forms.MessageBox]::Show(
+        $message,
+        '格物运行中心 · DEV 外部调用模式',
+        [System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
+        [System.Windows.Forms.MessageBoxIcon]::Warning,
+        [System.Windows.Forms.MessageBoxDefaultButton]::Button2)
+    switch ($choice) {
+        ([System.Windows.Forms.DialogResult]::Yes) { return 'live_validation' }
+        ([System.Windows.Forms.DialogResult]::No) { return 'offline' }
+        default { throw 'DEV startup canceled; nothing was started or stopped.' }
     }
 }
 function Show-ProdPendingNotice($Health) {
@@ -209,10 +230,22 @@ if ($Action -eq 'Start') {
     catch { throw 'Another Run Center start or TEST maintenance operation is active. Nothing was started.' }
 }
 
+$devRuntimePolicy = 'offline'
+$devRuntimeInstanceId = 'DEV'
 $testRuntimePolicy = 'offline'
 $testRuntimeInstanceId = 'TEST'
+if ($Action -eq 'Start' -and $Profile -eq 'DEV') {
+    if ($ExternalEffectsMode -eq 'prompt') {
+        try { $devRuntimePolicy = Select-DevRuntimePolicy }
+        catch {
+            if ($startupLock) { $startupLock.Dispose(); $startupLock = $null }
+            throw
+        }
+    }
+    if ($devRuntimePolicy -eq 'live_validation') { $devRuntimeInstanceId = 'DEV-LIVE-VALIDATION' }
+}
 if ($Action -eq 'Start' -and $Profile -eq 'TEST') {
-    if ($TestExternalEffectsMode -eq 'prompt') {
+    if ($ExternalEffectsMode -eq 'prompt') {
         try { $testRuntimePolicy = Select-TestRuntimePolicy }
         catch {
             if ($startupLock) { $startupLock.Dispose(); $startupLock = $null }
@@ -255,8 +288,8 @@ if ($Action -eq 'Start' -and $record) {
         (Get-CanonicalPath $runningHealth.storage) -eq (Get-CanonicalPath $record.data) -and
         $runningHealth.commit -eq $record.commit -and $runningHealth.build_id -eq $record.build_id
     if ($recordMatches -and $Profile -ne 'PROD') {
-        $expectedPolicy = if ($Profile -eq 'TEST') { @($testRuntimePolicy) } else { @('offline') }
-        $expectedInstance = if ($Profile -eq 'TEST') { @($testRuntimeInstanceId) } else { @('DEV') }
+        $expectedPolicy = if ($Profile -eq 'TEST') { @($testRuntimePolicy) } else { @($devRuntimePolicy) }
+        $expectedInstance = if ($Profile -eq 'TEST') { @($testRuntimeInstanceId) } else { @($devRuntimeInstanceId) }
         $recordMatches = Test-ProfileRuntime $healthUrl $Profile.ToLowerInvariant() $expectedPolicy $expectedInstance
     }
     if ($recordMatches) {
@@ -306,8 +339,8 @@ if ($Action -eq 'Stop') {
     $released = -not $serviceOwner
     if ($health) {
         if ($Profile -ne 'PROD') {
-            $allowedPolicies = if ($Profile -eq 'TEST') { @('offline', 'live_validation') } else { @('offline') }
-            $allowedInstances = if ($Profile -eq 'TEST') { @('TEST', 'TEST-LIVE-VALIDATION') } else { @('DEV') }
+            $allowedPolicies = @('offline', 'live_validation')
+            $allowedInstances = @($Profile, "$Profile-LIVE-VALIDATION")
             if (-not (Test-ProfileRuntime $url $Profile.ToLowerInvariant() $allowedPolicies $allowedInstances)) {
                 throw "Runtime profile or policy does not match this $Profile entry. Nothing was stopped."
             }
@@ -414,11 +447,16 @@ if ($Profile -eq 'DEV') {
     $env:GEWU_REPORTS_DIR = $config.profiles.TEST.reports
     Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue
     $apiArgs = @('-m','uvicorn','backend.app:app','--host','127.0.0.1','--port',"$apiPort",'--reload')
+    $previousDevExternalEffects = [Environment]::GetEnvironmentVariable('GEWU_DEV_EXTERNAL_EFFECTS', 'Process')
     $previousTestExternalEffects = [Environment]::GetEnvironmentVariable('GEWU_TEST_EXTERNAL_EFFECTS', 'Process')
     try {
+        Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
         Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
+        if ($devRuntimePolicy -eq 'live_validation') { $env:GEWU_DEV_EXTERNAL_EFFECTS = 'live_validation' }
         $api = Start-Process -FilePath $python -ArgumentList $apiArgs -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logRoot 'api.out.log') -RedirectStandardError (Join-Path $logRoot 'api.err.log') -PassThru
     } finally {
+        if ($null -eq $previousDevExternalEffects) { Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue }
+        else { $env:GEWU_DEV_EXTERNAL_EFFECTS = $previousDevExternalEffects }
         if ($null -eq $previousTestExternalEffects) { Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue }
         else { $env:GEWU_TEST_EXTERNAL_EFFECTS = $previousTestExternalEffects }
     }
@@ -483,8 +521,8 @@ if ($Profile -eq 'DEV') {
         if (-not (Test-FrozenListenerIdentity ([int]$portOwner) $manifest)) {
             throw "$Profile listener PID $portOwner does not match the embedded Python/bootstrap identity and verified build manifest. Nothing was stopped or adopted."
         }
-        $expectedPolicy = if ($Profile -eq 'TEST') { @($testRuntimePolicy) } else { @('offline') }
-        $expectedInstance = if ($Profile -eq 'TEST') { @($testRuntimeInstanceId) } else { @('DEV') }
+        $expectedPolicy = if ($Profile -eq 'TEST') { @($testRuntimePolicy) } else { @($devRuntimePolicy) }
+        $expectedInstance = if ($Profile -eq 'TEST') { @($testRuntimeInstanceId) } else { @($devRuntimeInstanceId) }
         if ($Profile -ne 'PROD' -and -not (Test-ProfileRuntime $entry.url $Profile.ToLowerInvariant() $expectedPolicy $expectedInstance)) {
             throw "$Profile port does not match the selected runtime policy/instance. The existing process was left running; nothing was stopped or adopted."
         }
@@ -499,10 +537,12 @@ if ($Profile -eq 'DEV') {
     $env:GEWU_REPORTS_DIR = $config.profiles.TEST.reports
     if ($Profile -ne 'PROD') { $env:GEWU_ALLOW_EXTERNAL_EFFECTS = '0' } else { Remove-Item Env:GEWU_ALLOW_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue }
     $args = @('--data',$dataPath,'--cache',$cachePath,'--port',"$port",'--no-open')
+    $previousDevExternalEffects = [Environment]::GetEnvironmentVariable('GEWU_DEV_EXTERNAL_EFFECTS', 'Process')
     $previousTestExternalEffects = [Environment]::GetEnvironmentVariable('GEWU_TEST_EXTERNAL_EFFECTS', 'Process')
     $previousInstanceId = [Environment]::GetEnvironmentVariable('GEWU_INSTANCE_ID', 'Process')
     try {
         $env:GEWU_INSTANCE_ID = if ($Profile -eq 'TEST') { $testRuntimeInstanceId } else { $Profile }
+        Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
         if ($Profile -eq 'TEST' -and $testRuntimePolicy -eq 'live_validation') {
             $env:GEWU_TEST_EXTERNAL_EFFECTS = 'live_validation'
         } else {
@@ -510,6 +550,8 @@ if ($Profile -eq 'DEV') {
         }
         $app = Start-Process -FilePath $exe -ArgumentList $args -WorkingDirectory $appDir -WindowStyle Hidden -PassThru
     } finally {
+        if ($null -eq $previousDevExternalEffects) { Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue }
+        else { $env:GEWU_DEV_EXTERNAL_EFFECTS = $previousDevExternalEffects }
         if ($null -eq $previousTestExternalEffects) { Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue }
         else { $env:GEWU_TEST_EXTERNAL_EFFECTS = $previousTestExternalEffects }
         if ($null -eq $previousInstanceId) { Remove-Item Env:GEWU_INSTANCE_ID -ErrorAction SilentlyContinue }
@@ -522,8 +564,8 @@ if ($Profile -eq 'DEV') {
     for ($i=0; $i -lt 90; $i++) { $health = Get-Health $entry.url; if ($health -and $health.application -eq 'product-tagging-workbench') { $ready = $true; break }; Start-Sleep -Milliseconds 500 }
     if (-not $ready) { throw "$Profile failed to start. Inspect its data\logs\desktop.log" }
     if ((Get-CanonicalPath $health.storage) -ne $dataPath -or $health.build_id -ne $buildId -or $health.commit -ne $manifest.commit) { throw "$Profile runtime identity does not match its manifest or data path." }
-    $expectedPolicy = if ($Profile -eq 'TEST') { @($testRuntimePolicy) } else { @('offline') }
-    $expectedInstance = if ($Profile -eq 'TEST') { @($testRuntimeInstanceId) } else { @('DEV') }
+    $expectedPolicy = if ($Profile -eq 'TEST') { @($testRuntimePolicy) } else { @($devRuntimePolicy) }
+    $expectedInstance = if ($Profile -eq 'TEST') { @($testRuntimeInstanceId) } else { @($devRuntimeInstanceId) }
     if ($Profile -ne 'PROD' -and -not (Test-ProfileRuntime $entry.url $Profile.ToLowerInvariant() $expectedPolicy $expectedInstance)) {
         throw "$Profile did not report the selected runtime profile, policy and instance id after startup. It remains untouched for inspection."
     }
@@ -541,8 +583,8 @@ if ($Profile -eq 'DEV') {
 }
 
 $health = Get-Health $(if ($Profile -eq 'DEV') { "http://127.0.0.1:$($entry.apiPort)" } else { $entry.url })
-if ($Profile -eq 'DEV' -and -not (Test-ProfileRuntime "http://127.0.0.1:$($entry.apiPort)" 'dev')) {
-    throw 'DEV API did not report profile=dev and offline external-call policy.'
+if ($Profile -eq 'DEV' -and -not (Test-ProfileRuntime "http://127.0.0.1:$($entry.apiPort)" 'dev' @($devRuntimePolicy) @($devRuntimeInstanceId))) {
+    throw 'DEV API did not report profile=dev and the selected external-call policy.'
 }
 $record = New-RunRecord $Profile $entry.url $dataPath $cachePath $(if ($Profile -eq 'DEV') { $health.build_id } else { $buildId }) $health.commit $(if ($Profile -eq 'DEV') { $config.projectRoot } else { '' }) $processes
 Save-Record $record $recordPath
