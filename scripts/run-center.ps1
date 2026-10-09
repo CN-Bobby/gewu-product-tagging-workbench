@@ -256,25 +256,49 @@ if ($Action -eq 'Stop') {
         if (-not $owner -or -not $owner.ExecutablePath) { throw "Cannot verify the listener process for port $servicePort. Nothing was stopped." }
     }
     $health = Get-Health $url
-    if ($serviceOwner -and -not $health) { throw "Port $servicePort is owned by a recorded process but does not return its health identity. Nothing was stopped." }
+    if ($serviceOwner -and -not $health -and $Profile -ne 'DEV') { throw "Port $servicePort is owned by a recorded process but does not return its health identity. Nothing was stopped." }
     if (-not $serviceOwner -and $health) { throw "Health responded on $url without a matching listener snapshot. Nothing was stopped." }
     if ($health -and ($health.application -ne 'product-tagging-workbench' -or
         (Get-CanonicalPath $health.storage) -ne (Get-CanonicalPath $record.data) -or
         $health.build_id -ne $record.build_id -or $health.commit -ne $record.commit)) {
         throw "Service identity on $url does not match the recorded $Profile process, build, and data path. Nothing was stopped."
     }
+    $released = -not $serviceOwner
     if ($health) {
         if ($Profile -ne 'PROD' -and -not (Test-ProfileRuntime $url $Profile.ToLowerInvariant())) {
             throw "Runtime profile does not match this $Profile entry, or it is not explicitly offline. Nothing was stopped."
         }
         try { Invoke-RestMethod -Method Post -Uri "$url/api/server/stop" -TimeoutSec 3 | Out-Null } catch { }
-        $released = $false
-        for ($i=0; $i -lt 60; $i++) {
+        for ($i=0; $i -lt 20; $i++) {
             if (-not (Get-PortOwner $servicePort)) { $released = $true; break }
             Start-Sleep -Milliseconds 500
         }
-        if (-not $released) { throw "The recorded $Profile service did not release port $servicePort after its graceful stop request. Its process record was retained." }
     }
+    if (-not $released -and $Profile -eq 'DEV') {
+        # The DEV API may be unresponsive while its exact listener is still alive. After the
+        # graceful stop window, terminate only API processes that still match recorded PID,
+        # executable, command-line token, and creation time. Never touch an unrecorded owner.
+        $apiRoles = @('api', 'api-child', 'api-listener')
+        $verifiedApiPids = @()
+        foreach ($role in $apiRoles) {
+            $verifiedApiProcess = Test-RecordedProcess $record $role
+            if ($verifiedApiProcess) { $verifiedApiPids += [int]$verifiedApiProcess.ProcessId }
+        }
+        if ([int]$serviceOwner -notin $verifiedApiPids) {
+            throw "DEV API port $servicePort is not owned by a verified recorded API process. Nothing was stopped."
+        }
+        foreach ($role in $apiRoles) {
+            $verifiedApiProcess = Test-RecordedProcess $record $role
+            if ($verifiedApiProcess) {
+                Stop-Process -Id ([int]$verifiedApiProcess.ProcessId) -ErrorAction Stop
+            }
+        }
+        for ($i=0; $i -lt 20; $i++) {
+            if (-not (Get-PortOwner $servicePort)) { $released = $true; break }
+            Start-Sleep -Milliseconds 250
+        }
+    }
+    if (-not $released) { throw "The recorded $Profile service did not release port $servicePort. Its process record was retained." }
     if ($Profile -eq 'DEV') {
         $webOwner = Get-PortOwner ([int]$entry.webPort)
         if ($webOwner) {
