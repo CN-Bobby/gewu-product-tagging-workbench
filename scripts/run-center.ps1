@@ -31,6 +31,31 @@ function Get-CreationUtcTicks($ProcessInfo) {
 function Get-ProcessIdentity([int]$Id) {
     Get-CimInstance Win32_Process -Filter "ProcessId=$Id" -ErrorAction SilentlyContinue
 }
+function Get-VenvBasePython([string]$VenvPython) {
+    $venvRoot = Split-Path -Parent (Split-Path -Parent $VenvPython)
+    $configPath = Join-Path $venvRoot 'pyvenv.cfg'
+    if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+        $homeLine = Get-Content -LiteralPath $configPath -Encoding UTF8 | Where-Object { $_ -match '^\s*home\s*=' } | Select-Object -First 1
+        if ($homeLine) {
+            $home = ($homeLine -replace '^\s*home\s*=\s*', '').Trim()
+            $basePython = Join-Path $home 'python.exe'
+            if (Test-Path -LiteralPath $basePython -PathType Leaf) { return Get-CanonicalPath $basePython }
+        }
+    }
+    return Get-CanonicalPath $VenvPython
+}
+function Test-ExpectedDevApiProcess($ProcessInfo, [string]$VenvPython, [int]$Port, [int]$ParentProcessId = 0) {
+    if (-not $ProcessInfo -or -not $ProcessInfo.ExecutablePath -or -not $ProcessInfo.CommandLine) { return $false }
+    if ($ParentProcessId -gt 0 -and [int]$ProcessInfo.ParentProcessId -ne $ParentProcessId) { return $false }
+    $actualExecutable = Get-CanonicalPath $ProcessInfo.ExecutablePath
+    $venvExecutable = Get-CanonicalPath $VenvPython
+    $baseExecutable = Get-VenvBasePython $VenvPython
+    $command = [string]$ProcessInfo.CommandLine
+    $isVenvProcess = $actualExecutable -eq $venvExecutable
+    $isVenvChild = $actualExecutable -eq $baseExecutable -and $command.IndexOf($venvExecutable, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    if (-not ($isVenvProcess -or $isVenvChild)) { return $false }
+    return ($command -like '*-m uvicorn backend.app:app*' -and $command -like "*--port $Port*")
+}
 function Get-Health([string]$Url) {
     try { Invoke-RestMethod -Uri "$Url/api/health" -TimeoutSec 2 } catch { $null }
 }
@@ -164,6 +189,32 @@ if ($Action -eq 'Start') {
 if ($Action -eq 'Start' -and $record) {
     $healthUrl = if ($Profile -eq 'DEV') { "http://127.0.0.1:$($entry.apiPort)" } else { $entry.url }
     $runningHealth = Get-Health $healthUrl
+    if ($Profile -eq 'DEV' -and $runningHealth -and $runningHealth.application -eq 'product-tagging-workbench' -and
+        (Get-CanonicalPath $runningHealth.storage) -eq (Get-CanonicalPath $record.data)) {
+        $apiOwner = Get-PortOwner ([int]$entry.apiPort)
+        $knownPids = @($record.processes | ForEach-Object { [int]$_.pid })
+        if ($apiOwner -and $apiOwner -notin $knownPids) {
+            $apiLauncher = $record.processes | Where-Object role -eq 'api' | Select-Object -First 1
+            $webOwner = Get-PortOwner ([int]$entry.webPort)
+            $webRecord = $record.processes | Where-Object role -eq 'web' | Select-Object -First 1
+            $venvPython = Join-Path (Get-CanonicalPath $config.projectRoot) '.venv\Scripts\python.exe'
+            $listenerIdentity = Get-ProcessIdentity ([int]$apiOwner)
+            if ($apiLauncher -and $webRecord -and $webOwner -eq [int]$webRecord.pid -and
+                (Test-ExpectedDevApiProcess $listenerIdentity $venvPython ([int]$entry.apiPort) ([int]$apiLauncher.pid))) {
+                $listenerObject = Get-Process -Id ([int]$apiOwner) -ErrorAction SilentlyContinue
+                if ($listenerObject) {
+                    $processList = [System.Collections.Generic.List[object]]::new()
+                    foreach ($item in $record.processes) { $processList.Add($item) }
+                    Add-ProcessRecord $processList 'api-listener' $listenerObject $listenerIdentity.ExecutablePath "--port $($entry.apiPort)"
+                    $record.processes = @($processList.ToArray())
+                    $record.build_id = $runningHealth.build_id
+                    $record.commit = $runningHealth.commit
+                    $record.project_root = $config.projectRoot
+                    Save-Record $record $recordPath
+                }
+            }
+        }
+    }
     $recordMatches = $runningHealth -and $runningHealth.application -eq 'product-tagging-workbench' -and
         (Get-CanonicalPath $runningHealth.storage) -eq (Get-CanonicalPath $record.data) -and
         $runningHealth.commit -eq $record.commit -and $runningHealth.build_id -eq $record.build_id
@@ -308,25 +359,21 @@ if ($Profile -eq 'DEV') {
     for ($i=0; $i -lt 90; $i++) { if ((Get-Health "http://127.0.0.1:$apiPort") -and (Get-PortOwner $webPort)) { $ready = $true; break }; Start-Sleep -Milliseconds 500 }
     if (-not $ready) { throw "DEV did not become ready. Logs: $logRoot" }
     $apiChild = Get-CimInstance Win32_Process | Where-Object {
-        $_.ParentProcessId -eq $api.Id -and $_.ExecutablePath -and
-        (Get-CanonicalPath $_.ExecutablePath) -eq (Get-CanonicalPath $python) -and
-        $_.CommandLine -like "*--port $apiPort*" -and $_.CommandLine -like '*backend.app:app*'
+        Test-ExpectedDevApiProcess $_ $python $apiPort $api.Id
     } | Select-Object -First 1
     if ($apiChild) {
         $childProcess = Get-Process -Id $apiChild.ProcessId -ErrorAction SilentlyContinue
-        if ($childProcess) { Add-ProcessRecord $processes 'api-child' $childProcess $python "--port $apiPort" }
+        if ($childProcess) { Add-ProcessRecord $processes 'api-child' $childProcess $apiChild.ExecutablePath "--port $apiPort" }
     }
     $apiOwner = Get-PortOwner $apiPort
     if ($apiOwner -notin @($processes | ForEach-Object { [int]$_.pid })) {
         $apiOwnerProcess = if ($apiOwner) { Get-ProcessIdentity ([int]$apiOwner) } else { $null }
-        if (-not $apiOwnerProcess -or (Get-CanonicalPath $apiOwnerProcess.ExecutablePath) -ne (Get-CanonicalPath $python) -or
-            -not $apiOwnerProcess.CommandLine -or $apiOwnerProcess.CommandLine -notlike "*--port $apiPort*" -or
-            $apiOwnerProcess.CommandLine -notlike '*backend.app:app*') {
+        if (-not (Test-ExpectedDevApiProcess $apiOwnerProcess $python $apiPort $api.Id)) {
             throw "DEV API port $apiPort is not owned by the expected backend process. The listener was left running."
         }
         $apiOwnerProcObject = Get-Process -Id ([int]$apiOwner) -ErrorAction SilentlyContinue
         if (-not $apiOwnerProcObject) { throw 'DEV API listener exited before its identity could be recorded.' }
-        Add-ProcessRecord $processes 'api-listener' $apiOwnerProcObject $python "--port $apiPort"
+        Add-ProcessRecord $processes 'api-listener' $apiOwnerProcObject $apiOwnerProcess.ExecutablePath "--port $apiPort"
     }
     $entry.url = "http://127.0.0.1:$webPort"
 } else {
