@@ -725,11 +725,15 @@ def _register_project_artifacts(job: dict[str, Any]) -> None:
     for filename, label in (("result.xlsx", "Amazon-Reviews.xlsx"), ("raw.json", "Amazon-Reviews-raw.json")):
         path = folder / filename
         if path.is_file():
-            project_files.register_file(workspace_id, "reviews", path,
-                source_type="amazon_reviews", source_id=job["id"] + ":" + filename,
-                name=label, metadata={"job_id": job["id"], "status": job.get("status"),
-                                      "source_dataset_id": job.get("source_dataset_id"),
-                                      "source_archive_id": job.get("source_archive_id")})
+            try:
+                project_files.register_file(workspace_id, "reviews", path,
+                    source_type="amazon_reviews", source_id=job["id"] + ":" + filename,
+                    name=label, metadata={"job_id": job["id"], "status": job.get("status"),
+                                          "source_dataset_id": job.get("source_dataset_id"),
+                                          "source_archive_id": job.get("source_archive_id")})
+            except Exception:
+                job["project_file_sync_error"] = "评论已完成，但项目文件登记失败；可从项目管理页重新关联。"
+                _save(job)
 
 
 def _auto_voc_handoff(job: dict[str, Any]) -> None:
@@ -972,8 +976,6 @@ def create(body: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("来源档案与 Dataset 不匹配")
         workspace_id = archive_workspace or workspace_id
         dataset_id = dataset_id or archive.get("dataset_id")
-    if auto_voc_policy != "none" and not workspace_id:
-        raise ValueError("自动 VOC 需要绑定项目")
     force_refresh = body.get("force_refresh", False)
     if not isinstance(force_refresh, bool):
         raise ValueError("force_refresh 必须是布尔值")
