@@ -181,6 +181,26 @@ def settings_models():return {**model_settings.read(),'defaults':model_settings.
 @app.post('/api/settings/models')
 def settings_models_save(body:dict):return model_settings.save(body)
 
+@app.get('/api/settings/sorftime')
+def settings_sorftime():
+    from .xunlongjue import settings as sorftime_settings
+    return sorftime_settings.status()
+
+@app.put('/api/settings/sorftime')
+def settings_sorftime_save(body:dict):
+    from .xunlongjue import settings as sorftime_settings
+    try:
+        return sorftime_settings.save((body or {}).get('endpoint'),(body or {}).get('api_key'))
+    except ValueError as exc:
+        raise HTTPException(status_code=400,detail=str(exc)) from None
+
+@app.delete('/api/settings/sorftime')
+def settings_sorftime_clear():
+    from .xunlongjue import settings as sorftime_settings
+    sorftime_settings.clear_key()
+    return sorftime_settings.status()
+
+
 @app.post('/api/settings/models/{provider}/credentials/{credential_id}/{action}')
 def settings_credential_action(provider:str,credential_id:str,action:str):return model_settings.credential_action(provider,credential_id,action)
 

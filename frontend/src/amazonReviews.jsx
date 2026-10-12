@@ -1,6 +1,7 @@
 import React,{useCallback,useEffect,useMemo,useRef,useState}from'react';
 import{ArrowDownToLine,ArrowRight,BookOpenCheck,CheckCircle2,CircleAlert,LoaderCircle,Pause,Play,RefreshCw}from'lucide-react';
 import{amazonVocRunHash,buildAmazonReviewsVocHandoffRequest,canStartAmazonReviewsVoc,isAmazonReviewsVocEligible,isAmazonReviewsVocPartial}from'./amazonReviewsState';
+import{primaryCredentialForModel}from'./modelCredential';
 
 const API='/api/amazon-reviews';
 const SITES=[['US','美国'],['GB','英国'],['DE','德国'],['FR','法国'],['IT','意大利'],['ES','西班牙'],['CA','加拿大'],['JP','日本'],['IN','印度'],['MX','墨西哥'],['BR','巴西'],['AU','澳大利亚'],['AE','阿联酋'],['SA','沙特']];
@@ -18,14 +19,7 @@ function settingsOptions(settings){
  const raw=settings?.models||settings?.available_models||[];
  return Array.isArray(raw)?raw.map(item=>typeof item==='string'?{ref:item,provider:item.split('/')[0]}:{ref:item.ref||item.model||item.model_ref,provider:item.provider||item.provider_name||String(item.ref||item.model||'').split('/')[0]}).filter(x=>x.ref):[];
 }
-function credentialsFor(settings,model){
- const provider=providersFrom(settings).find(x=>x.name===String(model||'').split('/')[0]);
- return (provider?.credentials||[]).filter(x=>x.enabled!==false&&x.authorized!==false&&x.id);
-}
-function defaultCredential(settings,model){
- const provider=providersFrom(settings).find(x=>x.name===String(model||'').split('/')[0]);
- return provider?.primary_credential_id||credentialsFor(settings,model)[0]?.id||'';
-}
+function defaultCredential(settings,model){return primaryCredentialForModel(settings,model)}
 function jobProgress(job){
  const progress=job?.progress||{};
  const total=Number(progress.total??job?.total??job?.asin_count??job?.items?.length??job?.asins?.length)||0;
@@ -44,7 +38,6 @@ export function AmazonReviews({api,onNavigate}){
  const[handoffPendingId,setHandoffPendingId]=useState('');
  const selectedRef=useRef(''),handoffPendingRef=useRef('');
  const modelOptions=useMemo(()=>settingsOptions(settings),[settings]);
- const credentialOptions=useMemo(()=>credentialsFor(settings,model),[settings,model]);
  const sorftimeReady=Boolean(settings?.sorftime?.key_configured);
 
  const refreshJobs=useCallback(async()=>{
@@ -55,7 +48,7 @@ export function AmazonReviews({api,onNavigate}){
   if(next!==selectedRef.current){selectedRef.current=next;setSelectedId(next)}
   return list;
  },[api]);
- useEffect(()=>{let alive=true;(async()=>{setLoading(true);try{const[value]=await Promise.all([api(`${API}/settings`,undefined,'GET'),refreshJobs()]);if(!alive)return;setSettings(value);const options=settingsOptions(value);const initial=String(value?.default_model||value?.defaults?.[0]||options[0]?.ref||'');setModel(initial);setCredentialId(value?.default_credential_id||defaultCredential(value,initial))}catch(e){if(alive)setError(e.message)}finally{if(alive)setLoading(false)}})();return()=>{alive=false}},[api,refreshJobs]);
+ useEffect(()=>{let alive=true;(async()=>{setLoading(true);try{const[value]=await Promise.all([api(`${API}/settings`,undefined,'GET'),refreshJobs()]);if(!alive)return;setSettings(value);const options=settingsOptions(value);const initial=String(value?.default_model||value?.defaults?.[0]||options[0]?.ref||'');setModel(initial);setCredentialId(defaultCredential(value,initial))}catch(e){if(alive)setError(e.message)}finally{if(alive)setLoading(false)}})();return()=>{alive=false}},[api,refreshJobs]);
  const chooseModel=value=>{setModel(value);setCredentialId(defaultCredential(settings,value))};
  const selectJob=id=>{selectedRef.current=id;setSelectedId(id)};
  const selected=jobs.find(job=>job.id===selectedId)||null;
@@ -108,10 +101,10 @@ export function AmazonReviews({api,onNavigate}){
     <div className="ar-form-grid"><label>Amazon 站点<select value={site} onChange={e=>setSite(e.target.value)}>{SITES.map(([code,name])=><option key={code} value={code}>{name} ({code})</option>)}</select></label>{mode==='ranked'&&<label>榜单规模<select value={rankLimit} onChange={e=>setRankLimit(Number(e.target.value))}><option value={50}>Top 50</option><option value={100}>Top 100</option></select></label>}</div>
     {mode!=='asins'&&<label className="ar-input-label">类目 Node ID<input value={nodeId} onChange={e=>setNodeId(e.target.value)} placeholder="输入 Sorftime 类目节点 ID" spellCheck="false"/></label>}
     {mode!=='ranked'&&<label className="ar-input-label">ASIN 列表<textarea value={asinText} onChange={e=>setAsinText(e.target.value)} placeholder={'每行一个，也支持逗号分隔\nB0XXXXXXXX'} spellCheck="false"/><small>已识别 {parsedAsins.length} 个唯一 ASIN{invalidAsins.length?` · ${invalidAsins.length} 个格式不正确`:''}</small>{invalidAsins.length>0&&<span className="ar-inline-error">请修正：{invalidAsins.slice(0,4).join('、')}{invalidAsins.length>4?'…':''}</span>}</label>}
-    <div className="ar-model-grid"><label>翻译模型<select value={model} onChange={e=>chooseModel(e.target.value)} disabled={!modelOptions.length}><option value="">选择模型</option>{modelOptions.map(item=><option key={item.ref} value={item.ref}>{item.ref}</option>)}</select></label><label>使用的 Key<select value={credentialId} onChange={e=>setCredentialId(e.target.value)} disabled={!credentialOptions.length}><option value="">选择已授权 Key</option>{credentialOptions.map(item=><option key={item.id} value={item.id}>{item.name||item.id}</option>)}</select></label></div>
+    <div className="ar-model-grid"><label>翻译模型<select value={model} onChange={e=>chooseModel(e.target.value)} disabled={!modelOptions.length}><option value="">选择模型</option>{modelOptions.map(item=><option key={item.ref} value={item.ref}>{item.ref}</option>)}</select><small>自动使用该服务在总设置中设为当前的 Key。</small></label></div>
     {!loading&&!modelOptions.length&&<p className="ar-help">没有可用模型配置。请先在“总设置”配置模型和授权 Key，再返回此处。</p>}
     <div className="ar-callout"><BookOpenCheck size={16}/><span>榜单模式最多选取 100 个商品。Sorftime 每次最多返回最近一年内的 100 条评论；每个 ASIN 使用 Both 参数调用两次并按评论日期、标题和正文去重，这两次调用不构成分页。模块会逐条翻译有内容的评论标题和正文。</span></div>
-    {!loading&&!sorftimeReady&&<p className="ar-help">请先在“寻龙诀”页面配置 Sorftime MCP，然后返回此页。连接状态只显示是否已配置，不会展示 Key。</p>}
+    {!loading&&!sorftimeReady&&<p className="ar-help">请先在“总设置”配置 Sorftime MCP，然后返回此页。连接状态只显示是否已配置，不会展示 Key。</p>}
     <div className="ar-actions"><button className="ar-primary" disabled={!canSubmit} onClick={start}>{busy?<LoaderCircle className="ar-spin" size={15}/>:<Play size={15}/>}创建并运行</button></div>
    </section>
    <section className="ar-card ar-job-card"><div className="ar-card-title"><div><span className="ar-step">02</span><h2>任务进度</h2></div><button className="ar-icon-button" onClick={()=>refreshJobs().catch(e=>setError(e.message))} aria-label="刷新任务列表"><RefreshCw size={15}/></button></div>

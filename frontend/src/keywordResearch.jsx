@@ -8,6 +8,7 @@
 import React,{useEffect,useReducer,useRef,useState}from'react';
 import{Download,Play,Plus,RefreshCw,Trash2,X}from'lucide-react';
 import './keywordResearch.css';
+import{primaryCredentialForModel}from'./modelCredential';
 import{ENDPOINTS,SSE_EVENT_NAME,buildRunRequest,initialKeywordForm,initialKeywordState,
   isActiveStatus,isCurrentRunSnapshot,isTerminalEvent,isTerminalStatus,keywordReducer,parseAsins,parseNodeIds,pendingQueueCount,summarizeActivity,validQueueSelection}
   from'./keywordState';
@@ -134,7 +135,7 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
             :((data.node_top_n_options||[])[0]||50),
         }))}));
     }).catch(error=>{if(!cancelled)setErrors([error.message])});
-    api('/api/settings/models',undefined,'GET').then(value=>{if(cancelled)return;setModels(value);const initial=value.defaults?.[0]||value.providers?.flatMap(p=>p.model_refs||[])[0]||'';setModelRef(initial);const provider=(value.providers||[]).find(p=>p.name===initial.split('/')[0]);setCredentialId(provider?.primary_credential_id||'')}).catch(error=>{if(!cancelled)setErrors([error.message])});
+    api('/api/settings/models',undefined,'GET').then(value=>{if(cancelled)return;setModels(value);const initial=value.defaults?.[0]||value.providers?.flatMap(p=>p.model_refs||[])[0]||'';setModelRef(initial);setCredentialId(primaryCredentialForModel(value,initial))}).catch(error=>{if(!cancelled)setErrors([error.message])});
     return()=>{cancelled=true};
   },[]);
 
@@ -304,8 +305,8 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
     setSelectedTaskId(id);setView('queue');setNotice('');onSelectRun(id);
   };
 
-  const modelOptions=(models?.providers||[]).flatMap(provider=>(provider.model_refs||[]).map(ref=>({ref,provider}))),selectedProvider=(models?.providers||[]).find(provider=>provider.name===modelRef.split('/')[0]),credentialOptions=selectedProvider?.credentials?.filter(item=>item.enabled&&item.authorized)||[];
-  const selectModel=value=>{setModelRef(value);const provider=(models?.providers||[]).find(item=>item.name===value.split('/')[0]);setCredentialId(provider?.primary_credential_id||'');setPlan(null);setForm(current=>({...current,planHash:''}))};
+  const modelOptions=(models?.providers||[]).flatMap(provider=>(provider.model_refs||[]).map(ref=>({ref,provider})));
+  const selectModel=value=>{setModelRef(value);setCredentialId(primaryCredentialForModel(models,value));setPlan(null);setForm(current=>({...current,planHash:''}))};
   const reorder=async(id,offset)=>{const items=(queue.items||[]).filter(item=>['created','queued'].includes(item.status)&&item.run_id!==queue.current&&item.id!==queue.current),index=items.findIndex(item=>(item.run_id||item.id)===id),next=index+offset;if(index<0||next<0||next>=items.length)return;const ids=items.map(item=>item.run_id||item.id);[ids[index],ids[next]]=[ids[next],ids[index]];try{await api(ENDPOINTS.queueOrder(),{run_ids:ids},'PUT');await refreshQueue()}catch(error){setErrors([error.message])}};
   const stopQueue=async()=>{if(!window.confirm('停止当前关键词队列？当前任务将取消，尚未开始的任务标记为跳过并保留输入与缓存。'))return;try{await api(ENDPOINTS.queueStop(),{});await refreshQueue();await refreshRecent('')}catch(error){setErrors([error.message])}};
   const continueQueue=async()=>{try{await api(ENDPOINTS.queueContinue(),{});await Promise.all([refreshQueue(),refreshRecent('')]);if(state.runId)await readSnapshot(state.runId)}catch(error){setErrors([error.message])}};
@@ -364,7 +365,7 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
             nodeTopN:(meta&&meta.node_top_n_options&&meta.node_top_n_options[0])||50}]}))}>
             <Plus size={14}/>再加一个站点组</button>
         </div>
-        <details className="keyword-advanced"><summary>高级选项 · 月份、矩阵、模型与凭据</summary>
+        <details className="keyword-advanced"><summary>高级选项 · 月份、矩阵与模型</summary>
         <div className="keyword-group-grid">
           <label className="settings-field"><span className="field-label">数据月份</span>
             <input aria-label="数据月份" placeholder="202607（留空为执行当月）" value={form.dataMonth}
@@ -379,8 +380,8 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
         </div>
         <label className="checkline"><input type="checkbox" checked={form.matrixEnabled}
           onChange={event=>edit(()=>({matrixEnabled:event.target.checked}))}/>生成 ASIN × 关键词矩阵</label>
-        <div className="keyword-group-grid"><label className="settings-field"><span className="field-label">任务文本模型</span><select value={modelRef} onChange={event=>selectModel(event.target.value)}>{modelOptions.map(item=><option key={item.ref} value={item.ref}>{item.ref}</option>)}</select></label><label className="settings-field"><span className="field-label">模型 Key</span><select value={credentialId} onChange={event=>{setCredentialId(event.target.value);setPlan(null);setForm(current=>({...current,planHash:''}))}}>{credentialOptions.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div>
-        <small className="field-help">任务冻结所选模型和凭据编号；选择变化后须重新核算。<button className="text-link" onClick={onSettings}>全局默认设置</button></small>
+        <div className="keyword-group-grid"><label className="settings-field"><span className="field-label">任务文本模型</span><select value={modelRef} onChange={event=>selectModel(event.target.value)}>{modelOptions.map(item=><option key={item.ref} value={item.ref}>{item.ref}</option>)}</select></label></div>
+        <small className="field-help">任务自动使用该服务在总设置中设为当前的 Key，并冻结模型和凭据编号。选择模型后须重新核算。<button className="text-link" onClick={onSettings}>打开总设置</button></small>
         </details>
         <div className="button-row">
           <button className="primary" disabled={busy==='plan'||invalidNodeGroups.length>0} onClick={countBudget}>
