@@ -71,11 +71,12 @@ def main() -> int:
         swim_folders = {item["kind"]: item for item in swim_lib["folders"]}
         dog_folders = {item["kind"]: item for item in dog_lib["folders"]}
         checks["fixture_projects_present"] = True
-        checks["four_fixed_folders"] = set(swim_folders) == {"source", "data_x", "reviews", "voc"} and set(dog_folders) == {"source", "data_x", "reviews", "voc"}
+        expected_folders = {"source", "data_x", "reviews", "voc", "keywords", "other"}
+        checks["six_fixed_folders"] = set(swim_folders) == expected_folders and set(dog_folders) == expected_folders
         checks["dog_data_x_reviews_voc"] = all(dog_folders[kind]["count"] > 0 for kind in ("data_x", "reviews", "voc"))
         checks["swimwear_source_and_reviews"] = swim_folders["source"]["count"] > 0 and swim_folders["reviews"]["count"] > 0
         if not all(checks.values()):
-            raise AssertionError("The fixture API does not contain the expected four-folder acceptance samples.")
+            raise AssertionError("The fixture API does not contain the expected six-folder acceptance samples.")
 
         try:
             from playwright.sync_api import sync_playwright
