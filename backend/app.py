@@ -474,6 +474,46 @@ def project_files_index(wid:str):
 @app.get('/api/projects/{wid}/library')
 def project_library_index(wid:str):return project_library.list_library(wid)
 
+@app.post('/api/projects/{wid}/library/upload')
+async def project_library_upload(wid: str, file: UploadFile = File(...), kind: str = Form('other')):
+    try:
+        data = await file.read(100 * 1024 * 1024 + 1)
+        if len(data) > 100 * 1024 * 1024:
+            raise ValueError('文件超过 100 MB')
+        return project_files.upload(wid, file.filename or '', data, kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@app.patch('/api/projects/{wid}/library/{artifact_id}')
+def project_library_update(wid: str, artifact_id: str, body: dict):
+    value = body or {}
+    try:
+        return project_files.update(wid, artifact_id, name=value.get('name'), kind=value.get('kind'),
+                                    target_workspace_id=value.get('workspace_id'))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@app.delete('/api/projects/{wid}/library/{artifact_id}')
+def project_library_recycle(wid: str, artifact_id: str):
+    try:
+        return project_files.recycle(wid, artifact_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@app.get('/api/projects/{wid}/trash')
+def project_trash(wid: str):
+    try:
+        return {'items': project_files.list_trash(wid)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@app.post('/api/projects/{wid}/trash/{artifact_id}/restore')
+def project_trash_restore(wid: str, artifact_id: str):
+    try:
+        return project_files.restore(wid, artifact_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
 @app.get('/api/projects/{wid}/library/{artifact_id}/workbook')
 def project_library_workbook(wid:str,artifact_id:str,sheet:str='',offset:int=0,
                              limit:int=50,query:str=''):

@@ -7,6 +7,7 @@ import re
 import threading
 import zipfile
 from collections import OrderedDict
+from urllib.parse import quote
 from xml.etree import ElementTree
 from datetime import date, datetime, time
 from pathlib import Path
@@ -22,9 +23,10 @@ from . import project_files
 from .db import ProjectArtifact, Session
 from .importer import wps_images
 
-FOLDER_ORDER = ("source", "data_x", "reviews", "voc")
+FOLDER_ORDER = ("source", "data_x", "reviews", "voc", "keywords", "other")
 FOLDER_LABELS = {"source": "原始上传数据", "data_x": "打标结果",
-                 "reviews": "评论文件", "voc": "VOC 报告"}
+                 "reviews": "评论文件", "voc": "VOC 报告",
+                 "keywords": "关键词研究", "other": "其他资源"}
 WORKBOOK_TYPES = {
     "source": {"dataset"},
     "data_x": {"data_x_snapshot"},
@@ -59,18 +61,37 @@ def _folder_for(item: dict[str, Any]) -> str | None:
         return str(kind)
     if kind == "voc" and source_type == "amazon_voc_output" and ext == ".html":
         return "voc"
+    if kind == "keywords" and source_type == "keyword_research" and ext == ".xlsx":
+        return "keywords"
+    # Direct project uploads are visible in the category the user selected.
+    # Their file extension determines whether this module can preview them.
+    if (kind in FOLDER_ORDER and source_type in {"manual_upload", "project_upload"}
+            and ext in project_files.MANAGED_EXTENSIONS):
+        return str(kind)
     return None
 
 
 def _public_item(item: dict[str, Any], folder: str) -> dict[str, Any]:
     downloadable = bool(item.get("downloadable"))
     is_html = _extension(item) == ".html"
+    source_type = item.get("source_type")
+    source_id = item.get("source_id")
+    source_identity = item.get("source_identity")
+    if not source_identity and source_type and source_id:
+        source_identity = f"{source_type}:{source_id}"
+    metadata = item.get("metadata") or {}
+    source_task_url = metadata.get("source_task_url")
+    if not source_task_url and source_type == "keyword_research" and source_id:
+        source_task_url = f"#/keyword/run/{quote(str(source_id), safe='')}"
     return {
         "id": item["id"], "name": item["name"], "kind": folder,
         "created_at": item.get("created_at"), "size": int(item.get("size") or 0),
         "sha256": item.get("sha256"),
         "previewable": downloadable and (is_html or _extension(item) == ".xlsx"),
-        "downloadable": downloadable, "source_type": item.get("source_type"),
+        "preview_reason": None if downloadable and (is_html or _extension(item) == ".xlsx")
+                         else "此文件类型暂不支持在线预览",
+        "downloadable": downloadable, "source_type": source_type, "source_id": source_id,
+        "source_identity": source_identity, "source_task_url": source_task_url,
     }
 
 

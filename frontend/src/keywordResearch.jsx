@@ -110,6 +110,8 @@ function BudgetCard({plan}){
 }
 
 export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSettings=()=>{}}){
+  const [projects,setProjects]=useState([]);
+  const [workspaceId,setWorkspaceId]=useState('');
   const [meta,setMeta]=useState(null);
   const [credential,setCredential]=useState(null);
   const [form,setForm]=useState(initialKeywordForm);
@@ -123,6 +125,7 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
   latest.current=state;
 
   useEffect(()=>{let cancelled=false;
+    api('/api/projects',undefined,'GET').then(value=>{if(!cancelled)setProjects(Array.isArray(value)?value:[])}).catch(()=>{});
     api(ENDPOINTS.meta(),undefined,'GET').then(data=>{if(cancelled)return;
       setMeta(data);setCredential(data.credential||null);
       setForm(current=>({...current,
@@ -226,11 +229,21 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
       if(!plan?.plan_hash||!form.planHash)throw Error('请先核算预算');
       const name=displayName.trim()||`关键词调研 ${new Date().toLocaleString()}`;
       const chosen=plan.selected||plan;
-      const created=await callJson(ENDPOINTS.runs(),{...buildRunRequest(form),dispatch:dispatchMode,display_name:name,model_ref:chosen.model_ref||modelRef,credential_id:chosen.credential_id||credentialId});
+      const created=await callJson(ENDPOINTS.runs(),{...buildRunRequest(form),dispatch:dispatchMode,display_name:name,workspace_id:workspaceId||null,model_ref:chosen.model_ref||modelRef,credential_id:chosen.credential_id||credentialId});
       selectedRunRef.current=created.run_id;
       dispatch({type:'run_created',runId:created.run_id,status:created.status});setSelectedTaskId(created.run_id);setNotice(`“${name}”${dispatchMode==='create'?'已保存':'已创建并提交队列'} · ${LABEL[created.status]||created.status}`);setErrors([]);setView('queue');await Promise.all([refreshRecent(''),refreshQueue()]);onSelectRun(created.run_id);await readSnapshot(created.run_id);
     }catch(error){setErrors(error.errors||[error.message])}
     finally{setBusy('')}
+  };
+
+  const linkProject=async value=>{
+    if(!state.runId)return;
+    try{
+      await api(`${ENDPOINTS.run(state.runId)}/project`,{workspace_id:value||null},'PATCH');
+      await readSnapshot(state.runId);
+      await Promise.all([refreshRecent(''),refreshQueue()]);
+      setNotice(value?'已关联项目，完成后的关键词文件会进入项目资料。':'已取消项目关联。');
+    }catch(error){setErrors([error.message])}
   };
 
   const freshQueueSelection=async ids=>{
@@ -354,6 +367,7 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
     <div className={'keyword-grid keyword-view-'+view}>
       {view==='new'&&<section className="keyword-card">
         <label className="settings-field"><span className="field-label">任务名称</span><input value={displayName} onChange={event=>setDisplayName(event.target.value)} placeholder="例如：核心词调研"/></label>
+        <label className="settings-field"><span className="field-label">保存到项目</span><select aria-label="保存到项目" value={workspaceId} onChange={event=>setWorkspaceId(event.target.value)}><option value="">暂不关联项目</option>{projects.map(project=><option key={project.id} value={project.id}>{project.name}</option>)}</select><small className="field-help">运行完成后，Excel 结果会进入项目的“关键词研究”分类。</small></label>
         <h3>调研输入</h3>
         {form.groups.map((group,index)=><GroupFields key={group.key} group={group} index={index} meta={meta}
           canRemove={form.groups.length>1} onChange={patch=>editGroup(group.key,patch)}
@@ -423,6 +437,7 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
         {state.runId?<>
           <h3>{recent.find(x=>(x.run_id||x.id)===state.runId)?.display_name||queue.items.find(x=>(x.run_id||x.id)===state.runId)?.display_name||'任务详情'} · {LABEL[state.status]||state.status}</h3>
           <p>阶段：{state.stage||'—'} · 队列位置：{state.queuePosition??'—'} · 尝试：{state.attempt??0}</p>
+          <label className="settings-field"><span className="field-label">所属项目</span><select aria-label="所属项目" value={state.workspaceId||''} disabled={isActiveStatus(state.status)} onChange={event=>linkProject(event.target.value)}><option value="">未关联</option>{projects.map(project=><option key={project.id} value={project.id}>{project.name}</option>)}</select><small className="field-help">未关联的历史任务可在此手动归档到项目。执行中的任务不可修改。</small></label>
           {showProgress ? <div className="keyword-progress"><b>{state.progress.stage||state.stage||'执行中'}</b><span>{state.progress.done??'—'}{state.progress.total!==null&&state.progress.total!==undefined?' / '+state.progress.total:''} {state.progress.unit||''}</span>{state.progress.total>0 ? <div className="keyword-bar"><i style={{width:Math.min(100,Math.round(state.progress.done/state.progress.total*100))+'%'}}/></div> : null}{state.progress.message&&<small>{state.progress.message}</small>}</div> : <p>当前阶段：{state.stage||state.message||'等待任务更新'}</p>}
           <h4>最近活动</h4><div className="recent-activity">{summarizeActivity(state.recentActivity).length?summarizeActivity(state.recentActivity).map((item,index)=><p key={item.sequence||index}><time>{item.at?new Date(item.at).toLocaleTimeString():''}</time>{item.text}</p>):<p>{state.progress?.message||state.message||'暂无活动记录'}</p>}</div>
           {state.error&&<p className="keyword-error">{state.error}</p>}

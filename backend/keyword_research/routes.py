@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from ..db import now, Session, Workspace, require
 from .. import project_files
-from . import budget, credentials, registry, runner, stream
+from . import budget, credentials, registry, runner, stream, project_link
 from .input_validator import MARKETPLACES, ValidationError as InputError
 from .pipeline import prepare_task_input
 from ..product_archive import service as archive_service
@@ -127,6 +127,12 @@ def create_run(body: dict):
     dispatch = (body or {}).get('dispatch') or 'enqueue'  # legacy clients execute after confirmation
     if dispatch not in ('create', 'enqueue'):
         _refuse('dispatch 只能是 create 或 enqueue')
+    workspace_id = str((body or {}).get('workspace_id') or '').strip() or None
+    if workspace_id:
+        try:
+            project_files.public_project(workspace_id)
+        except ValueError as exc:
+            _refuse(str(exc))
     run_id = registry.create(task_input, {'confirmed': True, 'created_at': now(),
                                           'budget': _budget_of(task_input),
                                           'selection': selection,
@@ -267,6 +273,23 @@ def queue_continue():
 def run_rename(run_id: str, body: dict):
     _snapshot(run_id)
     return registry.rename(run_id, (body or {}).get('display_name'))
+
+
+@router.patch('/runs/{run_id}/project')
+def run_project_link(run_id: str, body: dict):
+    state = registry.read(run_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail='运行不存在')
+    workspace_id = str((body or {}).get('workspace_id') or '').strip() or None
+    if workspace_id:
+        try:
+            project_files.public_project(workspace_id)
+        except ValueError as exc:
+            _refuse(str(exc))
+    registry.write(run_id, workspace_id=workspace_id, library_sync_error='')
+    linked = project_link.sync_run_artifacts(run_id, workspace_id) if state.get('status') == registry.DONE else []
+    return {'run_id': run_id, 'workspace_id': workspace_id,
+            'project_artifact_count': len(linked)}
 
 
 @router.post('/runs/{run_id}/hide')

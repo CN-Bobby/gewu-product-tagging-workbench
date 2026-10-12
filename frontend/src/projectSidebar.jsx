@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Folder, FolderOpen, Plus, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
-import { normalizeProjectLibrary } from './projectFilesState';
+import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, Plus, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { latestProjectArtifacts, normalizeProjectLibrary } from './projectFilesState';
 import './projectSidebar.css';
 
 export function ProjectSidebar({ api, route, navigate, currentWorkspaceId = '' }) {
@@ -65,7 +65,13 @@ export function ProjectSidebar({ api, route, navigate, currentWorkspaceId = '' }
         <button className={`ps-project-row ${activeId === project.id ? 'active' : ''}`} title={project.name} onClick={() => { setExpanded(value => ({ ...value, [project.id]: true })); navigate(`projects/${project.id}`); }}>
           <span className="ps-tree-toggle" onClick={event => { event.stopPropagation(); setExpanded(value => ({ ...value, [project.id]: !value[project.id] })); }}>{expanded[project.id] ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}</span><Folder size={15}/><span>{project.name}</span>
         </button>
-        {expanded[project.id] && <div className="ps-folders">{folders.map(folder => <button key={folder.kind} className={`ps-folder ${route?.workspaceId === project.id && (route?.folderKind === folder.kind || route?.artifactId && folder.items.some(item => item.id === route.artifactId)) ? 'active' : ''}`} onClick={() => navigate(`projects/${project.id}/folders/${folder.kind}`)}><Folder size={13}/><span>{folder.label}</span><small>{folder.count}</small></button>)}</div>}
+        {expanded[project.id] && <div className="ps-folders">{folders.map(folder => {
+          const recent = latestProjectArtifacts(folder.items, 20);
+          return <div className="ps-folder-group" key={folder.kind}>
+            <button className={`ps-folder ${route?.workspaceId === project.id && (route?.folderKind === folder.kind || route?.artifactId && folder.items.some(item => item.id === route.artifactId)) ? 'active' : ''}`} onClick={() => navigate(`projects/${project.id}/folders/${folder.kind}`)}><Folder size={13}/><span>{folder.label}</span><small>{folder.count}</small></button>
+            <div className="ps-recent-files">{recent.map(item => <button className={`ps-recent-file ${route?.artifactId === item.id ? 'active' : ''}`} key={item.id} title={item.name} onClick={() => navigate(`projects/${project.id}/files/${item.id}`)}><FileText size={12}/><span>{item.name || item.filename || '未命名文件'}</span></button>)}{folder.count > 20 && <button className="ps-view-all" onClick={() => navigate(`projects/${project.id}/folders/${folder.kind}`)}>查看全部 · {folder.count}</button>}{folder.count > 0 && folder.count <= 20 && <button className="ps-view-all" onClick={() => navigate(`projects/${project.id}/folders/${folder.kind}`)}>查看全部</button>}{!folder.count && <span className="ps-no-files">暂无文件</span>}</div>
+          </div>;
+        })}</div>}
       </section>)}</div>
       {!projects.length && !error && <p className="ps-empty">还没有项目</p>}
       {error && <p className="ps-error" role="alert">{error}</p>}

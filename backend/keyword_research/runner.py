@@ -343,6 +343,13 @@ def execute(run_id, cancel_event=None):
             return {'status': registry.INTERRUPTED}
         registry.write(run_id, status=registry.DONE, artifacts=artifacts, message='任务完成',
                        report_template=template)
+    workspace_id = (registry.read(run_id) or {}).get('workspace_id')
+    if workspace_id:
+        try:
+            from .project_link import sync_run_artifacts
+            sync_run_artifacts(run_id, workspace_id)
+        except Exception as exc:  # Project indexing can be retried without rerunning keyword collection.
+            registry.write(run_id, library_sync_error=str(exc)[:300])
     for item in artifacts:
         registry.append_event(run_id, 'artifact_ready', item)
     registry.append_event(run_id, 'run_finished', {'artifacts': [x['name'] for x in artifacts]})

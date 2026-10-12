@@ -31,7 +31,8 @@ test('sample page is read-only and directs unconfirmed workflow back to tagging'
 test('project library uses the artifact API, folder routes, search, time sorting and downloads', () => {
   assert.match(projectPage, /\/api\/projects\/\$\{workspaceId\}\/library/);
   assert.match(projectPage, /filterProjectArtifacts/);
-  assert.match(projectPage, /artifacts\/\$\{item\.id\}\/download/);
+  assert.match(projectPage, /artifactDownloadUrl\(workspaceId, item\)/);
+  assert.match(projectFilesState, /artifacts\/\$\{encodeURIComponent\(item\.id\)\}\/download/);
   assert.match(projectPage, /item\.downloadable/);
   assert.match(projectPage, /pm-sort/);
   assert.match(projectPage, /projects\/\$\{workspaceId\}\/folders/);

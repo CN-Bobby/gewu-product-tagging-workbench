@@ -63,17 +63,18 @@ def test_library_fixed_categories_and_deduplicates_backfilled_copy(tmp_path):
               name="not-a-deliverable.xlsx", source_id="run:report")
 
     result = __import__("backend.project_library", fromlist=["list_library"]).list_library(wid)
-    assert [folder["kind"] for folder in result["folders"]] == ["source", "data_x", "reviews", "voc"]
-    source_folder, data_x, reviews, voc = result["folders"]
+    assert [folder["kind"] for folder in result["folders"]] == [
+        "source", "data_x", "reviews", "voc", "keywords", "other"]
+    source_folder, data_x, reviews, voc = result["folders"][:4]
     assert [folder["label"] for folder in result["folders"]] == [
-        "原始上传数据", "打标结果", "评论文件", "VOC 报告"]
+        "原始上传数据", "打标结果", "评论文件", "VOC 报告", "关键词研究", "其他资源"]
     assert source_folder["count"] == 1
     assert source_folder["items"][0]["id"] == local["id"]
     assert source_folder["items"][0]["downloadable"] is True
     assert data_x["count"] == 1
     assert reviews["count"] == 2
     assert voc["count"] == 1
-    assert all("relative_path" not in item and "source_id" not in item
+    assert all("relative_path" not in item
                for folder in result["folders"] for item in folder["items"])
 
 

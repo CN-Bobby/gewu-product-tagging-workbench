@@ -9,6 +9,8 @@ import hashlib
 import os
 import re
 import shutil
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,14 +22,18 @@ PROJECTS = STORAGE / "projects"
 FOLDERS = {
     "source": "source/raw",
     "data_x": "data-x",
+    # Keep internal legacy kinds accepted for modules that still register them.
+    # The project-library UI intentionally presents only the six user-facing kinds.
     "product_archive": "product-archive",
-    "keywords": "keywords",
     "reviews": "reviews",
     "voc": "voc",
+    "keywords": "keywords",
+    "other": "other",
     "images": "images",
     "reports": "reports",
     "legacy": "legacy-index",
 }
+MANAGED_EXTENSIONS = {".xlsx", ".html"}
 _ID = re.compile(r"^[a-f0-9]{32}$")
 
 
@@ -57,6 +63,235 @@ def _safe_name(value: str) -> str:
     name = Path(str(value or "artifact")).name
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(" .")
     return (name or "artifact")[:180]
+
+
+def _upload_name(value: str) -> str:
+    """Uploads accept a leaf filename and the two project-library formats only."""
+    if not isinstance(value, str) or not value.strip() or Path(value).name != value:
+        raise ValueError("文件名无效，不能包含路径")
+    name = _safe_name(value)
+    if Path(name).suffix.casefold() not in MANAGED_EXTENSIONS:
+        raise ValueError("仅支持 .xlsx 和 .html 文件")
+    return name
+
+
+def _install_no_overwrite(target: Path, content: bytes) -> None:
+    """Atomically install bytes while failing if another artifact owns the name."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=".project-file-", dir=target.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            reservation = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError as exc:
+            raise ValueError("目标文件已存在，未覆盖") from exc
+        os.close(reservation)
+        try:
+            os.replace(temporary, target)
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _managed_path(workspace_id: str, relative_path: str) -> tuple[Path, Path]:
+    """Resolve a stored relative path and reject external/symlink references."""
+    if not relative_path or relative_path.startswith("external:"):
+        raise ValueError("历史外部引用不能移动或回收")
+    root = project_dir(workspace_id).resolve()
+    candidate = (root / relative_path).resolve(strict=False)
+    if not candidate.is_relative_to(root) or candidate == root:
+        raise ValueError("项目文件路径越界")
+    return root, candidate
+
+
+def _category_target(root: Path, kind: str, name: str) -> Path:
+    category = root
+    for part in Path(FOLDERS[kind]).parts:
+        category = category / part
+        if category.is_symlink() or getattr(category, "is_junction", lambda: False)():
+            raise ValueError("项目类别目录不能是链接")
+    target = category / name
+    resolved_root = root.resolve()
+    if not target.resolve(strict=False).is_relative_to(resolved_root):
+        raise ValueError("项目文件路径越界")
+    return target
+
+
+def _copy_no_overwrite(source: Path, destination: Path) -> None:
+    """Copy through a same-directory temp file, reserving destination first."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=".project-move-", dir=destination.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "wb") as output, source.open("rb") as original:
+            shutil.copyfileobj(original, output)
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            reservation = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError as exc:
+            raise ValueError("目标文件已存在，未覆盖") from exc
+        os.close(reservation)
+        try:
+            os.replace(temporary, destination)
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def upload(workspace_id: str, name: str, content: bytes, kind: str = "other", *,
+           source_type: str = "manual_upload", source_id: str | None = None) -> dict[str, Any]:
+    """Register an uploaded XLSX/HTML as a managed, project-owned artifact."""
+    filename = _upload_name(name)
+    if kind not in FOLDERS:
+        raise ValueError("项目文件类型无效")
+    if not isinstance(content, bytes) or not content:
+        raise ValueError("文件内容为空或无效")
+    if len(content) > 100 * 1024 * 1024:
+        raise ValueError("文件超过 100 MB")
+    root = ensure_project(workspace_id)
+    target = _category_target(root, kind, filename)
+    digest = hashlib.sha256(content).hexdigest()
+    _install_no_overwrite(target, content)
+    try:
+        with Session.begin() as session:
+            require(session, Workspace, workspace_id)
+            item = ProjectArtifact(workspace_id=workspace_id, kind=kind,
+                source_type=source_type[:80], source_id=(source_id or os.urandom(16).hex())[:160],
+                name=filename, relative_path=target.relative_to(root).as_posix(),
+                sha256=digest, size=len(content), metadata_json={"manually_uploaded": True})
+            session.add(item)
+            session.flush()
+            result = _public(item)
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    return result
+
+
+def update(workspace_id: str, artifact_id: str, *, name: str | None = None,
+           kind: str | None = None, target_workspace_id: str | None = None) -> dict[str, Any]:
+    """Rename or move a managed copy, preserving its source identity and hash."""
+    destination_workspace = target_workspace_id or workspace_id
+    with Session() as session:
+        item = session.get(ProjectArtifact, artifact_id)
+        if not item or item.workspace_id != workspace_id:
+            raise ValueError("项目文件不存在或不属于当前项目")
+        if (item.metadata_json or {}).get("deleted_at"):
+            raise ValueError("回收站中的文件不能直接编辑")
+        old = _public(item)
+    if not old["downloadable"]:
+        raise ValueError("历史外部引用不能移动或重命名")
+    new_name = _upload_name(name) if name is not None else old["name"]
+    new_kind = kind or old["kind"]
+    if new_kind not in FOLDERS:
+        raise ValueError("项目文件类型无效")
+    old_root, source = _managed_path(workspace_id, old["relative_path"])
+    if not source.is_file():
+        raise ValueError("托管文件缺失，无法移动")
+    destination_root = ensure_project(destination_workspace)
+    destination = _category_target(destination_root, new_kind, new_name)
+    if source.resolve() == destination.resolve():
+        return old
+    _copy_no_overwrite(source, destination)
+    relative = destination.relative_to(destination_root).as_posix()
+    try:
+        with Session.begin() as session:
+            item = session.get(ProjectArtifact, artifact_id)
+            if not item or item.workspace_id != workspace_id:
+                raise ValueError("项目文件不存在或项目归属已变化")
+            item.workspace_id = destination_workspace
+            item.kind = new_kind
+            item.name = new_name
+            item.relative_path = relative
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    source.unlink(missing_ok=True)
+    with Session() as session:
+        return _public(session.get(ProjectArtifact, artifact_id))
+
+
+def recycle(workspace_id: str, artifact_id: str) -> dict[str, Any]:
+    """Move the managed copy to per-project trash and retain its database record."""
+    with Session() as session:
+        item = session.get(ProjectArtifact, artifact_id)
+        if not item or item.workspace_id != workspace_id:
+            raise ValueError("项目文件不存在或不属于当前项目")
+        metadata = dict(item.metadata_json or {})
+        if metadata.get("deleted_at"):
+            return _public(item)
+        public = _public(item)
+    if not public["downloadable"]:
+        raise ValueError("历史外部引用不能回收")
+    root, source = _managed_path(workspace_id, public["relative_path"])
+    if not source.is_file():
+        raise ValueError("托管文件缺失，无法回收")
+    trash_relative = f".trash/{artifact_id}-{public['name']}"
+    _, target = _managed_path(workspace_id, trash_relative)
+    _copy_no_overwrite(source, target)
+    stamp = datetime.now(timezone.utc).isoformat()
+    metadata.update({"deleted_at": stamp, "restore_path": public["relative_path"]})
+    try:
+        with Session.begin() as session:
+            item = session.get(ProjectArtifact, artifact_id)
+            if not item or item.workspace_id != workspace_id:
+                raise ValueError("项目文件不存在或项目归属已变化")
+            item.relative_path = trash_relative
+            item.metadata_json = metadata
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    source.unlink(missing_ok=True)
+    with Session() as session:
+        return _public(session.get(ProjectArtifact, artifact_id))
+
+
+def restore(workspace_id: str, artifact_id: str) -> dict[str, Any]:
+    with Session() as session:
+        item = session.get(ProjectArtifact, artifact_id)
+        if not item or item.workspace_id != workspace_id:
+            raise ValueError("项目文件不存在或不属于当前项目")
+        metadata = dict(item.metadata_json or {})
+        if not metadata.get("deleted_at"):
+            return _public(item)
+        public = _public(item)
+    root, source = _managed_path(workspace_id, public["relative_path"])
+    destination_relative = metadata.get("restore_path") or f"{public['kind']}/{public['name']}"
+    _, destination = _managed_path(workspace_id, destination_relative)
+    if not source.is_file():
+        raise ValueError("回收站文件缺失，无法恢复")
+    _copy_no_overwrite(source, destination)
+    metadata.update({"deleted_at": None, "restore_path": None})
+    try:
+        with Session.begin() as session:
+            item = session.get(ProjectArtifact, artifact_id)
+            if not item or item.workspace_id != workspace_id:
+                raise ValueError("项目文件不存在或项目归属已变化")
+            item.relative_path = destination_relative
+            item.metadata_json = metadata
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    source.unlink(missing_ok=True)
+    with Session() as session:
+        return _public(session.get(ProjectArtifact, artifact_id))
+
+
+def list_trash(workspace_id: str) -> list[dict[str, Any]]:
+    with Session() as session:
+        require(session, Workspace, workspace_id)
+        rows = session.scalars(select(ProjectArtifact).where(
+            ProjectArtifact.workspace_id == workspace_id).order_by(ProjectArtifact.created_at.desc())).all()
+        return [_public(row) for row in rows if (row.metadata_json or {}).get("deleted_at")]
 
 
 def _hash(path: Path) -> tuple[str, int]:
@@ -143,11 +378,16 @@ def register_dataset(workspace_id: str, dataset_id: str, source_path: str | Path
 
 
 def _public(item: ProjectArtifact) -> dict[str, Any]:
+    metadata = item.metadata_json or {}
+    source_identity = f"{item.source_type}\0{item.source_id}".encode("utf-8")
     return {"id": item.id, "workspace_id": item.workspace_id, "kind": item.kind,
             "source_type": item.source_type, "source_id": item.source_id, "name": item.name,
+            "source_identity": f"{item.source_type}:{item.source_id}",
             "relative_path": item.relative_path, "sha256": item.sha256, "size": item.size,
-            "metadata": item.metadata_json or {}, "created_at": item.created_at,
-            "downloadable": not str(item.relative_path).startswith("external:")}
+            "metadata": metadata, "created_at": item.created_at,
+            "version_group": hashlib.sha256(source_identity).hexdigest()[:24],
+            "deleted_at": metadata.get("deleted_at"),
+            "downloadable": not str(item.relative_path).startswith("external:") and not metadata.get("deleted_at")}
 
 
 def list_artifacts(workspace_id: str, kind: str | None = None) -> list[dict[str, Any]]:
@@ -159,7 +399,7 @@ def list_artifacts(workspace_id: str, kind: str | None = None) -> list[dict[str,
                 raise ValueError("项目文件类型无效")
             query = query.where(ProjectArtifact.kind == kind)
         rows = session.scalars(query.order_by(ProjectArtifact.created_at.desc(), ProjectArtifact.id.desc())).all()
-        return [_public(row) for row in rows]
+        return [_public(row) for row in rows if not (row.metadata_json or {}).get("deleted_at")]
 
 
 def artifact_path(workspace_id: str, artifact_id: str) -> Path:
@@ -168,6 +408,8 @@ def artifact_path(workspace_id: str, artifact_id: str) -> Path:
         item = session.get(ProjectArtifact, artifact_id)
         if not item or item.workspace_id != workspace_id:
             raise ValueError("项目文件不存在")
+        if (item.metadata_json or {}).get("deleted_at"):
+            raise ValueError("回收站中的文件不可下载")
         if item.relative_path.startswith("external:"):
             raise ValueError("历史文件仅登记索引，不通过项目页面下载")
         candidate = (root / Path(item.relative_path)).resolve(strict=True)
