@@ -38,7 +38,9 @@ CREATE TABLE IF NOT EXISTS model_calls (
   id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(id), revision INTEGER NOT NULL,
   stage TEXT NOT NULL, batch_id TEXT NOT NULL, input_hash TEXT NOT NULL, model TEXT NOT NULL,
   prompt_version TEXT NOT NULL, protocol TEXT NOT NULL, latency_ms INTEGER NOT NULL,
-  input_tokens INTEGER, output_tokens INTEGER, retries INTEGER NOT NULL, status TEXT NOT NULL,
+  input_tokens INTEGER, output_tokens INTEGER,
+  cache_hit_input_tokens INTEGER, cache_miss_input_tokens INTEGER,
+  retries INTEGER NOT NULL, status TEXT NOT NULL,
   error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS corrections (
@@ -53,6 +55,8 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 """
 
+_UNSET = object()
+
 
 class Database:
     def __init__(self, path: Path):
@@ -61,9 +65,14 @@ class Database:
         self._lock = threading.RLock()
         with self.connect() as conn:
             conn.executescript(SCHEMA)
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
-            if "workspace_id" not in columns:
+            project_columns = {row[1] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
+            if "workspace_id" not in project_columns:
                 conn.execute("ALTER TABLE projects ADD COLUMN workspace_id TEXT")
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(model_calls)").fetchall()}
+            if "cache_hit_input_tokens" not in columns:
+                conn.execute("ALTER TABLE model_calls ADD COLUMN cache_hit_input_tokens INTEGER")
+            if "cache_miss_input_tokens" not in columns:
+                conn.execute("ALTER TABLE model_calls ADD COLUMN cache_miss_input_tokens INTEGER")
 
     @contextmanager
     def connect(self):
@@ -87,6 +96,39 @@ class Database:
     def all(self, sql, params=()):
         with self.connect() as conn:
             return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+    def record_model_call(self, run_id, revision, stage, batch_id, input_hash, model,
+                          prompt_version, protocol, latency_ms, input_tokens, output_tokens,
+                          retries, status, error="", created_at=None,
+                          cache_hit_input_tokens=None, cache_miss_input_tokens=None):
+        """Insert a model call; cache usage is optional for older callers/providers."""
+        with self._lock, self.connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO model_calls(run_id,revision,stage,batch_id,input_hash,model,prompt_version,protocol,"
+                "latency_ms,input_tokens,output_tokens,cache_hit_input_tokens,cache_miss_input_tokens,"
+                "retries,status,error,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (run_id, revision, stage, batch_id, input_hash, model, prompt_version, protocol,
+                 latency_ms, input_tokens, output_tokens, cache_hit_input_tokens,
+                 cache_miss_input_tokens, retries, status, error, created_at or utcnow()))
+            return cursor.lastrowid
+
+    def update_model_call(self, call_id, *, cache_hit_input_tokens=_UNSET,
+                          cache_miss_input_tokens=_UNSET, **fields):
+        """Update call usage fields while accepting the optional cache fields by keyword."""
+        allowed = {"input_tokens", "output_tokens", "cache_hit_input_tokens",
+                   "cache_miss_input_tokens", "latency_ms", "retries", "status", "error"}
+        updates = {key: value for key, value in fields.items() if key in allowed}
+        # Omitted fields preserve existing values; explicit None records unknown.
+        if cache_hit_input_tokens is not _UNSET:
+            updates["cache_hit_input_tokens"] = cache_hit_input_tokens
+        if cache_miss_input_tokens is not _UNSET:
+            updates["cache_miss_input_tokens"] = cache_miss_input_tokens
+        if not updates:
+            return 0
+        assignments = ",".join("%s=?" % key for key in updates)
+        with self._lock, self.connect() as conn:
+            return conn.execute("UPDATE model_calls SET %s WHERE id=?" % assignments,
+                                tuple(updates.values()) + (call_id,)).rowcount
 
     def create_project(self, name, marketplace, country, language, category, workspace_id=None):
         project_id = "prj_" + uuid.uuid4().hex[:12]

@@ -1,16 +1,24 @@
 import json
 import time
 import threading
+import pytest
 
 from openpyxl import load_workbook
 
 from backend.amazon_reviews import service, sorftime
 from backend.keyword_research.llm_client import LLMError
+from backend.local_result_cache import LocalResultCache
 
 
 ASIN_A = "B0D5TQJXRN"
 ASIN_B = "B0GY6VX976"
 NODE = "17269957011"
+
+
+@pytest.fixture(autouse=True)
+def isolate_review_caches(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "COLLECTION_CACHE", LocalResultCache("reviews-collection", tmp_path / "cache"))
+    monkeypatch.setattr(service, "TRANSLATION_CACHE", LocalResultCache("reviews-translation", tmp_path / "cache"))
 
 
 class FakeResponse:
@@ -221,9 +229,10 @@ def test_live_shaped_node_job_deduplicates_translates_and_exports(monkeypatch, t
         worker.join(timeout=2)
     result = service.get(created["id"])
 
-    assert result["status"] == "completed"
+    assert result["status"] == "completed", result
     assert [item["asin"] for item in result["items"]] == [ASIN_A, ASIN_B]
-    assert result["metrics"] == {"review_tool_calls": 4, "raw_records": 6, "new_unique_records": 4}
+    assert result["metrics"] == {"review_tool_calls": 4, "cached_review_requests": 0,
+                                 "raw_records": 6, "new_unique_records": 4}
     assert len(api_calls) == 5  # one category report and two identical Both calls per ASIN
     assert all(calls_by_asin[asin] == 2 for asin in (ASIN_A, ASIN_B))
 
@@ -310,7 +319,8 @@ def test_retry_resumes_the_missing_review_pass(monkeypatch, tmp_path):
     assert len(requested) == 1  # only missing pass 2 was called
     assert requested[0][0] == "product_reviews"
     assert requested[0][1] == {"amz_site": "US", "asin": ASIN_A, "review_type": "Both"}
-    assert result["metrics"] == {"review_tool_calls": 2, "raw_records": 2, "new_unique_records": 1}
+    assert result["metrics"] == {"review_tool_calls": 2, "cached_review_requests": 0,
+                                 "raw_records": 2, "new_unique_records": 1}
     assert len(raw["reviews"]) == 1
     assert raw["reviews"][0]["source_review_rounds"] == [1, 2]
     assert raw["reviews"][0]["translation_zh"] == "译：Works well"

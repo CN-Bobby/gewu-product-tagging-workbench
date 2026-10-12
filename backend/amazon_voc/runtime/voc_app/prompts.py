@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 from .config import PACKAGE_ROOT
+from .full_voc_v2 import PROMPT_VERSION
+from .full_voc_v2_extract import EXTRACT_PROMPT_VERSION
 
 
 PROMPT_DIR = PACKAGE_ROOT / "prompts"
@@ -19,6 +21,25 @@ class PromptRegistry:
         self.root = Path(root)
 
     def load(self, task):
+        if task == "full_voc_v2":
+            prompt_path = self.root / "full_voc_v2.txt"
+            schema_path = self.root / "full_voc_v2_schema.json"
+            schema = json.loads(schema_path.read_text(encoding="utf-8-sig"))
+            return {"version": PROMPT_VERSION, "schema": schema}, prompt_path.read_text(encoding="utf-8-sig")
+        if task in ("full_voc_v2_extract", "full_voc_v2_synthesis", "full_voc_v2_assign",
+                    "full_voc_v2_dictionary"):
+            prompt_path = self.root / (task + ".txt")
+            schema_path = self.root / (task + "_schema.json")
+            schema = json.loads(schema_path.read_text(encoding="utf-8-sig"))
+            if task.endswith("extract"):
+                version = EXTRACT_PROMPT_VERSION
+            elif task.endswith("synthesis"):
+                version = PROMPT_VERSION + "-synthesis-compact"
+            elif task.endswith("dictionary"):
+                version = PROMPT_VERSION + "-dictionary-v1"
+            else:
+                version = PROMPT_VERSION + "-assign-v1"
+            return {"version": version, "schema": schema}, prompt_path.read_text(encoding="utf-8-sig")
         data = json.loads((self.root / (task + ".json")).read_text(encoding="utf-8"))
         body = "\n\n".join([
             "任务目标：" + data["objective"],
