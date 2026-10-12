@@ -2,6 +2,15 @@
 
 快照时间：2026-10-09（Asia/Shanghai）
 
+## 2026-10-12 便携分发与在线更新流程（实施中）
+
+- **当前状态：** DEV → 便携候选 → TEST 人工验收 → PROD 提升与 GitHub Release 流程正在接入；没有新的候选 ZIP、人工验收或 PROD 提升记录，本节不代表已完成交付。
+- **真实 DEV：** Run Center 指向 `C:\Users\Administrator\.codex\worktrees\voc-project-file-link\数据打标项目`，分支 `codex/voc-project-file-link`，基线 HEAD `267a3dff360cfd67724f8e920ad8091a4ad076b6`；本次复核时有 68 个 tracked 文件修改和 13 个未跟踪文件，须分类保留后才能形成干净候选提交。聊天当前打开的 `1b41` worktree 是干净 detached 基线，不是 DEV。
+- **版本口径：** beta.8 清单实际标记 `build_mode=dev`、`release=false`、不可分发，且没有对应人工验收报告；现将其登记为被 beta.9 取代的开发构建。`VERSION.json` 与 RELEASE_LEDGER 已推进 beta.9 / `pending_acceptance`，候选 commit 尚未确定。
+- **已接入本地改动：** `build_windows.py --portable` 输出版本化候选目录、便携 ZIP 和 SHA-256 侧车；人工验收清单绑定候选报告、app manifest、ZIP 和侧车哈希；TEST/PROD Run Center 门槛与提升凭证脚本正在完善。PowerShell 静态解析及 `git diff --check` 通过；本轮尚未构建候选或执行完整测试。
+- **在线更新口径：** 客户端读取 GitHub Releases，不同步源码分支。接受提交进入源码仓库 `main` 后，将人工验收的同一 ZIP/侧车上传至二进制 Release 仓库，并在说明中记录源码 commit。默认配置 `CN-Bobby/gewu-workbench-releases` 当前不存在，需要在候选完成后确认/建立可公开下载的二进制仓库。
+- **尚需完成：** 对 68 项 dirty 变更分类及重复 Woot 补丁对照；完成分支本地提交和固定候选工作树同步；完善 TEST/PROD 提升脚本和按原 ZIP 发布脚本；离线测试、构建、浏览器回归；人工验收并产生可追溯报告；按授权提升 PROD；配置 Release 仓库并验证客户端检查更新与资产哈希。
+
 ## 本地开发与测试环境治理
 
 - **状态：环境治理实现完成，人工业务验收仍待用户执行。** 日常开发入口、冻结 TEST 构建、数据重置、回退、离线自动门禁、项目文件树浏览器回归和独立人工清单已形成固定流程，说明见 [`LOCAL_RUN_CENTER.md`](LOCAL_RUN_CENTER.md) 与 [`LOCAL_TEST_ACCEPTANCE.md`](LOCAL_TEST_ACCEPTANCE.md)。DEV 与 TEST 每次桌面启动都显式选择 offline（默认）或单进程 `live_validation`，取消/关闭对话框会中止启动。两种模式都使用隔离业务数据，且不恢复旧任务；自动回归与候选 `StartAfter` 始终 offline。TEST 夹具位于 `K:\GeWuFixtures\project-library-v1`，TEST 报告位于 `K:\GeWuTest\Reports`。

@@ -1,12 +1,14 @@
 """Build from a clean commit with pinned wheels, embedded Python and native Reasonix.
 
-``--dev`` produces a runnable directory under ``builds/`` with no installer and no release
-gate; see ``scripts/build-test.ps1`` and ``scripts/dev-launcher.ps1``."""
+``--dev`` produces a runnable development directory under ``builds/`` with no installer and no
+release gate. ``--portable`` produces a frozen, manually reviewable portable candidate ZIP."""
 import argparse,hashlib,json,os,shutil,subprocess,sys,zipfile
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
-parser=argparse.ArgumentParser();parser.add_argument('--candidate',action='store_true')
-parser.add_argument('--dev',action='store_true',help='development build: skip the release gate and the installer, write to builds/')
+parser=argparse.ArgumentParser();build_kind=parser.add_mutually_exclusive_group()
+build_kind.add_argument('--candidate',action='store_true')
+build_kind.add_argument('--dev',action='store_true',help='development build: skip the release gate and the installer, write to builds/')
+build_kind.add_argument('--portable',action='store_true',help='build a clean, commit-pinned portable candidate ZIP under builds/')
 parser.add_argument('--allow-dirty',action='store_true',help='dev only: build from a dirty worktree and record dirty=true')
 parser.add_argument('--evidence',type=Path);args=parser.parse_args()
 
@@ -31,7 +33,8 @@ def worktree_digest():
 
 version=json.loads((ROOT/'VERSION.json').read_text(encoding='utf-8'))
 ledger=json.loads((ROOT/'RELEASE_LEDGER.json').read_text(encoding='utf-8'))
-ledger_entry=next((item for item in ledger.get('versions',[]) if item.get('version')==version['version']),None)
+ledger_entries=[item for item in ledger.get('versions',[]) if item.get('version')==version['version']]
+ledger_entry=ledger_entries[0] if len(ledger_entries)==1 else None
 dirty=bool(subprocess.check_output(['git','status','--porcelain'],cwd=ROOT,text=True).strip())
 if args.dev:
     # A development build is not a release: no ledger gate, no acceptance gate, no installer.
@@ -42,7 +45,12 @@ else:
     if not ledger_entry or ledger_entry.get('status')!=version.get('release_status'):
         raise SystemExit('VERSION.json and RELEASE_LEDGER.json disagree')
     if dirty:raise SystemExit('Build requires clean Git worktree')
-    if not args.candidate:
+    if args.portable and (args.allow_dirty or len(ledger_entries)!=1 or
+                          version.get('release_status')!='pending_acceptance' or
+                          ledger_entry.get('status')!='pending_acceptance' or
+                          ledger_entry.get('superseded_by')):
+        raise SystemExit('Portable candidates require a clean tree and exactly one, unsuperseded pending_acceptance ledger entry matching VERSION.json')
+    if not args.candidate and not args.portable:
         gate=[sys.executable,str(ROOT/'scripts/check_release.py')]
         if args.evidence:gate.extend(['--evidence',str(args.evidence)])
         subprocess.run(gate,check=True)
@@ -55,6 +63,9 @@ if args.dev:
     # build_id itself stays <version>+<commit> per RELEASE_LEDGER policy.
     directory=version['version']+'+'+commit[:12]+('-dirty.'+worktree_sha256[:8] if dirty else '')
     out=ROOT/'builds'/directory
+elif args.portable:
+    worktree_sha256=None
+    out=ROOT/'builds'/(version['version']+'-candidate.'+commit[:12])
 else:
     worktree_sha256=None
     out=ROOT/'releases'/version['version']/commit[:12]
@@ -91,6 +102,15 @@ for info in (runtime/'Lib/site-packages').glob('*.dist-info'):
             dest=licenses/info.name/file.relative_to(info);dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(file,dest)
 for package in ('react','react-dom','lucide-react'):
     for file in (ROOT/'frontend/node_modules'/package).glob('*LICENSE*'):shutil.copy2(file,licenses/(package+'-'+file.name))
+if args.portable:
+    (app/'便携版使用说明.md').write_text('''# 格物工作台便携版使用说明
+
+1. 将此 ZIP 解压到一个有写入权限、并会长期保留的程序目录。解压后直接运行 `Workbench.exe`；本包不安装 Windows 服务或创建安装器快捷方式。
+2. 首次启动时，在设置窗口中选择数据目录和缓存目录。请将它们放在程序目录之外的稳定位置，避免更新或替换程序时误删数据。
+3. 更换程序版本前先正常退出工作台。只替换程序目录；保留并继续选择原来的数据目录和缓存目录。不要删除数据目录中的数据库、会话、备份或 SQLite WAL 文件。
+4. 本包是等待人工验收的候选版本，尚不代表已验收或正式发布。请先在隔离的数据目录中验收，不要直接用正式数据目录验证。
+5. 下载后可用随包 `.sha256` 文件核对 ZIP。该文件记录 ZIP 的 SHA-256。
+''',encoding='utf-8')
 compiler=Path(os.environ.get('WINDIR','C:/Windows'))/'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
 import re
 match=re.fullmatch(r'(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc)\.(\d+))?',version['version'])
@@ -105,6 +125,7 @@ sys.path.insert(0,str(ROOT));from backend.build_info import build_info
 from backend.tagging_rules import freeze
 if args.dev:build_mode,distribution='dev','development build, not for distribution'
 elif args.candidate:build_mode,distribution='candidate','candidate pending external acceptance'
+elif args.portable:build_mode,distribution='candidate','portable candidate pending manual acceptance'
 else:build_mode,distribution='release','release'
 manifest={**build_info(),'version':version['version'],'build_id':version['version']+'+'+commit[:12],
     'release_status':version['release_status'],'commit':commit,'branch':branch,'build_mode':build_mode,
@@ -127,6 +148,25 @@ if args.dev:
     raise SystemExit(0)
 shutil.copy2(app/'build-manifest.json',out/'release-manifest.json')
 if args.evidence:shutil.copy2(args.evidence,out/'release-evidence.json')
+if args.portable:
+    portable_zip=out/f'GeWuWorkbench-{version["version"]}-portable.zip'
+    with zipfile.ZipFile(portable_zip,'w',zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(app.rglob('*')):
+            if path.is_file():archive.write(path,path.relative_to(app).as_posix())
+    portable_sha256=sha(portable_zip)
+    portable_sidecar=portable_zip.with_name(portable_zip.name+'.sha256')
+    portable_sidecar.write_text(f'{portable_sha256}  {portable_zip.name}\n',encoding='utf-8')
+    manifest_sha256=sha(app/'build-manifest.json')
+    print(json.dumps({'output':str(out),'app':str(app),'portable_zip':str(portable_zip),
+                      'portable_sha256':portable_sha256,'portable_zip_sha256':portable_sha256,
+                      'portable_sidecar':str(portable_sidecar),'sidecar':str(portable_sidecar),
+                      'portable_sha256_file':str(portable_sidecar),
+                      'commit':commit,'dirty':manifest['dirty'],'build_id':manifest['build_id'],
+                      'directory':out.name,'build_mode':manifest['build_mode'],
+                      'storage_mode':manifest['storage_mode'],'release':manifest['release'],
+                      'release_status':manifest['release_status'],'manifest_sha256':manifest_sha256,
+                      'version':version['version']},ensure_ascii=False))
+    raise SystemExit(0)
 delete_files='\n'.join('Delete "$INSTDIR\\'+p.relative_to(app).as_posix().replace('/','\\')+'"' for p in app.rglob('*') if p.is_file())
 delete_dirs='\n'.join('RMDir "$INSTDIR\\'+p.relative_to(app).as_posix().replace('/','\\')+'"' for p in sorted((p for p in app.rglob('*') if p.is_dir()),key=lambda p:len(p.parts),reverse=True))
 candidate_suffix='-candidate.'+commit[:12] if args.candidate else ''

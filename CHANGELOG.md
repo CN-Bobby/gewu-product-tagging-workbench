@@ -1,10 +1,16 @@
 # 变更记录
 
+## 0.5.0-beta.9（便携更新候选，待验收）
+- 增加从已提交源码生成无安装器便携 ZIP 的候选构建；人工验收记录绑定 ZIP、侧车校验文件和程序清单的 SHA-256。
+- Run Center 仅允许 TEST 启动已冻结且报告匹配的便携候选；PROD 要求通过人工验收的提升凭证，并保留现有正式数据与缓存目录。
+- 增加从 GitHub Releases 查询更新的设置入口。正式发布需上传同一份已验收 ZIP 和 SHA-256 文件；客户端不从 Git 分支拉取程序。
+- beta.8 本地构建被登记为未验收开发构建，不能分发；beta.9 当前仍待构建和验收。
+
 ## 开发增量（2026-10-08）：本地开发与测试运行中心
 - 新增固定 DEV／TEST／PROD 桌面入口和 Run Center，DEV 使用 5174 + 8896 热更新，TEST 固定端口 8895，PROD 保留 8765；检查数据目录、manifest 与进程身份，未知端口占用时拒绝启动或停止。
 - DEV／TEST 默认离线，加入启动恢复与任务入口门禁、凭证不回显的 `/api/runtime/status` 和前端运行身份面板；模型 Key、SellerSprite、Sorftime 凭证进入当前 Windows 用户 DPAPI vault，DEV/TEST 共用 scope，PROD 独立。
 - 增加脱敏项目文件夹具、TEST 数据重置、自动回归、浏览器回归、人工验收清单、TEST 冻结/回退和正式数据只读快照工具。普通开发不递增客户版本、不推送、不打安装包。
-- 本地进度与人工业务验收状态见 `docs/PROJECT_PROGRESS.md` 和 `docs/LOCAL_TEST_ACCEPTANCE.md`；PROD 当前 beta.8 仍为待验收候选。
+- 本地进度与人工业务验收状态见 `docs/PROJECT_PROGRESS.md` 和 `docs/LOCAL_TEST_ACCEPTANCE.md`；beta.8 是未验收开发构建，已由 beta.9 取代。
 
 ## 开发增量（2026-10-08）
 - 项目管理新增全局可折叠项目树；创建项目后立即显示“原始上传数据、打标结果、评论文件、VOC 报告”四类文件夹，项目与文件夹点击可导航，打标页和选品档案页同步高亮所属项目。

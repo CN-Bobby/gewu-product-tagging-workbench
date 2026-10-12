@@ -23,6 +23,7 @@ from ..model_settings import defaults, read as read_model_settings, require_vali
 from ..usage_ledger import record_usage, usage_summary
 from ..xunlongjue import settings as sorftime_settings
 from . import sorftime
+from . import woot
 
 ROOT = STORAGE / "amazon-reviews"
 SITES = ("Unknow", "US", "GB", "DE", "FR", "IT", "ES", "CA", "JP", "IN", "MX", "BR", "AU", "AE", "SA")
@@ -124,7 +125,8 @@ def _job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
     snapshot = {key: job.get(key) for key in ("id", "status", "mode", "site", "created_at", "updated_at",
                                                "stage", "error", "review_count", "attempt", "model", "credential_id",
                                                "workspace_id", "source_dataset_id", "source_archive_id",
-                                               "workflow_mode", "translate_enabled", "force_refresh")} | {
+                                               "workflow_mode", "translate_enabled", "force_refresh",
+                                               "collection_source", "auto_voc_policy")} | {
         "items": items, "total": total, "completed": sum(x["status"] == "completed" for x in items),
         "failed": sum(x["status"] == "failed" for x in items),
         "retryable": _retryable_count(job),
@@ -325,7 +327,7 @@ def _reviews_from_calls(calls: list[dict[str, Any]], asin: str = "") -> tuple[li
                 row["asin"] = asin
             identity = _review_key(row)
             if identity not in by_identity:
-                row["source_review_type"] = "Both"
+                row["source_review_type"] = call.get("review_type", "Both")
                 row["source_review_rounds"] = [call["round"]]
                 row["pull_pass"] = call["round"]
                 row["sentiment"] = row.get("sentiment") or _sentiment(row.get("star_rating") or row.get("rating") or row.get("star"))
@@ -334,9 +336,12 @@ def _reviews_from_calls(calls: list[dict[str, Any]], asin: str = "") -> tuple[li
                 added += 1
             elif call["round"] not in by_identity[identity]["source_review_rounds"]:
                 by_identity[identity]["source_review_rounds"].append(call["round"])
-        metrics.append({"round": call["round"], "review_type": "Both",
+        payload = call.get("payload")
+        request_count = (int(payload.get("request_count") or 1)
+                         if call.get("review_type") == "Woot max" and isinstance(payload, dict) else 1)
+        metrics.append({"round": call["round"], "review_type": call.get("review_type", "Both"),
                         "raw_record_count": len(rows), "new_unique_count": added,
-                        "cache_hit": bool(call.get("cache_hit"))})
+                        "request_count": request_count, "cache_hit": bool(call.get("cache_hit"))})
     return reviews, metrics
 
 
@@ -356,6 +361,7 @@ def _annotate_reviews(reviews: list[dict[str, Any]], job: dict[str, Any], item: 
         row["asin"] = item["asin"]
         row["product_title"] = row.get("product_title") or item.get("title", "")
         row["source_site"] = job.get("site", "")
+        row["collection_source"] = job.get("collection_source", "sorftime")
         row["source_node"] = job.get("node_id", "")
         row["sentiment"] = row.get("sentiment") or _sentiment(
             row.get("star_rating") or row.get("rating") or row.get("star"))
@@ -380,7 +386,8 @@ def _sentiment(value: Any) -> str:
 def _metrics_from_items(items: list[dict[str, Any]]) -> dict[str, int]:
     all_calls = [call for item in items for call in item.get("review_call_metrics", [])]
     return {
-        "review_tool_calls": sum(1 for call in all_calls if not call.get("cache_hit")),
+        "review_tool_calls": sum(int(call.get("request_count") or 1) for call in all_calls
+                                  if not call.get("cache_hit")),
         "cached_review_requests": sum(1 for call in all_calls if call.get("cache_hit")),
         "raw_records": sum(int(call.get("raw_record_count") or 0) for call in all_calls),
         "new_unique_records": sum(int(call.get("new_unique_count") or 0) for call in all_calls),
@@ -580,7 +587,9 @@ def _run(job_id: str, cancel: threading.Event) -> None:
             base_url, api_key, model = model_target(job["model"], job["credential_id"])
             require_validated(job["model"], job["credential_id"], "text")
             client = LLMClient(base_url, api_key, model)
-        endpoint, sorftime_key = sorftime_settings.connection()
+        collection_source = job.get("collection_source", "sorftime")
+        endpoint, sorftime_key = sorftime_settings.connection() if (
+            collection_source == "sorftime" or job.get("mode") != "asins") else ("", "")
         job["status"] = "running"
         job["attempt"] = int(job.get("attempt") or 0) + 1
         job["error"] = ""
@@ -599,39 +608,48 @@ def _run(job_id: str, cancel: threading.Event) -> None:
                 calls_path = _call_payloads_path(job_id, item["asin"])
                 calls = json.loads(calls_path.read_text(encoding="utf-8")) if calls_path.is_file() else []
                 completed_rounds = {int(call.get("round", 0)) for call in calls}
-                for round_number in (1, 2):
+                rounds = (1,) if collection_source == "woot" else (1, 2)
+                for round_number in rounds:
                     if cancel.is_set() or (round_number in completed_rounds and not job.get("force_refresh")):
                         continue
                     if job.get("force_refresh"):
                         calls = [call for call in calls if int(call.get("round", 0)) != round_number]
                         completed_rounds.discard(round_number)
-                    cache_key = fingerprint({"contract": "sorftime-product-reviews-v1",
-                        "site": job["site"], "asin": item["asin"], "review_type": "Both",
-                        "round": round_number, "window": "latest-year"})
-                    cache_hit, payload = COLLECTION_CACHE.get(job.get("workspace_id"), cache_key,
-                        force_refresh=bool(job.get("force_refresh")))
-                    if not cache_hit:
-                        try:
-                            payload = sorftime.call(endpoint, sorftime_key, "product_reviews", {
-                                "amz_site": job["site"], "asin": item["asin"], "review_type": "Both"})
-                        except Exception:
-                            record_usage("reviews", job_id, job.get("workspace_id"), {
-                                "stage": "reviews_collection", "model": "Sorftime", "status": "failed",
-                                "request": True, "review_api_calls": 1, "retries": 0,
-                            })
-                            raise
-                        COLLECTION_CACHE.put(job.get("workspace_id"), cache_key, payload)
-                    calls.append({"round": round_number, "review_type": "Both", "payload": payload,
+                    cache_hit = False
+                    if collection_source == "woot":
+                        def update_woot_progress(detail: str) -> None:
+                            job["stage"] = f"正在拉取 {item['asin']} 评论 · {detail}"
+                            _save(job)
+                        payload = woot.collect_reviews(item["asin"], progress=update_woot_progress)
+                    else:
+                        cache_key = fingerprint({"contract": "sorftime-product-reviews-v1",
+                            "site": job["site"], "asin": item["asin"], "review_type": "Both",
+                            "round": round_number, "window": "latest-year"})
+                        cache_hit, payload = COLLECTION_CACHE.get(job.get("workspace_id"), cache_key,
+                            force_refresh=bool(job.get("force_refresh")))
+                        if not cache_hit:
+                            try:
+                                payload = sorftime.call(endpoint, sorftime_key, "product_reviews", {
+                                    "amz_site": job["site"], "asin": item["asin"], "review_type": "Both"})
+                            except Exception:
+                                record_usage("reviews", job_id, job.get("workspace_id"), {
+                                    "stage": "reviews_collection", "model": "Sorftime", "status": "failed",
+                                    "request": True, "review_api_calls": 1, "retries": 0,
+                                })
+                                raise
+                            COLLECTION_CACHE.put(job.get("workspace_id"), cache_key, payload)
+                    review_type = "Woot max" if collection_source == "woot" else "Both"
+                    calls.append({"round": round_number, "review_type": review_type, "payload": payload,
                                   "cache_hit": cache_hit})
                     completed_rounds.add(round_number)
                     reviews, item["review_call_metrics"] = _reviews_from_calls(calls, item["asin"])
                     call_metric = next(metric for metric in item["review_call_metrics"]
                                        if metric["round"] == round_number)
                     record_usage("reviews", job_id, job.get("workspace_id"), {
-                        "stage": "reviews_collection", "model": "Sorftime",
+                        "stage": "reviews_collection", "model": "Woot" if collection_source == "woot" else "Sorftime",
                         "status": "cache_hit" if cache_hit else "completed", "request": not cache_hit,
                         "local_cache_hit": cache_hit, "local_cache_miss": not cache_hit,
-                        "review_api_calls": 0 if cache_hit else 1,
+                        "review_api_calls": 0 if cache_hit else call_metric.get("request_count", 1),
                         "raw_records": call_metric["raw_record_count"],
                         "new_unique_comments": call_metric["new_unique_count"], "retries": 0,
                     })
@@ -861,10 +879,12 @@ def _export(job: dict[str, Any]) -> None:
     summary_rows = (
         ("品类节点", job.get("node_id") or ""),
         ("站点", job.get("site") or ""),
+        ("评论采集方式", "Woot 爬虫" if job.get("collection_source") == "woot" else "Sorftime MCP"),
         ("去重后评论总数", total_reviews),
         ("涉及商品数(ASIN)", len({row.get("asin") for row in reviews})),
         ("API 调用次数", calls),
-        ("拉取批次", "每个 ASIN 使用同站点、Both 参数调用 2 次；去重合并，不是分页"),
+        ("拉取批次", "Woot 按星级和排序组合采集并去重" if job.get("collection_source") == "woot"
+         else "每个 ASIN 使用同站点、Both 参数调用 2 次；去重合并，不是分页"),
         ("积极评论", f'{sentiment_counts["Positive"]} ({sentiment_counts["Positive"] / total_reviews * 100:.1f}%)' if total_reviews else "0 (0.0%)"),
         ("中性评论", f'{sentiment_counts["Mixed"]} ({sentiment_counts["Mixed"] / total_reviews * 100:.1f}%)' if total_reviews else "0 (0.0%)"),
         ("消极评论", f'{sentiment_counts["Negative"]} ({sentiment_counts["Negative"] / total_reviews * 100:.1f}%)' if total_reviews else "0 (0.0%)"),
@@ -881,7 +901,7 @@ def _export(job: dict[str, Any]) -> None:
     summary.column_dimensions["B"].width = 84
     book.save(folder / "result.xlsx")
     _atomic_json(folder / "raw.json", {
-        "job": {key: job.get(key) for key in ("id", "mode", "site", "created_at", "status")},
+        "job": {key: job.get(key) for key in ("id", "mode", "site", "collection_source", "created_at", "status")},
         "review_collection_contract": job.get("review_collection_contract", REVIEW_CALL_CONTRACT),
         "metrics": job.get("metrics", {}), "products": job.get("items", []), "reviews": reviews,
         "review_call_responses": {
@@ -923,6 +943,11 @@ def create(body: dict[str, Any]) -> dict[str, Any]:
     if mode not in ("ranked", "asins", "node_asins"):
         raise ValueError("输入模式无效")
     site = _site(body.get("site", "US"))
+    collection_source = str(body.get("collection_source") or "sorftime").strip().lower()
+    if collection_source not in ("sorftime", "woot"):
+        raise ValueError("评论采集方式无效")
+    if collection_source == "woot" and site != "US":
+        raise ValueError("Woot 评论采集仅支持 Amazon 美国站")
     selected_asins = _asins(body.get("asins")) if mode in ("asins", "node_asins") else []
     node_id = str(body.get("node_id") or "").strip()
     if mode in ("ranked", "node_asins") and (not node_id or len(node_id) > 100):
@@ -937,7 +962,8 @@ def create(body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("translate_enabled 必须是布尔值")
     if translate_enabled and (not model or not credential_id):
         raise ValueError("翻译开启时请选择翻译模型和已授权 Key")
-    sorftime_settings.connection()
+    if collection_source == "sorftime" or mode != "asins":
+        sorftime_settings.connection()
     if translate_enabled:
         target = model_target(model, credential_id)
         del target
@@ -986,6 +1012,7 @@ def create(body: dict[str, Any]) -> dict[str, Any]:
     _atomic_json(folder / "request.json", {"mode": mode, "site": site, "node_id": node_id,
                                            "asins": selected_asins, "rank_limit": rank_limit,
                                            "workflow_mode": workflow_mode, "translate_enabled": translate_enabled,
+                                           "collection_source": collection_source,
                                            "workspace_id": workspace_id, "source_dataset_id": dataset_id,
                                            "source_archive_id": archive_id, "auto_voc_policy": auto_voc_policy,
                                            "force_refresh": force_refresh})
@@ -997,7 +1024,12 @@ def create(body: dict[str, Any]) -> dict[str, Any]:
            "source_archive_id": archive_id, "workflow_mode": workflow_mode,
            "translate_enabled": translate_enabled, "auto_voc_policy": auto_voc_policy,
            "force_refresh": force_refresh,
-           "review_collection_contract": REVIEW_CALL_CONTRACT,
+           "collection_source": collection_source,
+           "review_collection_contract": ({"source": "Woot", "mode": "max",
+                                           "star_filters": [5, 4, 3, 2, 1],
+                                           "sort_orders": [0, 1, 2, 3], "pagination": True,
+                                           "label": "美国站使用 Woot 评论接口按星级和排序组合采集并去重"}
+                                          if collection_source == "woot" else REVIEW_CALL_CONTRACT),
            "metrics": {"review_tool_calls": 0, "cached_review_requests": 0,
                        "raw_records": 0, "new_unique_records": 0}}
     _save(job)

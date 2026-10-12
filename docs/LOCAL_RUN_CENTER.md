@@ -8,7 +8,13 @@
 | --- | --- | --- | --- | --- |
 | DEV | `http://127.0.0.1:5174` / `8896` | `config.json` 中的 `projectRoot` 日常开发工作树 | `K:\GeWuDev\Data` | `K:\GeWuDev\Cache` |
 | TEST | `http://127.0.0.1:8895` | `K:\GeWuTest\Current\app` | `K:\GeWuTest\Data` | `K:\GeWuTest\Cache` |
-| PROD | `http://127.0.0.1:8765` | `K:\Bobbytagging\Candidate-beta.8\app` | `K:\Bobbytagging\Data` | `K:\Bobbytagging\Cache` |
+| PROD | `http://127.0.0.1:8765` | 通过提升凭证配置的 `K:\Bobbytagging\Candidate-beta.N\app` | `K:\Bobbytagging\Data` | `K:\Bobbytagging\Cache` |
+
+## 本地候选交付顺序
+
+日常开发只在 DEV 工作树进行。冻结脚本要求固定候选工作树指向同一完整提交且干净，然后生成 `builds/<版本>-candidate.<提交前12位>/`：包含程序目录、可直接解压的便携 ZIP 和 `.sha256` 文件。TEST 从该 ZIP 解压后启动，候选报告、程序清单和 ZIP 哈希共同绑定人工验收清单；人工结果通过后，提升脚本将这份 ZIP 解压到新的 beta 目录，只改 Run Center 的 PROD 程序路径，保留原 beta 目录和正式 Data/Cache。
+
+人工验收通过后，接受的提交再进入 GitHub `main`。在线更新读取 `GEWU_UPDATE_REPOSITORY`（默认 `CN-Bobby/gewu-workbench-releases`）的 GitHub Releases 元数据，并提供 Release 中便携 ZIP 的下载链接和 SHA-256；客户端不拉取 `main` 分支文件。发布时上传已人工验收的同一 ZIP 与侧车文件，不重新构建。默认二进制仓库当前尚需建立或配置，仓库不可用时检查更新会明确失败。
 
 DEV 与 TEST 的模型、SellerSprite、Sorftime 凭证存于当前 Windows 用户 DPAPI vault；DEV/TEST 共用凭证 scope。各自的非秘密模型提供方配置放在 `RunCenter\profiles\DEV\providers` 和 `RunCenter\profiles\TEST\providers`，与业务数据分开，因此 TEST 数据重置不会删除模型选择。PROD 继续使用当前候选及现有数据目录的配置和凭证，不做自动迁移。首次设置先从 `K:\Bobbytagging\Data-Test` 预览并导入 Key，再单独复制不含密钥的 `providers\config.toml`：
 
@@ -23,15 +29,13 @@ python .\scripts\import_provider_settings.py --apply
 
 `config.json` 的 `candidateProjectRoot` 指向一份固定、干净的 TEST 构建工作树。冻结脚本拒绝从日常 DEV 工作树或主工作树构建候选。两个长期 worktree 足够；只有真正需要并行开发时才增加临时 worktree。
 
-安装时可以指定 DEV 源码目录和固定候选构建工作树；三个环境的数据、缓存、TEST Current、PROD beta.8 程序和报告目录在初始部署中固定，安装脚本拒绝覆盖这些路径。PROD beta.8 稳定副本先逐文件校验；入口核对完整 build manifest 和健康接口身份。脚本不写入正式数据目录。
+首次安装时可以指定 DEV 源码目录和固定候选构建工作树；TEST Current、PROD beta.9 默认程序目录以及三个环境的数据、缓存和报告目录有固定默认值。重装时保留既有 Run Center 配置。PROD 程序必须位于版本化 beta 目录，启动前校验人工验收结果、候选报告、便携 ZIP 和 build manifest 的哈希。脚本不写入正式数据目录。
 
 DEV 使用 Python 自动重载和 Vite 热更新。当前机器已有非运行中心管理的 Vite 服务占用 5173，因此固定开发入口采用 5174，原进程保持不动。Vite 代理目标固定读取 `GEWU_DEV_API_URL`，默认 `http://127.0.0.1:8896`，只接受回环 HTTP 的 8896 端口；代理请求要求本地 5174 Host，若带 Origin 则必须是 `localhost` 或 `127.0.0.1` 的 5174 Origin。仓库 Vite 配置不再默认代理正式端口 8765。
 
-每次 Run Center 启动 DEV 或 TEST 都会弹出外部调用模式确认框：**是**允许本次对应后端进程使用 `live_validation`；**否**为默认选择，保持 `offline`；**取消或关闭**会中止该环境启动。DEV 使用 `GEWU_PROFILE=dev` 和专属 `GEWU_DEV_EXTERNAL_EFFECTS`，数据/缓存为 `K:\GeWuDev\Data` 与 `K:\GeWuDev\Cache`；TEST 使用 `GEWU_PROFILE=test` 和专属 `GEWU_TEST_EXTERNAL_EFFECTS`，数据/缓存为 `K:\GeWuTest\Data` 与 `K:\GeWuTest\Cache`。两种 live-validation 模式都允许本次明确启动的模型、MCP、Amazon 和其他外部任务，可能产生费用；Run Center 不计量或强制请求/费用上限，用户应只提交授权的小范围并记录结果。授权标记只传给本次后端子进程，启动器随后恢复自身环境；实例 ID 分别为 `DEV-LIVE-VALIDATION` / `TEST-LIVE-VALIDATION`，离线实例 ID 为 `DEV` / `TEST`。DEV/TEST 在两种模式下都不恢复以前排队的任务。
+桌面入口启动 DEV 或 TEST 时默认允许模型、MCP、Amazon 和其他外部调用，不弹出模式选择框。DEV 使用 `GEWU_PROFILE=dev` 和专属 `GEWU_DEV_EXTERNAL_EFFECTS`，数据/缓存为 `K:\GeWuDev\Data` 与 `K:\GeWuDev\Cache`；TEST 使用 `GEWU_PROFILE=test` 和专属 `GEWU_TEST_EXTERNAL_EFFECTS`，数据/缓存为 `K:\GeWuTest\Data` 与 `K:\GeWuTest\Cache`。外部调用可能产生费用，Run Center 不计量或强制请求/费用上限。需要离线候选冻结或维护时，可显式传入 `-ExternalEffectsMode offline`；默认实例 ID 分别为 `DEV` 和 `TEST`，离线检查分别报告 `offline`。DEV/TEST 不会因为重启而恢复以前排队的任务。
 
-桌面入口使用默认 `-ExternalEffectsMode prompt`。候选冻结脚本及自动化检查显式传入 `-ExternalEffectsMode offline`，不会弹出确认框，也不能启用真实调用；不要通过手工设置环境变量替代桌面确认。
-
-Run Center 启动后读取 `/api/runtime/status`，核对 `profile`、所选 `external_effects.policy` 和实例 ID。若端口已有 listener 但运行策略或身份与此次选择不符，启动器会报错并保留现有进程；它不会停止或替换该实例。切换模式须先显式停止身份匹配的 DEV/TEST，再启动并重新选择。DEV/TEST 数据与 PROD 路径重叠、服务端口被未知进程占用、构建清单缺失或运行身份不符时，同样拒绝启动。停止操作仅读取运行中心登记的 PID，并核验可执行文件与命令行身份；DEV/TEST 允许停止身份匹配的 offline 或 live_validation 进程，身份不符时不会结束进程。
+Run Center 启动后读取 `/api/runtime/status`，核对 `profile`、`external_effects.policy` 和实例 ID。若端口已有 listener 但运行策略或身份与此次启动参数不符，启动器会报错并保留现有进程；它不会停止或替换该实例。显式切换离线模式须先停止身份匹配的 DEV/TEST，再以 `-ExternalEffectsMode offline` 启动。DEV/TEST 数据与 PROD 路径重叠、服务端口被未知进程占用、构建清单缺失或运行身份不符时，同样拒绝启动。停止操作仅读取运行中心登记的 PID，并核验可执行文件与命令行身份；身份不符时不会结束进程。
 
 运行中心配置和 PID 记录位于当前 Windows 用户的 `%LOCALAPPDATA%\GeWuWorkbench\RunCenter`。启动入口持有同一独占维护锁；TEST 重置、冻结或回退期间，新启动会安全失败，不能与目录切换并发。停止只验证登记身份，不受维护锁阻挡。可手动查询或停止某个已登记入口：
 

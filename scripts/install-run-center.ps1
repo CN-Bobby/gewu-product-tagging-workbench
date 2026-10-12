@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ProjectRoot = 'D:\数据打标项目',
     [string]$CandidateProjectRoot = $ProjectRoot,
@@ -10,7 +10,7 @@ param(
     [string]$TestApp = 'K:\GeWuTest\Current\app',
     [string]$TestData = 'K:\GeWuTest\Data',
     [string]$TestCache = 'K:\GeWuTest\Cache',
-    [string]$ProdApp = 'K:\Bobbytagging\Candidate-beta.8\app',
+    [string]$ProdApp = 'K:\Bobbytagging\Candidate-beta.9\app',
     [string]$ProdData = 'K:\Bobbytagging\Data',
     [string]$ProdCache = 'K:\Bobbytagging\Cache'
 )
@@ -23,7 +23,7 @@ if ((Canonical $InstallRoot) -ne $expectedInstallRoot) {
 $fixedPaths = @{
     DevData = 'K:\GeWuDev\Data'; DevCache = 'K:\GeWuDev\Cache'; Reports = 'K:\GeWuTest\Reports'
     TestApp = 'K:\GeWuTest\Current\app'; TestData = 'K:\GeWuTest\Data'; TestCache = 'K:\GeWuTest\Cache'
-    ProdApp = 'K:\Bobbytagging\Candidate-beta.8\app'; ProdData = 'K:\Bobbytagging\Data'; ProdCache = 'K:\Bobbytagging\Cache'
+    ProdApp = 'K:\Bobbytagging\Candidate-beta.9\app'; ProdData = 'K:\Bobbytagging\Data'; ProdCache = 'K:\Bobbytagging\Cache'
 }
 foreach ($name in $fixedPaths.Keys) {
     if ((Canonical (Get-Variable -Name $name -ValueOnly)) -ne (Canonical $fixedPaths[$name])) {
@@ -40,6 +40,7 @@ New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
 $runnerSource = Join-Path $PSScriptRoot 'run-center.ps1'
 $runnerDestination = Join-Path $InstallRoot 'run-center.ps1'
 $runnerText = [IO.File]::ReadAllText($runnerSource, [Text.UTF8Encoding]::new($false))
+$runnerText = [Text.RegularExpressions.Regex]::Replace($runnerText, "`r?`n", "`r`n")
 [IO.File]::WriteAllText($runnerDestination, $runnerText, [Text.UTF8Encoding]::new($true))
 $config = [ordered]@{
     schema = 1
@@ -123,7 +124,8 @@ foreach ($item in $desiredShortcuts) {
     $shortcutPath = Join-Path $DesktopPath $item.name
     $shortcut = $shell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $powershellPath
-    $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$runner`" -Profile $profile -Action Start -ConfigPath `"$configPath`""
+    $mode = if ($profile -in @('DEV', 'TEST')) { ' -ExternalEffectsMode online' } else { '' }
+    $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$runner`" -Profile $profile -Action Start$mode -ConfigPath `"$configPath`""
     $shortcut.WorkingDirectory = $InstallRoot
     $shortcut.Description = "格物工作台 $profile 本地运行入口"
     $shortcut.Save()

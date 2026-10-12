@@ -1,8 +1,8 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][ValidateSet('DEV', 'TEST', 'PROD')][string]$Profile,
     [ValidateSet('Start', 'Stop', 'Status')][string]$Action = 'Start',
-    [ValidateSet('prompt', 'offline')][string]$ExternalEffectsMode = 'prompt',
+    [ValidateSet('online', 'offline')][string]$ExternalEffectsMode = 'online',
     [string]$ConfigPath = (Join-Path $env:LOCALAPPDATA 'GeWuWorkbench\RunCenter\config.json'),
     [switch]$NoOpen
 )
@@ -70,50 +70,17 @@ function Test-ProfileRuntime([string]$Url, [string]$ExpectedProfile, [string[]]$
     if ($ExpectedInstanceIds.Count -gt 0 -and $status.instance_id -notin $ExpectedInstanceIds) { return $false }
     return $true
 }
-function Select-TestRuntimePolicy {
-    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-    $message = @'
-TEST 即将使用隔离数据 K:\GeWuTest\Data 和独立缓存 K:\GeWuTest\Cache。
-
-“是”允许本次 TEST 进程发起 live-validation 集成调用。模型、MCP 或 Amazon 调用可能产生费用。此开关不会计量或强制请求/费用上限；请只在功能中输入明确授权的小范围，并在人工验收清单记录授权上限与结果。
-
-“否”保持 offline（默认）。取消或关闭对话框将中止启动 TEST。
-'@
-    $choice = [System.Windows.Forms.MessageBox]::Show(
-        $message,
-        '格物运行中心 · TEST 外部调用模式',
-        [System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
-        [System.Windows.Forms.MessageBoxIcon]::Warning,
-        [System.Windows.Forms.MessageBoxDefaultButton]::Button2)
-    switch ($choice) {
-        ([System.Windows.Forms.DialogResult]::Yes) { return 'live_validation' }
-        ([System.Windows.Forms.DialogResult]::No) { return 'offline' }
-        default { throw 'TEST startup canceled; nothing was started or stopped.' }
-    }
-}
-function Select-DevRuntimePolicy {
-    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-    $message = @"
-DEV 即将使用隔离数据 K:\GeWuDev\Data 和独立缓存 K:\GeWuDev\Cache。
-
-“是”允许本次 DEV 后端进程发起 live-validation 集成调用。模型、MCP 或 Amazon 调用可能产生费用。此开关不会计量或强制请求/费用上限；请只在功能中输入明确授权的小范围。
-
-“否”保持 offline（默认）。取消或关闭对话框将中止启动 DEV。
-"@
-    $choice = [System.Windows.Forms.MessageBox]::Show(
-        $message,
-        '格物运行中心 · DEV 外部调用模式',
-        [System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
-        [System.Windows.Forms.MessageBoxIcon]::Warning,
-        [System.Windows.Forms.MessageBoxDefaultButton]::Button2)
-    switch ($choice) {
-        ([System.Windows.Forms.DialogResult]::Yes) { return 'live_validation' }
-        ([System.Windows.Forms.DialogResult]::No) { return 'offline' }
-        default { throw 'DEV startup canceled; nothing was started or stopped.' }
-    }
-}
 function Show-ProdPendingNotice($Health) {
     if ($Profile -ne 'PROD' -or $Health.release_status -ne 'pending_acceptance') { return }
+    $configuredApp = Get-CanonicalPath ([string]$config.profiles.PROD.app)
+    $promotionPath = Join-Path (Split-Path -Parent $configuredApp) 'PROMOTION.json'
+    if (Test-Path -LiteralPath $promotionPath -PathType Leaf) {
+        try {
+            $promotion = Get-Content -LiteralPath $promotionPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($promotion.status -eq 'promoted' -and $promotion.build_id -eq $Health.build_id -and
+                $promotion.commit -eq $Health.commit) { return }
+        } catch { }
+    }
     $message = "当前 PROD 入口连接的是 $($Health.build_id)，发布状态为 pending_acceptance（待验收候选）。`r`n`r`n业务数据：$($Health.storage)`r`n该程序保持现状；运行中心不会自动切换程序或数据。"
     $shell = New-Object -ComObject WScript.Shell
     $null = $shell.Popup($message, 0, "格物运行中心 · $($Health.build_id) 待验收候选", 64)
@@ -184,6 +151,53 @@ function Test-RecordedProcess($Record, [string]$Role) {
     }
     return $proc
 }
+function Write-BrowserOpenLog([string]$Message) {
+    try {
+        $logPath = Join-Path $runCenterRoot "logs\$Profile\browser-open.log"
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $logPath) | Out-Null
+        Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "$(Get-Date -Format o) $Message"
+    } catch { }
+}
+function Open-RunCenterPage([string]$Url) {
+    $browserExe = $null
+    $browserName = $null
+    try {
+        $choice = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice' -Name ProgId -ErrorAction Stop
+        $commandPath = "Registry::HKEY_CLASSES_ROOT\$($choice.ProgId)\shell\open\command"
+        $openCommand = [string](Get-Item -LiteralPath $commandPath -ErrorAction Stop).GetValue('')
+        if ($openCommand -match '^\s*"([^"]+\.exe)"') { $browserExe = $Matches[1] }
+        elseif ($openCommand -match '^\s*(.+?\.exe)(?:\s|$)') { $browserExe = $Matches[1].Trim('"') }
+        if ($browserExe) { $browserName = [IO.Path]::GetFileName($browserExe).ToLowerInvariant() }
+    } catch { }
+
+    try {
+        if ($browserName -in @('chrome.exe', 'msedge.exe', 'brave.exe', 'vivaldi.exe', 'opera.exe')) {
+            Start-Process -FilePath $browserExe -ArgumentList @('--new-window', $Url) -WindowStyle Normal -ErrorAction Stop | Out-Null
+            Write-BrowserOpenLog "Opened $Url in a new $browserName window."
+            return $true
+        }
+        if ($browserName -eq 'firefox.exe') {
+            Start-Process -FilePath $browserExe -ArgumentList @('-new-window', $Url) -WindowStyle Normal -ErrorAction Stop | Out-Null
+            Write-BrowserOpenLog "Opened $Url in a new Firefox window."
+            return $true
+        }
+
+        Start-Process -FilePath $Url -ErrorAction Stop | Out-Null
+        Write-BrowserOpenLog "Opened $Url through the default URL handler ($browserName)."
+        return $true
+    } catch {
+        $firstError = $_.Exception.Message
+        try {
+            Start-Process -FilePath $Url -ErrorAction Stop | Out-Null
+            Write-BrowserOpenLog "New-window launch failed ($firstError); opened $Url through the default URL handler."
+            return $true
+        } catch {
+            Write-BrowserOpenLog "Browser launch failed for ${Url}: $($_.Exception.Message)"
+            Write-Warning "DEV is ready, but the browser could not be opened automatically. Open $Url manually."
+            return $false
+        }
+    }
+}
 function Save-Record($Record, [string]$Path) {
     $tmp = "$Path.tmp"
     $Record | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $tmp -Encoding UTF8
@@ -230,34 +244,51 @@ if ($Action -eq 'Start') {
     catch { throw 'Another Run Center start or TEST maintenance operation is active. Nothing was started.' }
 }
 
-$devRuntimePolicy = 'offline'
+$devRuntimePolicy = if ($ExternalEffectsMode -eq 'offline') { 'offline' } else { 'live_validation' }
 $devRuntimeInstanceId = 'DEV'
-$testRuntimePolicy = 'offline'
+$testRuntimePolicy = if ($ExternalEffectsMode -eq 'offline') { 'offline' } else { 'live_validation' }
 $testRuntimeInstanceId = 'TEST'
-if ($Action -eq 'Start' -and $Profile -eq 'DEV') {
-    if ($ExternalEffectsMode -eq 'prompt') {
-        try { $devRuntimePolicy = Select-DevRuntimePolicy }
-        catch {
-            if ($startupLock) { $startupLock.Dispose(); $startupLock = $null }
-            throw
-        }
-    }
-    if ($devRuntimePolicy -eq 'live_validation') { $devRuntimeInstanceId = 'DEV-LIVE-VALIDATION' }
-}
-if ($Action -eq 'Start' -and $Profile -eq 'TEST') {
-    if ($ExternalEffectsMode -eq 'prompt') {
-        try { $testRuntimePolicy = Select-TestRuntimePolicy }
-        catch {
-            if ($startupLock) { $startupLock.Dispose(); $startupLock = $null }
-            throw
-        }
-    }
-    if ($testRuntimePolicy -eq 'live_validation') { $testRuntimeInstanceId = 'TEST-LIVE-VALIDATION' }
-}
+# Desktop entry starts DEV and TEST online without a prompt. The explicit offline value remains
+# available to deterministic candidate-freeze and maintenance scripts.
 
 if ($Action -eq 'Start' -and $record) {
     $healthUrl = if ($Profile -eq 'DEV') { "http://127.0.0.1:$($entry.apiPort)" } else { $entry.url }
     $runningHealth = Get-Health $healthUrl
+    # Reconcile a detached TEST runtime child only when its recorded Workbench launcher,
+    # current health identity, parent PID, bootstrap path, and frozen manifest all agree.
+    # This allows Run Center Stop/Start to manage the exact child without adopting unknown listeners.
+    if ($Profile -eq 'TEST' -and $runningHealth -and $runningHealth.application -eq 'product-tagging-workbench' -and
+        (Get-CanonicalPath $runningHealth.storage) -eq (Get-CanonicalPath $record.data) -and
+        $runningHealth.build_id -eq $record.build_id -and $runningHealth.commit -eq $record.commit) {
+        $runtimeStatus = Get-RuntimeStatus $entry.url
+        $serviceOwner = Get-PortOwner ([int]$entry.port)
+        $knownPids = @($record.processes | ForEach-Object { [int]$_.pid })
+        $launcherRecord = $record.processes | Where-Object role -eq 'app' | Select-Object -First 1
+        if ($serviceOwner -and $serviceOwner -notin $knownPids -and $launcherRecord -and
+            $runtimeStatus -and $runtimeStatus.profile -eq 'test' -and $runtimeStatus.instance_id -eq 'TEST' -and
+            $runtimeStatus.external_effects.policy -in @('offline', 'live_validation')) {
+            $listenerIdentity = Get-ProcessIdentity ([int]$serviceOwner)
+            $appDir = Get-CanonicalPath $entry.app
+            $expectedRuntime = Get-CanonicalPath (Join-Path $appDir 'runtime\pythonw.exe')
+            $expectedBootstrap = Join-Path $appDir 'scripts\desktop_bootstrap.py'
+            $manifestPath = Join-Path $appDir 'build-manifest.json'
+            $manifest = if (Test-Path -LiteralPath $manifestPath -PathType Leaf) { Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+            if ($listenerIdentity -and [int]$listenerIdentity.ParentProcessId -eq [int]$launcherRecord.pid -and
+                $listenerIdentity.ExecutablePath -and (Get-CanonicalPath $listenerIdentity.ExecutablePath) -eq $expectedRuntime -and
+                $listenerIdentity.CommandLine -like "*$expectedBootstrap*" -and $manifest -and
+                $manifest.build_id -eq $record.build_id -and $manifest.commit -eq $record.commit -and
+                (Test-FrozenListenerIdentity ([int]$serviceOwner) $manifest)) {
+                $listenerObject = Get-Process -Id ([int]$serviceOwner) -ErrorAction SilentlyContinue
+                if ($listenerObject) {
+                    $processList = [System.Collections.Generic.List[object]]::new()
+                    foreach ($item in $record.processes) { $processList.Add($item) }
+                    Add-ProcessRecord $processList 'app-runtime' $listenerObject $expectedRuntime $expectedBootstrap
+                    $record.processes = @($processList.ToArray())
+                    Save-Record $record $recordPath
+                }
+            }
+        }
+    }
     if ($Profile -eq 'DEV' -and $runningHealth -and $runningHealth.application -eq 'product-tagging-workbench' -and
         (Get-CanonicalPath $runningHealth.storage) -eq (Get-CanonicalPath $record.data)) {
         $apiOwner = Get-PortOwner ([int]$entry.apiPort)
@@ -307,19 +338,26 @@ if ($Action -eq 'Start' -and $record) {
                 throw 'DEV API is running but the recorded Vite listener is unavailable or no longer matches. Stop the owned entry before restarting.'
             }
         }
-        if (-not $NoOpen) { Start-Process $entry.url; Show-ProdPendingNotice $runningHealth }
+        if (-not $NoOpen) { Open-RunCenterPage $entry.url | Out-Null; Show-ProdPendingNotice $runningHealth }
         Write-Output "$Profile is already running with the recorded identity: $($record.build_id) / $($record.commit)"
         exit 0
     }
 }
 
 if ($Action -eq 'Stop') {
+    $stopTracePath = Join-Path $runCenterRoot "logs\$Profile\ui-stop-runner.log"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stopTracePath) | Out-Null
+    function Write-StopTrace([string]$Message) {
+        "$(Get-Date -Format o) $Message" | Add-Content -LiteralPath $stopTracePath -Encoding UTF8
+    }
+    Write-StopTrace "Stop entered; profile=$Profile; record_exists=$([bool]$record)"
     if (-not $record) { Write-Output "No launcher-owned $Profile instance is recorded."; exit 0 }
     $url = if ($Profile -eq 'DEV') { "http://127.0.0.1:$($entry.apiPort)" } else { $entry.url }
     $servicePort = if ($Profile -eq 'DEV') { [int]$entry.apiPort } else { [int]$entry.port }
     # Verify every surviving recorded PID before sending a stop request. A matching health URL
     # alone is insufficient: another process could have taken over the port/data directory.
     foreach ($role in $record.processes.role | Select-Object -Unique) { $null = Test-RecordedProcess $record $role }
+    Write-StopTrace 'Recorded process identities verified.'
     $serviceOwner = Get-PortOwner $servicePort
     if ($serviceOwner) {
         $ownerRecord = $record.processes | Where-Object { [int]$_.pid -eq [int]$serviceOwner } | Select-Object -First 1
@@ -336,6 +374,23 @@ if ($Action -eq 'Stop') {
         $health.build_id -ne $record.build_id -or $health.commit -ne $record.commit)) {
         throw "Service identity on $url does not match the recorded $Profile process, build, and data path. Nothing was stopped."
     }
+    if ($Profile -eq 'DEV') {
+        # Close Vite before stopping the API. When this script is launched by the API,
+        # stopping the API can terminate its launcher process on Windows before it gets
+        # a chance to close the browser-facing listener.
+        $webOwner = Get-PortOwner ([int]$entry.webPort)
+        if ($webOwner) {
+            $webRecord = $record.processes | Where-Object { $_.role -eq 'web' -and [int]$_.pid -eq [int]$webOwner } | Select-Object -First 1
+            if (-not $webRecord) { throw "DEV web port $($entry.webPort) is owned by an unrecorded process. Nothing was stopped." }
+            $webProc = Test-RecordedProcess $record 'web'
+            if (-not $webProc) { throw 'The recorded Vite process is no longer available; the port remains occupied.' }
+            Stop-Process -Id ([int]$webProc.ProcessId) -ErrorAction Stop
+            Write-StopTrace "Stopped recorded web process pid=$($webProc.ProcessId)."
+            for ($i=0; $i -lt 20; $i++) { if (-not (Get-PortOwner ([int]$entry.webPort))) { break }; Start-Sleep -Milliseconds 250 }
+            if (Get-PortOwner ([int]$entry.webPort)) { throw "DEV web port $($entry.webPort) remains occupied. The process record was retained." }
+        }
+        Write-StopTrace 'DEV web listener released.'
+    }
     $released = -not $serviceOwner
     if ($health) {
         if ($Profile -ne 'PROD') {
@@ -345,17 +400,21 @@ if ($Action -eq 'Stop') {
                 throw "Runtime profile or policy does not match this $Profile entry. Nothing was stopped."
             }
         }
-        try { Invoke-RestMethod -Method Post -Uri "$url/api/server/stop" -TimeoutSec 3 | Out-Null } catch { }
-        for ($i=0; $i -lt 20; $i++) {
-            if (-not (Get-PortOwner $servicePort)) { $released = $true; break }
-            Start-Sleep -Milliseconds 500
+        if ($Profile -ne 'DEV') {
+            try { Invoke-RestMethod -Method Post -Uri "$url/api/server/stop" -TimeoutSec 3 | Out-Null } catch { }
+            for ($i=0; $i -lt 20; $i++) {
+                if (-not (Get-PortOwner $servicePort)) { $released = $true; break }
+                Start-Sleep -Milliseconds 500
+            }
         }
     }
     if (-not $released -and $Profile -eq 'DEV') {
         # The DEV API may be unresponsive while its exact listener is still alive. After the
         # graceful stop window, terminate only API processes that still match recorded PID,
         # executable, command-line token, and creation time. Never touch an unrecorded owner.
-        $apiRoles = @('api', 'api-child', 'api-listener')
+        # Stop the recorded listener/reloader before its launcher parent so it cannot
+        # respawn a child or retain the bound socket during shutdown.
+        $apiRoles = @('api-listener', 'api-child', 'api')
         $verifiedApiPids = @()
         foreach ($role in $apiRoles) {
             $verifiedApiProcess = Test-RecordedProcess $record $role
@@ -368,27 +427,18 @@ if ($Action -eq 'Stop') {
             $verifiedApiProcess = Test-RecordedProcess $record $role
             if ($verifiedApiProcess) {
                 Stop-Process -Id ([int]$verifiedApiProcess.ProcessId) -ErrorAction Stop
+                Write-StopTrace "Stopped recorded API process role=$role pid=$($verifiedApiProcess.ProcessId)."
             }
         }
-        for ($i=0; $i -lt 20; $i++) {
+        for ($i=0; $i -lt 4; $i++) {
             if (-not (Get-PortOwner $servicePort)) { $released = $true; break }
             Start-Sleep -Milliseconds 250
         }
     }
     if (-not $released) { throw "The recorded $Profile service did not release port $servicePort. Its process record was retained." }
-    if ($Profile -eq 'DEV') {
-        $webOwner = Get-PortOwner ([int]$entry.webPort)
-        if ($webOwner) {
-            $webRecord = $record.processes | Where-Object { $_.role -eq 'web' -and [int]$_.pid -eq [int]$webOwner } | Select-Object -First 1
-            if (-not $webRecord) { throw "DEV web port $($entry.webPort) is now owned by an unrecorded process. The process record was retained." }
-            $webProc = Test-RecordedProcess $record 'web'
-            if (-not $webProc) { throw 'The recorded Vite process is no longer available; the port remains occupied.' }
-            Stop-Process -Id ([int]$webProc.ProcessId) -ErrorAction Stop
-            for ($i=0; $i -lt 20; $i++) { if (-not (Get-PortOwner ([int]$entry.webPort))) { break }; Start-Sleep -Milliseconds 250 }
-            if (Get-PortOwner ([int]$entry.webPort)) { throw "DEV web port $($entry.webPort) remains occupied. The process record was retained." }
-        }
-    }
+    Write-StopTrace 'API listener released.'
     Remove-Item -LiteralPath $recordPath -Force
+    Write-StopTrace 'Runtime record removed; stop completed.'
     Write-Output "Stopped only matching launcher-recorded $Profile processes."
     exit 0
 }
@@ -396,10 +446,42 @@ if ($Action -eq 'Stop') {
 $dataPath = Get-CanonicalPath $entry.data
 $cachePath = Get-CanonicalPath $entry.cache
 if ($Profile -eq 'PROD') {
-    if ((Get-CanonicalPath $entry.app) -ne (Get-CanonicalPath 'K:\Bobbytagging\Candidate-beta.8\app') -or
-        $dataPath -ne (Get-CanonicalPath 'K:\Bobbytagging\Data') -or
+    if ($dataPath -ne (Get-CanonicalPath 'K:\Bobbytagging\Data') -or
         $cachePath -ne (Get-CanonicalPath 'K:\Bobbytagging\Cache')) {
-        throw 'PROD is pinned to the beta.8 candidate app and existing formal Data/Cache paths. Refusing a changed path.'
+        throw 'PROD is pinned to the existing formal Data/Cache paths. Refusing a changed path.'
+    }
+    if ((Get-CanonicalPath $entry.app) -notmatch '^K:\\Bobbytagging\\Candidate-beta\.[0-9]+\\app$') {
+        throw 'PROD app must be a versioned Candidate-beta.N app directory promoted through the acceptance gate.'
+    }
+    $promotionPath = Join-Path (Split-Path -Parent (Get-CanonicalPath $entry.app)) 'PROMOTION.json'
+    if (-not (Test-Path -LiteralPath $promotionPath -PathType Leaf)) { throw "PROD promotion evidence is missing: $promotionPath" }
+    $promotion = Get-Content -LiteralPath $promotionPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($promotion.status -ne 'promoted' -or [IO.Path]::GetFullPath([string]$promotion.target_app) -ine (Get-CanonicalPath $entry.app) -or
+        [IO.Path]::GetFullPath([string]$promotion.run_center_config) -ine (Get-CanonicalPath $ConfigPath) -or
+        [IO.Path]::GetFullPath([string]$promotion.prod_data_path) -ine $dataPath -or
+        [IO.Path]::GetFullPath([string]$promotion.prod_cache_path) -ine $cachePath -or
+        -not $promotion.manual_result -or -not $promotion.manual_result_sha256 -or -not $promotion.portable_zip -or -not $promotion.portable_sha256) {
+        throw 'PROD promotion evidence is incomplete or does not identify the configured app.'
+    }
+    foreach ($bound in @(
+        @{ path = [string]$promotion.manual_result; hash = [string]$promotion.manual_result_sha256 },
+        @{ path = [string]$promotion.portable_zip; hash = [string]$promotion.portable_sha256 },
+        @{ path = [string]$promotion.portable_sidecar; hash = [string]$promotion.portable_sidecar_sha256 },
+        @{ path = [string]$promotion.candidate_report; hash = [string]$promotion.candidate_report_sha256 }
+    )) {
+        if (-not (Test-Path -LiteralPath $bound.path -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $bound.path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $bound.hash.ToLowerInvariant()) {
+            throw "PROD promotion evidence file is missing or changed: $($bound.path)"
+        }
+    }
+    $manualResult = Get-Content -LiteralPath $promotion.manual_result -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($manualResult.status -ne 'passed' -or $manualResult.build_id -ne $promotion.build_id -or
+        $manualResult.commit -ne $promotion.commit -or $manualResult.version -ne $promotion.version -or
+        $manualResult.portable_sha256 -ne $promotion.portable_sha256 -or
+        $manualResult.portable_sidecar_sha256 -ne $promotion.portable_sidecar_sha256 -or
+        $manualResult.candidate_report_sha256 -ne $promotion.candidate_report_sha256 -or
+        $manualResult.app_manifest_sha256 -ne $promotion.app_manifest_sha256) {
+        throw 'PROD promotion does not match a passing manual acceptance record for this portable build.'
     }
 }
 foreach ($otherProfile in @('DEV', 'TEST', 'PROD') | Where-Object { $_ -ne $Profile }) {
@@ -422,7 +504,7 @@ if ($Profile -eq 'PROD') {
 $processes = [System.Collections.Generic.List[object]]::new()
 $buildId = ''
 $env:GEWU_PROFILE = $Profile.ToLowerInvariant()
-if ($Profile -ne 'PROD') { $env:GEWU_ALLOW_EXTERNAL_EFFECTS = '0' } else { Remove-Item Env:GEWU_ALLOW_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue }
+if ($Profile -eq 'PROD') { Remove-Item Env:GEWU_ALLOW_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue }
 if ($Profile -eq 'DEV') {
     $root = Get-CanonicalPath $config.projectRoot
     $python = Join-Path $root '.venv\Scripts\python.exe'
@@ -446,13 +528,15 @@ if ($Profile -eq 'DEV') {
     $env:GEWU_INSTANCE_ID = 'DEV'
     $env:GEWU_REPORTS_DIR = $config.profiles.TEST.reports
     Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue
-    $apiArgs = @('-m','uvicorn','backend.app:app','--host','127.0.0.1','--port',"$apiPort",'--reload')
+    # DEV code is loaded on each Run Center start. Avoid uvicorn --reload here:
+    # its orphanable reloader/worker tree makes an identity-checked Stop leave port 8896 alive.
+    $apiArgs = @('-m','uvicorn','backend.app:app','--host','127.0.0.1','--port',"$apiPort")
     $previousDevExternalEffects = [Environment]::GetEnvironmentVariable('GEWU_DEV_EXTERNAL_EFFECTS', 'Process')
     $previousTestExternalEffects = [Environment]::GetEnvironmentVariable('GEWU_TEST_EXTERNAL_EFFECTS', 'Process')
     try {
         Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
         Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
-        if ($devRuntimePolicy -eq 'live_validation') { $env:GEWU_DEV_EXTERNAL_EFFECTS = 'live_validation' }
+        if ($devRuntimePolicy -eq 'offline') { $env:GEWU_DEV_EXTERNAL_EFFECTS = 'offline' }
         $api = Start-Process -FilePath $python -ArgumentList $apiArgs -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logRoot 'api.out.log') -RedirectStandardError (Join-Path $logRoot 'api.err.log') -PassThru
     } finally {
         if ($null -eq $previousDevExternalEffects) { Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue }
@@ -498,10 +582,37 @@ if ($Profile -eq 'DEV') {
     $buildId = $manifest.build_id
     if (-not $buildId) { throw "Build manifest has no build_id: $manifestPath" }
     Test-AppManifestFiles $appDir $manifest
+    if ($Profile -eq 'PROD') {
+        if ($manifest.version -ne $promotion.version -or $manifest.build_id -ne $promotion.build_id -or
+            $manifest.commit -ne $promotion.commit -or
+            (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string]$promotion.app_manifest_sha256).ToLowerInvariant()) {
+            throw 'PROD app manifest does not match the promoted and manually accepted candidate.'
+        }
+    }
     $port = [int]$entry.port
     if ($Profile -eq 'TEST') {
-        if ($manifest.dirty -ne $false -or $manifest.build_mode -ne 'dev' -or -not $manifest.commit) {
-            throw 'TEST requires a clean, commit-pinned development build manifest.'
+        if ($manifest.dirty -ne $false -or $manifest.build_mode -ne 'candidate' -or
+            $manifest.storage_mode -ne 'user-selected' -or -not $manifest.commit) {
+            throw 'TEST requires a clean, commit-pinned portable candidate build.'
+        }
+        $reportsRoot = [IO.Path]::GetFullPath([string]$config.profiles.TEST.reports)
+        $candidateName = "candidate-$buildId-$($manifest.commit.Substring(0,12)).json"
+        $candidateReportFiles = @(Get-ChildItem -LiteralPath $reportsRoot -Filter $candidateName -File -ErrorAction SilentlyContinue)
+        if ($candidateReportFiles.Count -ne 1) { throw 'TEST requires one frozen portable candidate report in the acceptance Reports directory.' }
+        $candidateReportFile = $candidateReportFiles[0]
+        $candidateReport = Get-Content -LiteralPath $candidateReportFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+        $candidateZip = [IO.Path]::GetFullPath([string]$candidateReport.portable_zip)
+        $candidateSidecar = [IO.Path]::GetFullPath([string]$candidateReport.portable_sidecar)
+        if ($candidateReport.status -notin @('activated_pending_acceptance', 'running_pending_manual_acceptance') -or
+            $candidateReport.build_id -ne $buildId -or $candidateReport.commit -ne $manifest.commit -or
+            [IO.Path]::GetFullPath([string]$candidateReport.current_app) -ine $appDir) {
+            throw 'TEST runtime does not match the frozen portable candidate report.'
+        }
+        if (-not (Test-Path -LiteralPath $candidateZip -PathType Leaf) -or -not (Test-Path -LiteralPath $candidateSidecar -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $candidateZip -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string]$candidateReport.portable_sha256).ToLowerInvariant() -or
+            (Get-FileHash -LiteralPath $candidateSidecar -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string]$candidateReport.portable_sidecar_sha256).ToLowerInvariant() -or
+            (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string]$candidateReport.manifest_sha256).ToLowerInvariant()) {
+            throw 'TEST portable ZIP, sidecar or app manifest changed after candidate activation.'
         }
         if (-not (Test-Path -LiteralPath (Join-Path $appDir 'backend\external_effects.py')) -or
             -not (Select-String -LiteralPath (Join-Path $appDir 'backend\app.py') -Pattern '/api/runtime/status' -Quiet)) {
@@ -527,7 +638,7 @@ if ($Profile -eq 'DEV') {
             throw "$Profile port does not match the selected runtime policy/instance. The existing process was left running; nothing was stopped or adopted."
         }
         Write-Output "$Profile is already serving the exact frozen build and data directory, but was not launched by this Run Center. Its process is not claimed for Stop."
-        if (-not $NoOpen) { Start-Process $entry.url; Show-ProdPendingNotice $health }
+        if (-not $NoOpen) { Open-RunCenterPage $entry.url | Out-Null; Show-ProdPendingNotice $health }
         exit 0
     }
     $env:GEWU_PROFILE = $Profile.ToLowerInvariant()
@@ -535,7 +646,7 @@ if ($Profile -eq 'DEV') {
     $env:GEWU_API_URL = $entry.url
     $env:GEWU_FRONTEND_URL = $entry.url
     $env:GEWU_REPORTS_DIR = $config.profiles.TEST.reports
-    if ($Profile -ne 'PROD') { $env:GEWU_ALLOW_EXTERNAL_EFFECTS = '0' } else { Remove-Item Env:GEWU_ALLOW_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue }
+    if ($Profile -eq 'PROD') { Remove-Item Env:GEWU_ALLOW_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue }
     $args = @('--data',$dataPath,'--cache',$cachePath,'--port',"$port",'--no-open')
     $previousDevExternalEffects = [Environment]::GetEnvironmentVariable('GEWU_DEV_EXTERNAL_EFFECTS', 'Process')
     $previousTestExternalEffects = [Environment]::GetEnvironmentVariable('GEWU_TEST_EXTERNAL_EFFECTS', 'Process')
@@ -545,6 +656,8 @@ if ($Profile -eq 'DEV') {
         Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
         if ($Profile -eq 'TEST' -and $testRuntimePolicy -eq 'live_validation') {
             $env:GEWU_TEST_EXTERNAL_EFFECTS = 'live_validation'
+        } elseif ($Profile -eq 'TEST') {
+            $env:GEWU_TEST_EXTERNAL_EFFECTS = 'offline'
         } else {
             Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
         }
@@ -592,4 +705,4 @@ Write-Output "$Profile ready: $($entry.url)"
 Write-Output "  data: $dataPath"
 Write-Output "  cache: $cachePath"
 Write-Output "  build: $($record.build_id) / $($record.commit)"
-if (-not $NoOpen) { Start-Process $entry.url; Show-ProdPendingNotice $health }
+if (-not $NoOpen) { Open-RunCenterPage $entry.url | Out-Null; Show-ProdPendingNotice $health }

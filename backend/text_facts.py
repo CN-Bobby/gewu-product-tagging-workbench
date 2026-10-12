@@ -37,16 +37,25 @@ def prepare(did,model=None):
         existing=s.scalars(select(BatchJob).where(BatchJob.dataset_id==did,BatchJob.status.in_(['queued','running','pausing','cancelling']))).all()
         existing=next((j for j in existing if j.spec.get('kind')=='text_facts'),None)
         if existing:return obj(existing)
-        inputs={};expected={};jid=uid()
+        inputs={};expected={};jid=uid();image_assets={}
         for p in s.scalars(select(Product).where(Product.dataset_id==did).order_by(Product.row)):
             src=source_for(p);fp=fingerprint(src,model,rules)
             r=s.scalar(select(TextRecord).where(TextRecord.product_id==p.id))
-            if r and r.fingerprint==fp and r.status=='ready':continue
+            has_attribute_input=any(str(src.get(k) or '').strip() for k in ('sku','parameters'))
+            attributes_complete=(r.content or {}).get('source_attributes_complete',False) if r else False
+            if r and r.fingerprint==fp and r.status=='ready' and (attributes_complete or not has_attribute_input):continue
             if not r:r=TextRecord(product_id=p.id);s.add(r)
             r.fingerprint=fp;r.source=src;r.status='pending';r.error=None;r.content={}
             r.provenance={'model':model,'skill_version':rules['version'],'skill_sha256':rules['sha256'],'pending_job_id':jid}
             inputs[p.id]=src;expected[p.id]={'fingerprint':fp};emit_record(s,did,r)
-        job=BatchJob(id=jid,dataset_id=did,status='queued' if inputs else 'completed',spec={'kind':'text_facts','columns':[],'expected':expected,'inputs':inputs,'product_ids':list(inputs),'text_model':model,'rules':rules},metrics={})
+        for asset in s.scalars(select(Asset).join(Product,Asset.product_id==Product.id)
+                               .where(Product.dataset_id==did,Asset.url.is_not(None),Asset.path.is_(None))):
+            image_assets[asset.id]={'product_id':asset.product_id,'url':asset.url}
+        job=BatchJob(id=jid,dataset_id=did,status='queued' if inputs or image_assets else 'completed',
+                     spec={'kind':'text_facts','columns':[],'expected':expected,'inputs':inputs,
+                           'product_ids':list(inputs),'image_assets':image_assets,'text_model':model,'rules':rules},
+                     metrics={'attributes_expected':len(inputs),'attributes_completed':0,'images_expected':len(image_assets),
+                              'images_completed':0,'images_failed':0,'images_pending':len(image_assets)})
         s.add(job);s.flush();draft.emit(s,did,'job',obj(job));return obj(job)
 
 def records(did,offset=0,limit=50):
@@ -106,7 +115,60 @@ def _source_match(source,field,quote):
         return {'field':key,'quote':text[index:index+len(quote)],'mode':mode,'requested_field':field}
     return None
 
-def validate(value,source,salvage=False):
+def validate_source_attributes(value,source,*,salvage=False):
+    """Validate exact SKU/parameter key-value evidence returned by the model."""
+    items=value.get('source_attributes',[])
+    warnings=[]
+    if not isinstance(items,list):
+        if not salvage:raise ValueError('source_attributes 必须是数组')
+        return [],[{'code':'invalid_source_attributes','message':'属性拆分结果格式无效'}]
+    accepted=[]
+    for item in items:
+        try:
+            if not isinstance(item,dict):raise ValueError('属性项必须是对象')
+            source_name=item.get('source')
+            if source_name not in ('sku','parameters'):raise ValueError('属性来源必须是 sku 或 parameters')
+            attribute=item.get('attribute')
+            if not isinstance(attribute,str) or not attribute.strip():raise ValueError('属性名为空')
+            attribute=' '.join(attribute.strip().split())
+            raw_value=item.get('value')
+            if raw_value is None or isinstance(raw_value,(dict,list,bool)):
+                raise ValueError('属性值必须是原文中的文本或数字')
+            raw_value=str(raw_value).strip()
+            if not raw_value:raise ValueError('属性值为空')
+            evidence=item.get('evidence')
+            matched=_source_match(source,source_name,evidence)
+            if not matched or matched['field'] not in (source_name, 'SKU' if source_name=='sku' else '详细参数', '详细信息'):
+                raise ValueError('属性证据无法定位到对应来源原文')
+            original=source.get(matched['field'])
+            evidence_text=str(original or '')[original.find(evidence):original.find(evidence)+len(evidence)] if isinstance(original,str) and evidence in original else ''
+            if not evidence_text or raw_value not in evidence_text:
+                raise ValueError('属性值不是证据片段中的原文')
+            accepted.append({'source':source_name,'attribute':attribute,'value':raw_value,'evidence':evidence_text})
+        except (ValueError,TypeError,AttributeError) as error:
+            if not salvage:raise
+            warnings.append({'code':'discarded_source_attribute','message':str(error)})
+    return accepted,warnings
+
+def source_attribute_columns(attributes):
+    """Map model-extracted values to stable source-qualified raw columns."""
+    groups={};labels={};warnings=[]
+    for item in attributes:
+        source=item['source'];display_attribute=' '.join(item['attribute'].split())
+        key=(source,display_attribute.casefold())
+        labels.setdefault(key,display_attribute)
+        groups.setdefault(key,set()).add(item['value'])
+    columns={}
+    for (source,key),values in groups.items():
+        prefix='SKU' if source=='sku' else '详细参数'
+        header=f'{prefix}-{labels[(source,key)]}属性'
+        if len(values)==1:columns[header]=next(iter(values))
+        else:
+            columns[header]=None
+            warnings.append({'code':'conflicting_source_attribute','source':source,'attribute':labels[(source,key)],'message':'同一行中识别到多个不同值，已留空供复核'})
+    return columns,warnings
+
+def validate(value,source,salvage=False,require_source_attributes=False):
     if not isinstance(value,dict):raise ValueError('文字底稿商品结果必须是对象')
     facts=value.get('facts')
     if not isinstance(facts,list):raise ValueError('文字底稿缺少 facts 数组')
@@ -163,9 +225,35 @@ def validate(value,source,salvage=False):
             merged.append({'attribute':name,'value':None,'state':'conflict','raw_value':[f.get('raw_value') for f in related],
                 'reason':'；'.join(dict.fromkeys(f.get('reason','') for f in related if f.get('reason'))),'evidence':evidence,'observations':related})
         else:merged.append(fact)
-    result={'facts':merged}
+    source_attributes_present='source_attributes' in value
+    if require_source_attributes and not source_attributes_present:
+        raise ValueError('文字底稿缺少 source_attributes，无法整理 SKU / 详细参数属性')
+    source_attributes,attribute_warnings=validate_source_attributes(value,source,salvage=salvage)
+    columns,column_warnings=source_attribute_columns(source_attributes)
+    result={'facts':merged,'source_attributes':source_attributes,'source_attribute_columns':columns,
+            'source_attributes_complete':source_attributes_present and not attribute_warnings and not column_warnings}
+    if not source_attributes_present and any(str(source.get(k) or '').strip() for k in ('sku','parameters')):
+        attribute_warnings.append({'code':'missing_source_attributes','message':'模型未返回 SKU / 详细参数结构化结果'})
+    warnings.extend(attribute_warnings);warnings.extend(column_warnings)
     if warnings:result['validation_warnings']=warnings
     return result
+
+def _write_source_attribute_columns(s,did,product,record):
+    values=record.get('source_attribute_columns') or {}
+    if not values:return False
+    raw=dict(product.raw or {});raw.update(values);product.raw=raw
+    dataset=require(s,Dataset,did);mapping=dict(dataset.mapping or {})
+    base=mapping.get('__source_attribute_base_headers')
+    if not isinstance(base,list):
+        prior=set(mapping.get('__source_attribute_headers') or [])
+        base=[header for header in (dataset.headers or []) if header not in prior]
+    headers=set(mapping.get('__source_attribute_headers') or [])|set(values)
+    ordered=sorted(headers,key=lambda name:(0 if name.startswith('SKU-') else 1,name.casefold()))
+    mapping['__source_attribute_base_headers']=list(base)
+    mapping['__source_attribute_headers']=ordered
+    dataset.mapping=mapping
+    dataset.headers=list(base)+ordered
+    return True
 
 def validate_resume(jid):
     with Session() as s:
@@ -195,6 +283,7 @@ def execute(jid):
         ts=time.perf_counter()
         with draft.WRITE_LOCK,Session.begin() as s:
             j=require(s,BatchJob,jid);r=s.scalar(select(TextRecord).where(TextRecord.product_id==pid));p=require(s,Product,pid)
+            dataset=require(s,Dataset,did)
             expected=spec['expected'][pid]['fingerprint']
             if r.provenance.get('pending_job_id',jid)!=jid or r.fingerprint!=expected or fingerprint(source_for(p),spec['text_model'],spec['rules'],contract['text_prefix'],contract['models'].get('text_model'))!=expected:
                 raise ValueError('原文已改变，请重新提取')
@@ -202,11 +291,23 @@ def execute(jid):
             if error:r.status='failed';r.error=str(error)[:400];errors[pid]=r.error
             else:
                 r.content=value;r.status='ready';r.error=None;r.provenance={**r.provenance,'job_id':jid,'cached':cached,'execution_build':build_info()}
-                errors.pop(pid,None);j.completed=list(set(j.completed+[pid]))
-                if not cached:
+                has_attribute_input=any(str(spec['inputs'][pid].get(k) or '').strip() for k in ('sku','parameters'))
+                complete=bool(value.get('source_attributes_complete')) or not has_attribute_input
+                changed=_write_source_attribute_columns(s,did,p,value)
+                if complete:
+                    errors.pop(pid,None)
+                    if pid not in j.completed:
+                        j.completed=list(j.completed)+[pid]
+                        with mlock:metrics['attributes_completed']=metrics.get('attributes_completed',0)+1
+                else:
+                    j.completed=[item for item in j.completed if item!=pid]
+                    errors[pid]='SKU / 详细参数属性解析不完整，可重试文字底稿提取'
+                    with mlock:metrics['attributes_incomplete']=metrics.get('attributes_incomplete',0)+1
+                if not cached and complete:
                     c=s.scalar(select(TextCache).where(TextCache.fingerprint==expected))
                     if not c:s.add(TextCache(fingerprint=expected,content=value))
                 with mlock:metrics['cache_hits']+=int(cached)
+                if changed:draft.emit(s,did,'reload',{'reason':'SKU / 详细参数属性已整理'})
             j.errors=errors;j.metrics=dict(metrics);emit_record(s,did,r);draft.emit(s,did,'job',obj(j))
         with mlock:metrics['save_seconds']+=time.perf_counter()-ts
     def group(ids):
@@ -228,7 +329,10 @@ def execute(jid):
             for value in batch.result_items(result):
                 pid=value.get('product_id')
                 if pid not in pending:continue
-                try:validated=validate(value,spec['inputs'][pid],salvage=True)
+                try:
+                    has_attribute_input=any(str(spec['inputs'][pid].get(k) or '').strip() for k in ('sku','parameters'))
+                    validated=validate(value,spec['inputs'][pid],salvage=True,
+                                        require_source_attributes=has_attribute_input and 'source_attributes' in contract['text_prefix'])
                 except (ValueError,TypeError,AttributeError) as e:
                     validation_errors[pid]=str(e)
                     with draft.WRITE_LOCK,Session.begin() as s:
@@ -250,14 +354,66 @@ def execute(jid):
         try:group(ids)
         finally:
             with mlock:metrics['application_cpu_seconds']+=time.thread_time()-t
+    def download_asset(asset_id):
+        from . import importer
+        from .import_image_download import download_image
+        with Session() as s:
+            asset=s.get(Asset,asset_id)
+            if not asset:return
+            current_path=asset.path;url=asset.url;product_id=asset.product_id
+            product=require(s,Product,product_id)
+            row_label=f"第{product.row}行（{product.anchor}）"
+        if current_path and Path(current_path).is_file():return
+        result=download_image(url or '')
+        failure=result.error_message
+        stored=None
+        if result.ok:
+            try:stored=importer.image_bytes(result.data)
+            except Exception:failure='下载内容无法保存为有效图片'
+        with draft.WRITE_LOCK,Session.begin() as s:
+            job=require(s,BatchJob,jid);asset=s.get(Asset,asset_id);errors=dict(job.errors or {})
+            error_key='image:'+asset_id;prior=errors.get(error_key)
+            if stored:
+                path,digest=stored
+                asset.path=path;asset.sha256=digest
+                errors.pop(error_key,None)
+                draft.emit(s,did,'reload',{'reason':'图片 URL 已补全为本地图片'})
+                with mlock:
+                    metrics['images_completed']=metrics.get('images_completed',0)+1
+                    if prior:metrics['images_failed']=max(0,metrics.get('images_failed',0)-1)
+                    metrics['images_pending']=max(0,len(spec.get('image_assets',{}))-metrics['images_completed'])
+            else:
+                errors[error_key]=f"{row_label}：{failure or '图片下载失败'}"[:300]
+                with mlock:
+                    if not prior:metrics['images_failed']=metrics.get('images_failed',0)+1
+                    metrics['images_pending']=max(0,len(spec.get('image_assets',{}))-metrics['images_completed'])
+            job.errors=errors;job.metrics=dict(metrics);draft.emit(s,did,'job',obj(job))
     try:
         ids=[pid for pid in spec['product_ids'] if pid not in done]
         with ThreadPoolExecutor(max_workers=3) as pool:
             fs=[pool.submit(timed,ids[i:i+5]) for i in range(0,len(ids),5)]
             for f in fs:f.result()
+        if not stop.is_set() and spec.get('image_assets'):
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                fs=[pool.submit(download_asset,asset_id) for asset_id in spec['image_assets']]
+                for f in fs:f.result()
+            from . import project_files
+            with Session() as s:
+                assets=s.execute(select(Asset).join(Product,Asset.product_id==Product.id)
+                    .where(Asset.id.in_(list(spec['image_assets'])),Asset.path.is_not(None))).scalars().all()
+                registrations=[(a.id,a.path,a.image_type,a.sha256,require(s,Product,a.product_id).dataset_id)
+                               for a in assets]
+                workspace=require(s,Dataset,did).workspace_id
+            for asset_id,path,image_type,digest,dataset_id in registrations:
+                try:project_files.register_file(workspace,'images',path,source_type='dataset_asset',source_id=asset_id,
+                    name=Path(path).name,metadata={'dataset_id':dataset_id,'image_type':image_type,'sha256':digest})
+                except Exception:pass
         with draft.WRITE_LOCK,Session.begin() as s:
             j=require(s,BatchJob,jid)
-            j.status='cancelled' if j.status=='cancelling' else 'completed' if len(j.completed)==len(spec['expected']) else 'paused' if stop.is_set() else 'partial'
+            image_errors=any(key.startswith('image:') for key in (j.errors or {}))
+            all_images_saved=all((s.get(Asset,asset_id) and s.get(Asset,asset_id).path and Path(s.get(Asset,asset_id).path).is_file()) for asset_id in spec.get('image_assets',{}))
+            text_complete=set(spec['expected'])<=set(j.completed)
+            j.status='cancelled' if j.status=='cancelling' else 'paused' if stop.is_set() else 'completed' if text_complete and all_images_saved and not image_errors else 'partial'
             metrics['wall_seconds']=prior_wall+time.perf_counter()-start;metrics['last_attempt_seconds']=time.perf_counter()-start;metrics['application_cpu_seconds']+=time.thread_time()-cpu;j.metrics=metrics;draft.emit(s,did,'job',obj(j))
     finally:
         with batch.guard:batch.active.pop(jid,None)

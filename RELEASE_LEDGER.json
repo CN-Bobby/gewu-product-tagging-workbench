@@ -90,6 +90,24 @@
       "manual_values_check": "17/17 unchanged",
       "upgrade_backup": "K:\\Bobbytagging\\Data\\backups\\upgrade-20260916T231915515425Z",
       "rollback": "available (backup restore + old candidate, verified)"
+    },
+    {
+      "version": "0.5.0-beta.8",
+      "status": "superseded",
+      "artifact_kind": "internal_candidate",
+      "commit": "738da1a1e382cad9769c0724dd93773c7648748b",
+      "tag": null,
+      "superseded_by": "0.5.0-beta.9",
+      "note": "本地遗留 app 清单标记 build_mode=dev、release=false、distribution=development build, not for distribution；没有与之绑定的 TEST 人工验收报告。只作为开发构建记录，不可分发。"
+    },
+    {
+      "version": "0.5.0-beta.9",
+      "status": "pending_acceptance",
+      "artifact_kind": "portable_candidate",
+      "commit": null,
+      "tag": null,
+      "superseded_by": null,
+      "note": "本地 DEV → 便携包 → TEST 人工验收 → PROD 流程候选。构建、人工验收、PROD 提升与 GitHub Release 均须由相应证据记录；通过前不得发布。"
     }
   ]
 }

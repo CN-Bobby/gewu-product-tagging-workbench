@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Commit,
     [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
@@ -160,21 +160,41 @@ if (-not $reviewedReport) {
 if ($reviewedReport) {
     if (-not $reviewedReport.candidate_app) { throw 'Reviewed candidate report does not identify its immutable build directory.' }
     $candidateApp = Canonical ([string]$reviewedReport.candidate_app)
-    $null = Assert-Within $candidateApp (Join-Path $ProjectRoot 'builds')
+    $candidateBuildRoot = Canonical (Split-Path -Parent $candidateApp)
+    $null = Assert-Within $candidateBuildRoot (Join-Path $ProjectRoot 'builds')
+    if ((Split-Path -Leaf $candidateApp) -ne 'app') { throw 'Reviewed candidate app path is invalid.' }
     $manifestPath = Join-Path $candidateApp 'build-manifest.json'
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf) -or
         (Sha256 $manifestPath) -ne ([string]$reviewedReport.manifest_sha256).ToLowerInvariant()) {
         throw 'Frozen build manifest is missing or changed since review; activation was refused.'
     }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $portablePath = Canonical ([string]$reviewedReport.portable_zip)
+    $portableSidecar = Canonical ([string]$reviewedReport.portable_sidecar)
+    $null = Assert-Within $portablePath $candidateBuildRoot
+    $null = Assert-Within $portableSidecar $candidateBuildRoot
+    if (-not (Test-Path -LiteralPath $portablePath -PathType Leaf) -or
+        (Sha256 $portablePath) -ne ([string]$reviewedReport.portable_sha256).ToLowerInvariant() -or
+        -not (Test-Path -LiteralPath $portableSidecar -PathType Leaf) -or
+        (Sha256 $portableSidecar) -ne ([string]$reviewedReport.portable_sidecar_sha256).ToLowerInvariant()) {
+        throw 'Frozen portable ZIP or checksum sidecar changed since review; activation was refused.'
+    }
+    $sidecarLine = (Get-Content -LiteralPath $portableSidecar -Raw -Encoding UTF8).Trim()
+    if ($sidecarLine -ne "$($reviewedReport.portable_sha256)  $(Split-Path -Leaf $portablePath)") {
+        throw 'Portable ZIP checksum sidecar does not match the frozen ZIP.'
+    }
 } else {
     $version = (Get-Content -LiteralPath (Join-Path $ProjectRoot 'VERSION.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
-    $candidateDirectory = "$version+$($Commit.Substring(0,12))"
+    $candidateDirectory = "$version-candidate.$commitSuffix"
     $candidateBuildRoot = Join-Path (Join-Path $ProjectRoot 'builds') $candidateDirectory
     $candidateApp = Canonical (Join-Path $candidateBuildRoot 'app')
+    $portablePath = Canonical (Join-Path $candidateBuildRoot "GeWuWorkbench-$version-portable.zip")
+    $portableSidecar = $portablePath + '.sha256'
     $manifestPath = Join-Path $candidateApp 'build-manifest.json'
     if (Test-Path -LiteralPath $candidateBuildRoot) {
-        if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $portablePath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $portableSidecar -PathType Leaf)) {
             throw "An incomplete build directory already exists and was preserved: $candidateBuildRoot"
         }
         $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -190,10 +210,13 @@ if ($reviewedReport) {
         if ($manifest.python.sha256 -ne $pythonPin -or $manifest.reasonix.sha256 -ne $reasonixPin) {
             throw 'Existing build does not use the pinned Python and Reasonix inputs; it was left untouched.'
         }
+        if ($manifest.build_mode -ne 'candidate' -or $manifest.storage_mode -ne 'user-selected' -or
+            (Sha256 $portablePath) -ne (Get-Content -LiteralPath $portableSidecar -Raw -Encoding UTF8).Trim().Split(' ')[0]) {
+            throw 'Existing build is not a verified portable candidate; it was left untouched.'
+        }
         Write-Output "Reusing the existing candidate build after source and pinned-runtime identity checks: $candidateBuildRoot"
     } else {
-        $env:GEWU_PROFILE = 'test'; $env:GEWU_ALLOW_EXTERNAL_EFFECTS = '0'
-        Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
+        $env:GEWU_PROFILE = 'test'; $env:GEWU_TEST_EXTERNAL_EFFECTS = 'offline'
         Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
         $env:TAG_STORAGE = Join-Path $env:TEMP 'GeWuCandidateBuildSandbox\Data'
         $env:TAG_CACHE = Join-Path $env:TEMP 'GeWuCandidateBuildSandbox\Cache'
@@ -202,7 +225,7 @@ if ($reviewedReport) {
             # Python packaging tools write routine progress and advisory messages to stderr.
             # Capture those lines and decide success from Python's exit code, like the offline gate.
             $ErrorActionPreference = 'Continue'
-            $buildOutput = @(& $python (Join-Path $ProjectRoot 'scripts\build_windows.py') --dev 2>&1 | ForEach-Object { $_.ToString() })
+            $buildOutput = @(& $python (Join-Path $ProjectRoot 'scripts\build_windows.py') --portable 2>&1 | ForEach-Object { $_.ToString() })
             $buildExit = $LASTEXITCODE
         } finally {
             $ErrorActionPreference = $previousErrorActionPreference
@@ -212,8 +235,9 @@ if ($reviewedReport) {
         $jsonLine = $buildOutput | Where-Object { $_ -match '^\s*\{' } | Select-Object -Last 1
         if (-not $jsonLine) { throw 'Build script did not return a candidate manifest summary.' }
         $build = $jsonLine | ConvertFrom-Json
-        if ($build.commit -ne $Commit -or $build.dirty -ne $false -or $build.build_mode -ne 'dev' -or
-            $build.storage_mode -ne 'isolated' -or $build.directory -ne $candidateDirectory) {
+        if ($build.commit -ne $Commit -or $build.dirty -ne $false -or $build.build_mode -ne 'candidate' -or
+            $build.storage_mode -ne 'user-selected' -or $build.directory -ne $candidateDirectory -or
+            $build.portable_sha256 -ne (Sha256 $portablePath)) {
             throw 'Build summary identity is invalid or does not match the requested clean candidate commit.'
         }
         # Rebuild the path from the local fixed worktree. Native stdout can corrupt non-ASCII paths.
@@ -222,11 +246,17 @@ if ($reviewedReport) {
         $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     }
 }
-if ($manifest.commit -ne $Commit -or $manifest.dirty -ne $false -or $manifest.build_mode -ne 'dev' -or $manifest.storage_mode -ne 'isolated') {
-    throw 'Candidate manifest is not a clean, commit-pinned isolated development build.'
+if ($manifest.commit -ne $Commit -or $manifest.dirty -ne $false -or $manifest.build_mode -ne 'candidate' -or $manifest.storage_mode -ne 'user-selected') {
+    throw 'Candidate manifest is not a clean, commit-pinned portable candidate build.'
 }
 Test-ManifestFiles $candidateApp $manifest
 if ($manifest.files.'backend/credential_vault.py' -and $manifest.files.'backend/external_effects.py') { } else { throw 'Candidate is missing vault or offline-policy modules.' }
+if (-not (Test-Path -LiteralPath $portablePath -PathType Leaf) -or -not (Test-Path -LiteralPath $portableSidecar -PathType Leaf)) {
+    throw 'Portable candidate ZIP or checksum sidecar is missing.'
+}
+$portableHash = Sha256 $portablePath
+$sidecarLine = (Get-Content -LiteralPath $portableSidecar -Raw -Encoding UTF8).Trim()
+if ($sidecarLine -ne "$portableHash  $(Split-Path -Leaf $portablePath)") { throw 'Portable ZIP checksum sidecar is invalid.' }
 
 $fixtureVersion = 'not-available'
 $fixtureHash = $null
@@ -241,6 +271,9 @@ if ($reviewedReport) {
     if ((Canonical $reportPath) -ne $reviewedReportPath) { throw 'Rebuilt candidate build ID differs from the reviewed report; activation was refused.' }
     $sameIdentity = $reviewedReport.build_id -eq $manifest.build_id -and $reviewedReport.commit -eq $Commit -and
         $reviewedReport.source_sha256 -eq $manifest.source_sha256 -and $reviewedReport.manifest_sha256 -eq (Sha256 $manifestPath) -and
+        $reviewedReport.portable_zip -eq $portablePath -and $reviewedReport.portable_sha256 -eq $portableHash -and
+        $reviewedReport.portable_sidecar -eq $portableSidecar -and
+        $reviewedReport.portable_sidecar_sha256 -eq (Sha256 $portableSidecar) -and
         $reviewedReport.fixture_version -eq $fixtureVersion -and $reviewedReport.fixture_manifest_sha256 -eq $fixtureHash -and
         (Canonical ([string]$reviewedReport.automated_report)) -eq (Canonical $checkReport.FullName) -and
         $reviewedReport.automated_report_sha256 -eq (Sha256 $checkReport.FullName) -and
@@ -256,6 +289,8 @@ if ($reviewedReport) {
         schema = 1; created_at = [DateTime]::UtcNow.ToString('o'); status = if ($Activate) { 'activating' } else { 'built_pending_activation' }
         profile = 'test'; external_requests = 0; commit = $Commit; build_id = $manifest.build_id; dirty = $false
         source_sha256 = $manifest.source_sha256; manifest_sha256 = Sha256 $manifestPath
+        version = $manifest.version; portable_zip = $portablePath; portable_sha256 = $portableHash
+        portable_sidecar = $portableSidecar; portable_sidecar_sha256 = Sha256 $portableSidecar
         fixture_version = $fixtureVersion; fixture_manifest_sha256 = $fixtureHash
         automated_report = $checkReport.FullName; automated_report_sha256 = Sha256 $checkReport.FullName
         candidate_app = $candidateApp; data_path = $data; cache_path = $cache; current_app = $expectedCurrent
@@ -285,7 +320,8 @@ if ($Activate) {
     $backupRoot = Join-Path 'K:\GeWuTest\Backups' $runId
     if ((Test-Path -LiteralPath $stageRoot) -or (Test-Path -LiteralPath $backupRoot)) { throw 'Candidate staging or backup path already exists; refusing to overwrite it.' }
     New-Item -ItemType Directory -Force -Path $stageRoot, $backupRoot | Out-Null
-    Copy-Item -LiteralPath $candidateApp -Destination $stageApp -Recurse
+    New-Item -ItemType Directory -Force -Path $stageApp | Out-Null
+    Expand-Archive -LiteralPath $portablePath -DestinationPath $stageApp
     Test-ManifestFiles $stageApp $manifest
     $dataBackup = Copy-SanitizedBackup $data (Join-Path $backupRoot 'Data')
     $cacheBackup = Copy-SanitizedBackup $cache (Join-Path $backupRoot 'Cache')

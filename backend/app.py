@@ -13,7 +13,7 @@ from . import importer, service, jobs, harness
 from .exporter import export_run
 from . import draft,batch,draft_export,text_facts
 from . import field_catalog,worksheet_query,task_control,project_files,project_library
-from . import knowledge,templates,storage_management,model_settings,capabilities
+from . import knowledge,templates,storage_management,model_settings,capabilities,update_service
 from .keyword_research import routes as keyword_research_routes
 from .keyword_research import registry as keyword_registry, runner as keyword_runner
 from . import amazon_scraper
@@ -164,6 +164,14 @@ async def validation_error(request,e):return JSONResponse({'detail':str(e)},stat
 
 @app.get('/api/health')
 def health():return {'status':'ok','application':'product-tagging-workbench','storage':str(STORAGE),'capabilities':capabilities.public(),**build_info()}
+
+@app.get('/api/updates/check')
+def check_for_updates():
+    external_effects.assert_allowed('other_external_tasks')
+    try:
+        return update_service.check_for_update()
+    except update_service.UpdateCheckError as exc:
+        raise HTTPException(status_code=502, detail={'code':exc.code,'message':str(exc)}) from exc
 
 @app.get('/api/runtime/status')
 def runtime_status(request:Request):

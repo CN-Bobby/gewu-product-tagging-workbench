@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ConfigPath = (Join-Path $env:LOCALAPPDATA 'GeWuWorkbench\RunCenter\config.json'),
     [string]$Url = 'http://127.0.0.1:8895'
@@ -25,6 +25,28 @@ $expectedInstanceId = if ($status.external_effects.policy -eq 'live_validation')
 if ($status.instance_id -ne $expectedInstanceId) {
     throw "The current listener instance id does not match policy $($status.external_effects.policy). No checklist was created."
 }
+$candidateReports = @(Get-ChildItem -LiteralPath $reports -Filter "candidate-$($status.source.build_id)-$($status.source.commit.Substring(0,12)).json" -File -ErrorAction SilentlyContinue)
+if ($candidateReports.Count -ne 1) { throw 'A unique frozen candidate report is required before manual acceptance.' }
+$candidateReportFile = $candidateReports[0]
+$candidateReport = Get-Content -LiteralPath $candidateReportFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($candidateReport.status -ne 'running_pending_manual_acceptance' -or
+    $candidateReport.build_id -ne $status.source.build_id -or $candidateReport.commit -ne $status.source.commit -or
+    [IO.Path]::GetFullPath([string]$candidateReport.current_app).TrimEnd('\') -ine [IO.Path]::GetFullPath([string]$config.profiles.TEST.app).TrimEnd('\')) {
+    throw 'The candidate report does not bind the running TEST build to its portable acceptance package.'
+}
+$portableZip = [IO.Path]::GetFullPath([string]$candidateReport.portable_zip)
+$portableSidecar = [IO.Path]::GetFullPath([string]$candidateReport.portable_sidecar)
+if (-not (Test-Path -LiteralPath $portableZip -PathType Leaf) -or -not (Test-Path -LiteralPath $portableSidecar -PathType Leaf) -or
+    (Get-FileHash -LiteralPath $portableZip -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$candidateReport.portable_sha256 -or
+    (Get-FileHash -LiteralPath $portableSidecar -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$candidateReport.portable_sidecar_sha256) {
+    throw 'Portable ZIP or checksum sidecar changed after candidate activation.'
+}
+$candidateApp = [IO.Path]::GetFullPath([string]$config.profiles.TEST.app)
+$manifestPath = Join-Path $candidateApp 'build-manifest.json'
+if ((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne [string]$candidateReport.manifest_sha256) {
+    throw 'Running TEST app manifest does not match the frozen candidate report.'
+}
+$candidateReportHash = (Get-FileHash -LiteralPath $candidateReportFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 $fixtureManifest = 'K:\GeWuFixtures\project-library-v1\fixture-manifest.json'
 if (-not (Test-Path -LiteralPath $fixtureManifest -PathType Leaf)) { throw "Fixture manifest is missing: $fixtureManifest" }
 $fixture = Get-Content -LiteralPath $fixtureManifest -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -57,6 +79,7 @@ $items = @(
     '若执行 TEST 数据重置，确认目标为 K:\GeWuTest\Data，旧目录保存在 K:\GeWuTest\Backups，PROD 哨兵不变。'
 )
 $items[0] = ('从桌面“格物 · 打开验收版”进入；版本面板显示 TEST、冻结提交、隔离数据目录 K:\GeWuTest\Data 和 ' + $status.external_effects.policy + '。')
+$items = @('确认本次 TEST 程序由下方记录的便携 ZIP 解压得到；包内版本、提交和清单与验收记录一致。') + $items
 if ($status.external_effects.policy -eq 'offline') {
     $items += '在 TEST 尝试启动模型、MCP、Amazon 采集或 VOC 任务，确认收到离线阻断；仅执行本地预览。'
 } else {
@@ -75,9 +98,17 @@ $liveCallRecord = @(
 $liveCallSection = if ($status.external_effects.policy -eq 'live_validation') { $liveCallRecord } else { @() }
 $content = @(
     '# 格物 TEST 人工验收', '',
+    "- Version: $($candidateReport.version)",
     "- Run ID: $runId",
     "- Build ID: $($status.source.build_id)",
     "- Commit: $($status.source.commit)",
+    "- Candidate report: $($candidateReportFile.FullName)",
+    "- Candidate report SHA-256: $candidateReportHash",
+    "- App manifest SHA-256: $($candidateReport.manifest_sha256)",
+    "- Portable ZIP: $portableZip",
+    "- Portable ZIP SHA-256: $($candidateReport.portable_sha256)",
+    "- Portable sidecar: $portableSidecar",
+    "- Portable sidecar SHA-256: $($candidateReport.portable_sidecar_sha256)",
     "- Data: $($status.data.path)",
     "- TEST policy: $($status.external_effects.policy)",
     "- Fixture: $($fixture.fixture_version)",
