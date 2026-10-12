@@ -171,10 +171,14 @@ class AmazonVOCService:
         with self._lock:
             existing = self.db.one("SELECT * FROM workbench_reviews_handoffs WHERE source_job_id=?",
                                     (source_job_id,))
+            workspace_id = str(source.get("workspace_id") or "").strip() or None
             if existing:
                 if existing["workbook_sha256"] != workbook_sha256:
                     raise RuntimeError("该评论任务的导出 Excel 已变化；请使用新的评论任务创建 VOC 分析")
                 project = self.project(existing["project_id"])
+                if not project:
+                    raise RuntimeError("已有 VOC 交接记录不完整，不能重复创建分析")
+                project = self.bind_project_workspace(project["id"], workspace_id)
                 run = self.get_run(existing["run_id"])
                 if not project or not run:
                     raise RuntimeError("已有 VOC 交接记录不完整，不能重复创建分析")
@@ -192,6 +196,7 @@ class AmazonVOCService:
                 project = self.create_project({
                     "name": f"Amazon VOC · {site} · 评论任务 {source_job_id[:8]}",
                     "marketplace": site, "country": site, "language": "auto", "category": "",
+                    "workspace_id": workspace_id,
                 })
                 run = self.create_run(project["id"], path.name, data, model_ref, credential_id)
                 created_at = utcnow()
@@ -204,6 +209,7 @@ class AmazonVOCService:
                        "project_id": project["id"], "run_id": run["id"],
                        "created_at": created_at, "status": "started"}
             source_summary = amazon_reviews_service.record_voc_handoff(source_job_id, handoff)
+            self.register_completed_run_artifacts(run["id"])
             return {"run": run, "project": project,
                     "source_job": {key: source_summary.get(key) for key in
                                    ("id", "status", "site", "review_count", "voc_handoff")},
@@ -252,6 +258,26 @@ class AmazonVOCService:
                            "FROM projects p LEFT JOIN runs r ON r.project_id=p.id WHERE p.id=? GROUP BY p.id",
                            (project_id,))
 
+    def bind_project_workspace(self, project_id: str, workspace_id: str | None) -> dict[str, Any] | None:
+        """Bind an unowned VOC project to its source Workspace without allowing reassignment."""
+        project = self.project(project_id)
+        if not project or not workspace_id:
+            return project
+        current_workspace_id = str(project.get("workspace_id") or "")
+        if current_workspace_id and current_workspace_id != workspace_id:
+            raise ValueError("VOC 项目已绑定到其他工作项目，拒绝更改归属")
+        if not current_workspace_id:
+            from ..db import Session, Workspace, require
+            with Session() as session:
+                require(session, Workspace, workspace_id)
+            self.db.execute("UPDATE projects SET workspace_id=?,updated_at=? "
+                            "WHERE id=? AND workspace_id IS NULL",
+                            (workspace_id, utcnow(), project_id))
+            project = self.project(project_id)
+            if not project or project.get("workspace_id") != workspace_id:
+                raise RuntimeError("无法将 VOC 项目绑定到来源工作项目")
+        return project
+
     def list_projects(self) -> list[dict[str, Any]]:
         return self.db.list_projects()
 
@@ -275,17 +301,28 @@ class AmazonVOCService:
             self.db.update_run(run_id, status="failed", error=message[:1500], completed_at=utcnow())
             raise
         result = self.get_run(run_id)
-        workspace_id = result.get("workspace_id") if result else None
-        if workspace_id and result and result.get("status") == "completed":
-            from .. import project_files
-            revision = int(result.get("current_revision") or 1)
-            path = self.storage.artifact(result["project_id"], run_id, revision, "html")
-            if path and path.is_file():
-                project_files.register_file(workspace_id, "voc", path,
-                    source_type="amazon_voc_output", source_id=f"{run_id}:rev{revision}:html",
-                    name="VOC-report.html", metadata={"voc_project_id": result["project_id"],
-                        "run_id": run_id, "revision": revision})
+        self.register_completed_run_artifacts(run_id, result)
         return result
+
+    def register_completed_run_artifacts(self, run_id: str,
+                                         result: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """Idempotently add completed VOC HTML reports to their owning project library."""
+        result = result or self.get_run(run_id)
+        if (not result or result.get("status") != "completed"
+                or not result.get("workspace_id")):
+            return []
+        from .. import project_files
+        workspace_id = str(result["workspace_id"])
+        revision = int(result.get("current_revision") or 1)
+        path = self.storage.artifact(result["project_id"], run_id, revision, "html")
+        if not path or not path.is_file():
+            return []
+        return [project_files.register_file(
+            workspace_id, "voc", path,
+            source_type="amazon_voc_output", source_id=f"{run_id}:rev{revision}:html",
+            name="VOC-report.html", metadata={"voc_project_id": result["project_id"],
+                "run_id": run_id, "revision": revision},
+        )]
 
     def recover(self) -> None:
         now = utcnow()
