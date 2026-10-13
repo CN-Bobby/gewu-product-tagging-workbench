@@ -8,7 +8,7 @@
 - 评论由 product_reviews 提供，站点使用 Amazon marketplace code。
 - 每个 ASIN 以 review_type=Both 调用两次，按 (ASIN, review_date, title, content) 去重。两次调用是重复采样，不是分页。
 - 每次最多 100 条且范围为最近一年；不能将结果称为全历史评论。
-- 美国站可以在页面中选择 Sorftime MCP 或当前项目的 Woot 评论采集器。Woot 采集按 5 个星级和 4 种排序组合请求并翻页、去重；评论量较大时耗时会明显增加。Woot 使用非官方接口，接口可能变化。
+- 美国站默认使用当前项目的 Woot 评论采集器，用户可手动切换为 Sorftime MCP。Woot 采集按 5 个星级和 4 种排序组合请求并翻页、去重；评论量较大时耗时会明显增加。Woot 使用非官方接口，接口可能变化。
 - Woot 仅支持 Amazon 美国站。英国、德国等其他站点仍使用 Sorftime MCP；选择 Woot 时若输入方式需要类目榜单，Sorftime 仍用于取得商品 ASIN。直接输入 ASIN 时，Woot 评论采集不要求配置 Sorftime。
 - Woot 采集实现参考 [mrlong0129/amazon-review-scraper](https://github.com/mrlong0129/amazon-review-scraper)，按其 MIT License 使用；源码文件保留了许可说明。
 
@@ -41,7 +41,7 @@
 ## 工作台接入
 
 费用优化分支的前端入口为主导航「Amazon 评论 + VOC」，页面路由为 `#/amazon-reviews-voc`；页面保留评论采集表单，并提供评论拉取 + VOC、仅评论拉取、仅 VOC 三种目标。评论采集提供三种输入方式：类目榜单 Top 50/100、直接输入 ASIN、从类目榜单筛选指定 ASIN。站点、模型及已授权模型 Key 均在任务创建时冻结。
-前端入口为主导航「Amazon 评论」，页面路由为 #/amazon-reviews。页面提供三种输入方式：类目榜单 Top 50/100、直接输入 ASIN、从类目榜单筛选指定 ASIN。站点、评论来源、模型及已授权模型 Key 均在任务创建时冻结。来源选择仅在美国站显示；API 对非美国站的 Woot 请求会拒绝处理。
+前端入口为主导航「Amazon 评论」，页面路由为 #/amazon-reviews。页面提供三种输入方式：类目榜单 Top 50/100、直接输入 ASIN、从类目榜单筛选指定 ASIN。美国站默认使用 Woot；用户可手动切换 Sorftime MCP。榜单和混合模式仍通过 Sorftime MCP 获取 ASIN，随后由选定来源采集评论。站点、评论来源、模型及已授权模型 Key 均在任务创建时冻结。来源选择仅在美国站显示；API 对非美国站的 Woot 请求会拒绝处理。商品打标页“数据流转”推送也提供美国站评论来源选择并将选择传给任务。
 
 Sorftime MCP 配置复用工作台「寻龙诀」的设置；翻译模型与凭据复用「总设置」。页面仅检查连接是否配置，不读取或显示密钥。任务和逐商品检查点保存在当前 TAG_STORAGE/amazon-reviews/<job-id>/，支持进度查询、取消、重试和重启后恢复。单次最多并行两个评论任务。
 

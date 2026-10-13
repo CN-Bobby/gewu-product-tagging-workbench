@@ -943,7 +943,7 @@ def create(body: dict[str, Any]) -> dict[str, Any]:
     if mode not in ("ranked", "asins", "node_asins"):
         raise ValueError("输入模式无效")
     site = _site(body.get("site", "US"))
-    collection_source = str(body.get("collection_source") or "sorftime").strip().lower()
+    collection_source = str(body.get("collection_source") or ("woot" if site == "US" else "sorftime")).strip().lower()
     if collection_source not in ("sorftime", "woot"):
         raise ValueError("评论采集方式无效")
     if collection_source == "woot" and site != "US":

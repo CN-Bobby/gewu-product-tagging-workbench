@@ -250,10 +250,14 @@ def amazon_reviews_from_archive(archive_id:str,body:dict):
     if requested_workspace!=str(targets.get('workspace_id') or ''):
         raise ValueError('档案和选中行不属于同一项目')
     archive=archive_service._read(archive_id)
-    return amazon_reviews.create({'mode':'asins','site':archive.get('marketplace') or 'US',
+    auto_voc_policy=body.get('auto_voc_policy','none')
+    site=archive.get('marketplace') or 'US'
+    collection_source=body.get('collection_source') or ('woot' if str(site).upper()=='US' else 'sorftime')
+    return amazon_reviews.create({'mode':'asins','site':site,'collection_source':collection_source,
         'asins':targets['asins'],'model':body.get('model'),'credential_id':body.get('credential_id'),
         'workspace_id':targets.get('workspace_id'),'source_dataset_id':targets.get('dataset_id'),
-        'source_archive_id':archive_id,'auto_voc_policy':body.get('auto_voc_policy','none')})
+        'source_archive_id':archive_id,'auto_voc_policy':auto_voc_policy,
+        'workflow_mode':'combined' if auto_voc_policy not in (None,'','none') else 'reviews_only'})
 
 @app.get('/api/amazon-reviews/jobs')
 def amazon_reviews_jobs():return amazon_reviews.list_jobs()

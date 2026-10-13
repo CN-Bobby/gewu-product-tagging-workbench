@@ -33,7 +33,7 @@ function itemCount(item){return item.review_count??item.reviews_count??item.coun
 function dateText(value){if(!value)return '—';const date=new Date(typeof value==='number'&&value<10000000000?value*1000:value);return Number.isNaN(date.getTime())?String(value):date.toLocaleString()}
 
 export function AmazonReviews({api,onNavigate,workflowMode='reviews_only',translateEnabled=true,workspaceId='',forceRefresh=false}){
- const[settings,setSettings]=useState(null),[mode,setMode]=useState('ranked'),[site,setSite]=useState('US'),[collectionSource,setCollectionSource]=useState('sorftime'),[nodeId,setNodeId]=useState(''),[rankLimit,setRankLimit]=useState(50),[asinText,setAsinText]=useState(''),[model,setModel]=useState(''),[credentialId,setCredentialId]=useState('');
+ const[settings,setSettings]=useState(null),[mode,setMode]=useState('ranked'),[site,setSite]=useState('US'),[collectionSource,setCollectionSource]=useState('woot'),[nodeId,setNodeId]=useState(''),[rankLimit,setRankLimit]=useState(50),[asinText,setAsinText]=useState(''),[model,setModel]=useState(''),[credentialId,setCredentialId]=useState('');
  const[jobs,setJobs]=useState([]),[selectedId,setSelectedId]=useState(''),[busy,setBusy]=useState(false),[loading,setLoading]=useState(true),[error,setError]=useState(''),[notice,setNotice]=useState('');
  const[handoffPendingId,setHandoffPendingId]=useState('');
  const selectedRef=useRef(''),handoffPendingRef=useRef('');

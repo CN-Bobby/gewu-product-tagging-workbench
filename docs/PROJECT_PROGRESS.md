@@ -4,7 +4,9 @@
 
 > 当前运行治理状态更新于 2026-10-13：新功能日常人工测试统一在 DEV，独立 TEST 服务已停止并保留数据。此前的 TEST 候选流程记录为历史方案，详见 [DEV 唯一日常人工测试环境](DEV_ONLY_DAILY_TESTING.md)。
 
-## 2026-10-12 便携分发与在线更新流程（实施中）
+> 当前发布规则：功能汇总到 DEV 并完成人工测试，经用户确认后冻结；将同一冻结版本提升到 PROD 并核验；再发布匹配 PROD 的 GitHub Release 和绿色便携包。下方较早日期的进度条目是历史快照，不作为当前分支、候选版本、仓库配置或发布状态的依据。权威规则见根目录 `AGENTS.md` 与 `docs/RELEASE_GOVERNANCE.md`。
+
+## 2026-10-12 便携分发与在线更新流程（历史实施快照，现行规则见上方）
 
 - **当前状态：** DEV → 便携候选 → TEST 人工验收 → PROD 提升与 GitHub Release 流程正在接入；没有新的候选 ZIP、人工验收或 PROD 提升记录，本节不代表已完成交付。
 - **真实 DEV：** Run Center 指向 `C:\Users\Administrator\.codex\worktrees\voc-project-file-link\数据打标项目`，分支 `codex/voc-project-file-link`，基线 HEAD `267a3dff360cfd67724f8e920ad8091a4ad076b6`；本次复核时有 68 个 tracked 文件修改和 13 个未跟踪文件，须分类保留后才能形成干净候选提交。聊天当前打开的 `1b41` worktree 是干净 detached 基线，不是 DEV。

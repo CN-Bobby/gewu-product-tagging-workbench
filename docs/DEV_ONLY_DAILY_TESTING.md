@@ -13,11 +13,12 @@
 
 - 独立 TEST 服务 `8895` 已停止，不再作为新功能日常验收入口。
 - 保留 `K:\GeWuTest\Current`、`Data`、`Cache`、`Reports`、Run Center 配置和 TEST 凭证配置，供审计或回退；不删除、不迁移、不覆盖其中的历史数据。
-- `freeze-test-candidate.ps1`、TEST 激活/回退、TEST 人工清单等流程仍是旧候选链路。它们没有因为停止 TEST 服务而自动改成 DEV 流程。后续正式便携候选发布前，须将候选验收门禁明确迁移到 DEV 或确定新的发布验收入口。
+- `freeze-test-candidate.ps1`、TEST 激活/回退、TEST 人工清单等属于历史候选链路，不是当前交付流程；不得要求新版本先激活 TEST。当前候选由 DEV 人工验收通过后冻结，再按发布规则提升到 PROD。
 
 ## 分支与发布
 
-- 功能分支先合并到当前 DEV 工作树，再在 DEV 做人工测试；本地 DEV 合并不代表已推送 GitHub。
+- 各并行功能分支在准备验收时汇总到当前 DEV 工作树，再在 DEV 做统一人工测试；合入或运行在 DEV 本身不代表已冻结、已部署 PROD 或已发布 GitHub。
 - 日常开发构建使用版本号加 Git commit 标识，不递增客户 beta 版本。
-- 在线更新从公开源码仓库 `CN-Bobby/gewu-product-tagging-workbench` 的 GitHub Releases 读取已发布 ZIP 和 SHA-256，不同步源码分支。
-- DEV 人工测试通过后，候选从同一个干净提交生成，并以 Pre-release 供另一台电脑安装验收；安装验收通过后再考虑 PROD 部署。DEV/TEST 环境合并本身不等于候选验收或 PROD 发布。
+- 用户确认 DEV 人工测试通过后，冻结唯一候选版本并绑定源码提交、构建身份、测试记录和绿色版包哈希；冻结后不覆盖，任何修改递增新版本。
+- 冻结后把同一提交和产物提升到 PROD，核验生产实例的版本、build ID、commit 后，默认发布同版本 GitHub Release，并附绿色便携包与 SHA256。若另一台电脑安装验收是该版本的明确门禁，则保持待验收状态并单独记录。
+- 在线更新从公开源码仓库 `CN-Bobby/gewu-product-tagging-workbench` 的 GitHub Releases 读取已发布 ZIP 和 SHA-256，不同步源码分支。Release 必须对应已核验的 PROD 版本；DEV/TEST 环境变更、普通候选构建均不等同于正式发布。
