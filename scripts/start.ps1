@@ -29,6 +29,8 @@ $env:GEWU_API_URL = $baseUrl
 $env:GEWU_FRONTEND_URL = "http://127.0.0.1:5174"
 $env:GEWU_INSTANCE_ID = 'DEV'
 Remove-Item Env:GEWU_ALLOW_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
+Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
+Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
 Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue
 if (-not (Test-Path -LiteralPath $pythonPath)) { throw "Python environment is missing: $pythonPath" }
 $process = Start-Process -FilePath $pythonPath -ArgumentList @('-m','uvicorn','backend.app:app','--host','127.0.0.1','--port',"$Port",'--reload') -WorkingDirectory $projectRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logRoot 'server.out.log') -RedirectStandardError (Join-Path $logRoot 'server.err.log') -PassThru

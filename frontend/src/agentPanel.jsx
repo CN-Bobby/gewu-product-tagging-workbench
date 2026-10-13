@@ -26,7 +26,8 @@ async function call(path,body,method='POST'){
   let detail;
   try{detail=(await response.json()).detail}catch{detail=null}
   if(detail&&typeof detail==='object')
-    return Promise.reject({code:detail.code||'error',message:detail.message||'请求失败',fatal:detail.fatal===true});
+    return Promise.reject({code:detail.code||'error',message:detail.message||'请求失败',fatal:detail.fatal===true,
+      stage:detail.stage||null,diagnostic:detail.diagnostic&&typeof detail.diagnostic==='object'?detail.diagnostic:null});
   return Promise.reject({code:'invalid_request',message:typeof detail==='string'?detail:'请求失败',fatal:false});
 }
 
@@ -203,8 +204,12 @@ export function AgentPanel({did}){
         </button>}
     </div>
 
-    {state.error&&<div role="alert" className="alert">{state.error.message}
-      {state.error.fatal?'　会话已结束，请新建会话。':'　可以继续发送。'}</div>}
+    {state.error&&<div role="alert" className="alert"><span>{state.error.message}
+      {state.error.fatal?'　会话已结束，请新建会话。':'　可以继续发送。'}
+      {state.error.stage&&<small className="agent-error-detail">失败阶段：{({initialize:'ACP 初始化',session_new:'建立 ACP 会话',process_start:'启动 Reasonix 进程'})[state.error.stage]||state.error.stage}
+        {state.error.diagnostic?.message?` · ${state.error.diagnostic.message}`:''}
+        {state.error.diagnostic?.process?.exit_code!==undefined?` · 进程退出码 ${state.error.diagnostic.process.exit_code}`:''}</small>}
+    </span></div>}
 
     <div className="chat-scroll">
       {state.items.map(item=>item.kind==='activity'?<TurnActivityCard key={item.id} item={item} detail={detail}/>

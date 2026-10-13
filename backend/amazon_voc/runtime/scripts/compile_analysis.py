@@ -88,13 +88,32 @@ def _workarounds(events):
     return rows
 
 
+def _omit_full_review_text(value, events):
+    """Keep full review bodies in the evidence workbook, never in report narratives."""
+    if isinstance(value, dict):
+        return {key: _omit_full_review_text(item, events) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_omit_full_review_text(item, events) for item in value]
+    if not isinstance(value, str):
+        return value
+    for event in events:
+        source = str(event.get("review_text") or "")
+        if len(source.strip()) >= 20 and source in value:
+            marker = "完整评论原文已省略，请按事件ID %s 回查" % event.get("event_id", "")
+            value = value.replace(source, marker)
+    return value
+
+
 def _segment_payload(segment, events, denominator):
     member_ids = set(segment.get("member_event_ids") or [])
     members = [item for item in events if item.get("event_id") in member_ids]
     review_count = len(common.independent_review_ids(members))
     asin_count = len(common.independent_asins(members))
-    payload = {key: value for key, value in segment.items()
-               if key not in {"external_evidence", "external_research_eligible", "recommendations"}}
+    payload = _omit_full_review_text(
+        {key: value for key, value in segment.items()
+         if key not in {"external_evidence", "external_research_eligible", "recommendations"}},
+        events,
+    )
     payload["metrics"] = {
         "review_count": review_count,
         "review_coverage": common.review_coverage(members, denominator),

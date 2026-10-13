@@ -33,6 +33,7 @@ def review_workbook() -> bytes:
 def bridge(tmp_path, monkeypatch):
     instance = AmazonVOCService(root=tmp_path / "amazon-voc")
     monkeypatch.setattr(voc_router, "service", instance)
+    monkeypatch.setattr(instance, "start_worker", lambda **_kwargs: None)
     monkeypatch.setattr(instance, "public_model_settings", lambda: {
         "configured": True, "default_model": "shared/fake-text",
         "default_credential_id": "cred-1", "providers": [],

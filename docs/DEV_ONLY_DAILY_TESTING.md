@@ -19,4 +19,5 @@
 
 - 功能分支先合并到当前 DEV 工作树，再在 DEV 做人工测试；本地 DEV 合并不代表已推送 GitHub。
 - 日常开发构建使用版本号加 Git commit 标识，不递增客户 beta 版本。
-- 在线更新仍从 GitHub Releases 读取已发布的 ZIP 和 SHA-256，不同步源码分支。DEV/TEST 环境合并不等于创建候选、发布 Release 或修改 PROD。
+- 在线更新从公开源码仓库 `CN-Bobby/gewu-product-tagging-workbench` 的 GitHub Releases 读取已发布 ZIP 和 SHA-256，不同步源码分支。
+- DEV 人工测试通过后，候选从同一个干净提交生成，并以 Pre-release 供另一台电脑安装验收；安装验收通过后再考虑 PROD 部署。DEV/TEST 环境合并本身不等于候选验收或 PROD 发布。

@@ -1,10 +1,10 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$ManualResult,
     [Parameter(Mandatory = $true)][string]$CandidateReport,
     [Parameter(Mandatory = $true)][string]$PromotionRecord,
     [string]$SourceRepository = 'CN-Bobby/gewu-product-tagging-workbench',
-    [string]$BinaryRepository = $(if ($env:GEWU_UPDATE_REPOSITORY) { $env:GEWU_UPDATE_REPOSITORY } else { 'CN-Bobby/gewu-workbench-releases' })
+    [string]$BinaryRepository = $(if ($env:GEWU_UPDATE_REPOSITORY) { $env:GEWU_UPDATE_REPOSITORY } else { 'CN-Bobby/gewu-product-tagging-workbench' })
 )
 $ErrorActionPreference = 'Stop'
 function Get-Sha256([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }

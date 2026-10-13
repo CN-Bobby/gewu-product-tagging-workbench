@@ -1,4 +1,4 @@
-"""Offline policy and runtime identity contracts for DEV/TEST."""
+"""Default-online external effects and runtime identity contracts for DEV/TEST."""
 from __future__ import annotations
 
 import json
@@ -21,14 +21,14 @@ def _client(monkeypatch, profile='test'):
     return app_module, TestClient(app_module.app)
 
 
-def test_unknown_and_missing_profiles_fail_closed(monkeypatch):
+def test_missing_profile_defaults_to_dev_but_unknown_profiles_fail_closed(monkeypatch):
     monkeypatch.setattr(external_effects, 'effects_allowed', _effects_allowed)
 
     monkeypatch.delenv('GEWU_PROFILE', raising=False)
     monkeypatch.setenv('GEWU_DEV_EXTERNAL_EFFECTS', 'live_validation')
     monkeypatch.setenv('GEWU_TEST_EXTERNAL_EFFECTS', 'live_validation')
     assert external_effects.profile() == 'dev'
-    assert not external_effects.effects_allowed()
+    assert external_effects.effects_allowed()
     monkeypatch.setenv('GEWU_PROFILE', 'typo')
     assert external_effects.profile() == 'unknown'
     assert not external_effects.effects_allowed()
@@ -36,56 +36,60 @@ def test_unknown_and_missing_profiles_fail_closed(monkeypatch):
     assert external_effects.effects_allowed('model_api')
 
 
-def test_test_profile_external_effects_default_off(monkeypatch):
+def test_test_profile_external_effects_default_on_with_explicit_offline_override(monkeypatch):
     monkeypatch.setattr(external_effects, 'effects_allowed', _effects_allowed)
 
     monkeypatch.setenv('GEWU_PROFILE', 'test')
     monkeypatch.delenv('GEWU_DEV_EXTERNAL_EFFECTS', raising=False)
     monkeypatch.delenv('GEWU_TEST_EXTERNAL_EFFECTS', raising=False)
-    assert not external_effects.effects_allowed('model_api')
-    assert not external_effects.effects_allowed('mcp')
+    assert external_effects.effects_allowed('model_api')
+    assert external_effects.effects_allowed('mcp')
     assert external_effects.public_status() == {
         'profile': 'test',
-        'external_effects_allowed': False,
-        'policy': 'offline',
+        'external_effects_allowed': True,
+        'policy': 'live_validation',
         'services': {
-            'model_api': False,
-            'mcp': False,
-            'amazon_collection': False,
-            'other_external_tasks': False,
+            'model_api': True,
+            'mcp': True,
+            'amazon_collection': True,
+            'other_external_tasks': True,
         },
     }
+    external_effects.assert_allowed('model_api')
+    monkeypatch.setenv('GEWU_TEST_EXTERNAL_EFFECTS', 'offline')
     with pytest.raises(external_effects.ExternalEffectsDisabled) as blocked:
         external_effects.assert_allowed('model_api')
     assert '没有发起调用' in str(blocked.value)
-    assert '停止当前离线 TEST' in str(blocked.value)
+    assert '明确配置为离线' in str(blocked.value)
 
 
-def test_dev_profile_external_effects_default_off(monkeypatch):
+def test_dev_profile_external_effects_default_on_with_explicit_offline_override(monkeypatch):
     monkeypatch.setattr(external_effects, 'effects_allowed', _effects_allowed)
 
     monkeypatch.setenv('GEWU_PROFILE', 'dev')
     monkeypatch.delenv('GEWU_DEV_EXTERNAL_EFFECTS', raising=False)
-    assert not external_effects.effects_allowed('model_api')
-    assert not external_effects.effects_allowed('mcp')
+    assert external_effects.effects_allowed('model_api')
+    assert external_effects.effects_allowed('mcp')
     assert external_effects.public_status() == {
         'profile': 'dev',
-        'external_effects_allowed': False,
-        'policy': 'offline',
+        'external_effects_allowed': True,
+        'policy': 'live_validation',
         'services': {
-            'model_api': False,
-            'mcp': False,
-            'amazon_collection': False,
-            'other_external_tasks': False,
+            'model_api': True,
+            'mcp': True,
+            'amazon_collection': True,
+            'other_external_tasks': True,
         },
     }
+    external_effects.assert_allowed('model_api')
+    monkeypatch.setenv('GEWU_DEV_EXTERNAL_EFFECTS', 'offline')
     with pytest.raises(external_effects.ExternalEffectsDisabled) as blocked:
         external_effects.assert_allowed('model_api')
     assert '没有发起调用' in str(blocked.value)
-    assert '桌面 DEV 入口' in str(blocked.value)
+    assert '明确配置为离线' in str(blocked.value)
 
 
-def test_live_validation_opt_in_is_profile_specific_and_requires_exact_value(monkeypatch):
+def test_external_effects_default_on_and_explicit_offline_is_profile_specific(monkeypatch):
     monkeypatch.setattr(external_effects, 'effects_allowed', _effects_allowed)
 
     monkeypatch.setenv('GEWU_TEST_EXTERNAL_EFFECTS', 'live_validation')
@@ -106,10 +110,16 @@ def test_live_validation_opt_in_is_profile_specific_and_requires_exact_value(mon
     external_effects.assert_allowed('model_api')
 
     monkeypatch.setenv('GEWU_PROFILE', 'dev')
+    assert external_effects.effects_allowed('model_api')
+    assert external_effects.public_status()['policy'] == 'live_validation'
+
+    monkeypatch.setenv('GEWU_TEST_EXTERNAL_EFFECTS', 'offline')
+    assert external_effects.effects_allowed('model_api')
+    monkeypatch.setenv('GEWU_DEV_EXTERNAL_EFFECTS', 'offline')
     assert not external_effects.effects_allowed('model_api')
     assert external_effects.public_status()['policy'] == 'offline'
 
-    monkeypatch.setenv('GEWU_DEV_EXTERNAL_EFFECTS', 'live_validation')
+    monkeypatch.delenv('GEWU_DEV_EXTERNAL_EFFECTS', raising=False)
     assert external_effects.effects_allowed('model_api')
     assert external_effects.effects_allowed('mcp')
     assert external_effects.public_status() == {
@@ -127,19 +137,16 @@ def test_live_validation_opt_in_is_profile_specific_and_requires_exact_value(mon
 
     monkeypatch.delenv('GEWU_PROFILE', raising=False)
     assert external_effects.profile() == 'dev'
-    assert not external_effects.effects_allowed('model_api')
+    assert external_effects.effects_allowed('model_api')
     monkeypatch.setenv('GEWU_PROFILE', 'unknown')
     assert external_effects.profile() == 'unknown'
     assert not external_effects.effects_allowed('mcp')
     monkeypatch.setenv('GEWU_PROFILE', 'test')
-    monkeypatch.delenv('GEWU_TEST_EXTERNAL_EFFECTS', raising=False)
+    monkeypatch.setenv('GEWU_TEST_EXTERNAL_EFFECTS', 'offline')
     assert not external_effects.effects_allowed('model_api')
-    monkeypatch.setenv('GEWU_TEST_EXTERNAL_EFFECTS', 'live_validation')
     monkeypatch.delenv('GEWU_DEV_EXTERNAL_EFFECTS', raising=False)
     monkeypatch.setenv('GEWU_PROFILE', 'dev')
-    assert not external_effects.effects_allowed('model_api')
-    monkeypatch.setenv('GEWU_DEV_EXTERNAL_EFFECTS', ' live_validation')
-    assert not external_effects.effects_allowed('mcp')
+    assert external_effects.effects_allowed('model_api')
 
 
 @pytest.mark.parametrize(('profile', 'flag'), [
@@ -163,6 +170,7 @@ def test_live_validation_allows_local_route_checks_without_network(monkeypatch, 
 
 def test_offline_api_rejects_costly_jobs_but_keeps_local_preview(monkeypatch):
     app_module, client = _client(monkeypatch)
+    monkeypatch.setenv('GEWU_TEST_EXTERNAL_EFFECTS', 'offline')
     with client:
         blocked = [
             ('post', '/api/agent/sessions', {}),
@@ -214,7 +222,8 @@ def test_runtime_status_is_presence_only_and_identifies_isolated_data(monkeypatc
         assert status.status_code == 200
         value = status.json()
         assert value['profile'] == 'test'
-        assert value['external_effects']['policy'] == 'offline'
+        assert value['external_effects']['policy'] == 'live_validation'
+        assert value['external_effects']['external_effects_allowed'] is True
         assert value['credentials']['model'] is True
         assert value['data']['path'] == str(STORAGE)
         assert 'commit' in value['source'] and 'dirty' in value['source']
@@ -267,7 +276,7 @@ def test_dev_and_test_live_profiles_never_recover_queued_external_jobs(monkeypat
 def test_offline_worker_boundary_refuses_direct_amazon_fetch(monkeypatch):
     monkeypatch.setenv('GEWU_PROFILE', 'test')
     monkeypatch.setattr(external_effects, 'effects_allowed', _effects_allowed)
-    monkeypatch.delenv('GEWU_TEST_EXTERNAL_EFFECTS', raising=False)
+    monkeypatch.setenv('GEWU_TEST_EXTERNAL_EFFECTS', 'offline')
     from backend.amazon_scraper_worker import _fetch
     from backend.external_effects import ExternalEffectsDisabled
     with pytest.raises(ExternalEffectsDisabled):
@@ -276,6 +285,7 @@ def test_offline_worker_boundary_refuses_direct_amazon_fetch(monkeypatch):
 
 def test_offline_import_does_not_queue_automatic_model_extraction(monkeypatch, tmp_path):
     app_module, client = _client(monkeypatch)
+    monkeypatch.setenv('GEWU_TEST_EXTERNAL_EFFECTS', 'offline')
     monkeypatch.setattr(app_module.importer, 'import_file', lambda *args, **kwargs: {'id': 'fixture-dataset'})
     monkeypatch.setattr(app_module.worksheet_query, 'profile', lambda *args, **kwargs: {'fields': []})
     monkeypatch.setattr(app_module.text_facts, 'prepare', lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('model task queued')))

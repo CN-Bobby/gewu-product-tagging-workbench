@@ -45,6 +45,10 @@ def _raise_application_error(error):
     if isinstance(reason,str) and reason:payload['reason']=reason
     fatal=getattr(error,'fatal',None)
     if fatal is not None:payload['fatal']=bool(fatal)
+    stage=getattr(error,'stage',None)
+    if isinstance(stage,str) and stage:payload['stage']=stage
+    diagnostic=getattr(error,'diagnostic',None)
+    if isinstance(diagnostic,dict):payload['diagnostic']=diagnostic
     raise HTTPException(status_code=status,detail=payload) from error
 
 

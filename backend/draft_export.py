@@ -14,7 +14,7 @@ def safe(v):
         return json.dumps(v,ensure_ascii=False)
     return v
 
-def export(did,selected,version=None):
+def export(did,selected,version=None,unknown_as_blank=False):
     data=draft.sheet(did,version);cols={c['id']:c for c in data['columns']}
     if len(selected)!=len(set(selected)) or any(c not in cols for c in selected):raise ValueError('导出列无效')
     headers=data['dataset']['headers'];wb=Workbook();ws=wb.active;ws.title='Product_Result'
@@ -42,7 +42,9 @@ def export(did,selected,version=None):
         for cid in selected:
             cell=row['cells'].get(cid,{})
             status=cell.get('status','pending');value=cell.get('value')
-            if cols[cid]['definition'].get('attribute'):
+            if unknown_as_blank and status=='unknown':
+                output=None
+            elif cols[cid]['definition'].get('attribute'):
                 output='✓' if value is True and status=='ready' else '❌' if value is False and status=='ready' else None
             else:output=safe(value) if status in ('ready','review') else f'【{STATUS.get(status,status)}】'+(str(value) if value is not None else '')
             source_header=cols[cid]['definition'].get('source_header') if cid in adopted.values() else None

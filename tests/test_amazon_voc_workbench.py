@@ -152,6 +152,7 @@ class DeterministicVOCProvider:
 def voc(tmp_path, monkeypatch):
     instance = AmazonVOCService(root=tmp_path / "amazon-voc")
     monkeypatch.setattr(voc_router, "service", instance)
+    monkeypatch.setattr(instance, "start_worker", lambda **_kwargs: None)
     monkeypatch.setattr(instance, "resolve_shared_model", lambda model_ref=None, credential_id=None: {
         "model_ref": model_ref or "shared/fake-text", "credential_id": credential_id or "cred-1",
         "base_url": "https://model.invalid/v1", "api_key": "test-secret-never-persist",

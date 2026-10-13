@@ -171,13 +171,24 @@ class Database:
             row["sources"] = json.loads(row.pop("source_json"))
         return rows
 
-    def pending_run(self, worker_id):
+    def pending_run(self, worker_id, allowed_run_ids=None):
+        if allowed_run_ids is not None:
+            allowed_run_ids = tuple(dict.fromkeys(str(run_id) for run_id in allowed_run_ids if run_id))
+            if not allowed_run_ids:
+                return None
         with self._lock, self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             stale = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="seconds")
-            row = conn.execute("SELECT id FROM runs WHERE cancel_requested=0 AND status NOT IN "
+            scope_sql = ""
+            params = []
+            if allowed_run_ids is not None:
+                scope_sql = "id IN (%s) AND " % ",".join("?" for _ in allowed_run_ids)
+                params.extend(allowed_run_ids)
+            params.append(stale)
+            row = conn.execute("SELECT id FROM runs WHERE " + scope_sql +
+                               "cancel_requested=0 AND status NOT IN "
                                "('completed','failed','cancelled') AND (worker_id='' OR updated_at<?) "
-                               "ORDER BY updated_at LIMIT 1", (stale,)).fetchone()
+                               "ORDER BY updated_at LIMIT 1", tuple(params)).fetchone()
             if not row:
                 return None
             conn.execute("UPDATE runs SET worker_id=?,started_at=COALESCE(started_at,?),updated_at=? WHERE id=?",

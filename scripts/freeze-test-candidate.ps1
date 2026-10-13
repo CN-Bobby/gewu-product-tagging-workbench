@@ -65,7 +65,7 @@ function Get-SafeTree([string]$Root) {
         [void]$summary.Append($relative).Append("`0").Append((Sha256 $file.FullName)).Append("`n")
     }
     $digest = [Security.Cryptography.SHA256]::Create()
-    try { $treeHash = [Convert]::ToHexString($digest.ComputeHash([Text.Encoding]::UTF8.GetBytes($summary.ToString()))).ToLowerInvariant() }
+    try { $treeHash = [BitConverter]::ToString($digest.ComputeHash([Text.Encoding]::UTF8.GetBytes($summary.ToString()))).Replace('-','').ToLowerInvariant() }
     finally { $digest.Dispose() }
     return @{ rows = $rows; hash = $treeHash }
 }

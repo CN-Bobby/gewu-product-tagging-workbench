@@ -5,6 +5,7 @@ param(
     [string]$Build = '',
     [switch]$Stop,
     [switch]$Acceptance,
+    [ValidateSet('online', 'offline')][string]$ExternalEffectsMode = 'online',
     [switch]$NoOpen
 )
 $ErrorActionPreference = 'Stop'
@@ -36,9 +37,8 @@ if (-not (Test-Path -LiteralPath $manifestPath)) { throw "This build has no buil
 $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $has = { param($name) $manifest.PSObject.Properties.Name -contains $name }
 if (-not $manifest.commit -or $manifest.dirty -ne $false -or $manifest.build_mode -ne 'dev' -or
-    -not (Test-Path -LiteralPath (Join-Path $appDir 'backend\external_effects.py')) -or
     -not (Select-String -LiteralPath (Join-Path $appDir 'backend\app.py') -Pattern '/api/runtime/status' -Quiet)) {
-    throw 'This TEST entry requires a clean build with offline policy and runtime-status support. Build a new frozen TEST candidate first.'
+    throw 'This TEST entry requires a clean, commit-pinned development build with runtime-status support. Build a new frozen TEST candidate first.'
 }
 
 $storagePath = [IO.Path]::GetFullPath($Storage)
@@ -121,15 +121,30 @@ if ($existing -and $existing.application -eq 'product-tagging-workbench') {
     }
     $runtime = $null
     try { $runtime = Invoke-RestMethod -Uri "$baseUrl/api/runtime/status" -TimeoutSec 2 } catch { }
-    if (-not $runtime -or $runtime.profile -ne 'test' -or $runtime.external_effects.policy -ne 'offline') {
-        throw 'The listener does not prove it is an offline TEST instance. Nothing was stopped or adopted.'
+    $expectedPolicy = if ($ExternalEffectsMode -eq 'offline') { 'offline' } else { 'live_validation' }
+    if (-not $runtime -or $runtime.profile -ne 'test' -or $runtime.external_effects.policy -ne $expectedPolicy) {
+        throw "The listener does not prove it is the requested $expectedPolicy TEST instance. Nothing was stopped or adopted."
     }
     Write-Output "Already running: $baseUrl"
 } else {
     $launchArgs = @('--data', $storagePath, '--cache', $cachePath, '--port', "$port", '--no-open')
+    $previousProfile = [Environment]::GetEnvironmentVariable('GEWU_PROFILE', 'Process')
+    $previousTestEffects = [Environment]::GetEnvironmentVariable('GEWU_TEST_EXTERNAL_EFFECTS', 'Process')
+    $previousDevEffects = [Environment]::GetEnvironmentVariable('GEWU_DEV_EXTERNAL_EFFECTS', 'Process')
+    try {
     $env:GEWU_PROFILE = 'test'
-    Remove-Item Env:GEWU_ALLOW_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
+    Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
+    if ($ExternalEffectsMode -eq 'offline') {
+        $env:GEWU_TEST_EXTERNAL_EFFECTS = 'offline'
+    } else {
+        Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
+    }
     Start-Process -FilePath $exe -ArgumentList $launchArgs -WorkingDirectory $appDir | Out-Null
+    } finally {
+        if ($null -eq $previousProfile) { Remove-Item Env:GEWU_PROFILE -ErrorAction SilentlyContinue } else { $env:GEWU_PROFILE = $previousProfile }
+        if ($null -eq $previousTestEffects) { Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue } else { $env:GEWU_TEST_EXTERNAL_EFFECTS = $previousTestEffects }
+        if ($null -eq $previousDevEffects) { Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue } else { $env:GEWU_DEV_EXTERNAL_EFFECTS = $previousDevEffects }
+    }
     $health = $null
     for ($attempt = 0; $attempt -lt 90; $attempt++) {
         Start-Sleep -Milliseconds 500

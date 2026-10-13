@@ -1541,6 +1541,18 @@ class Pipeline:
             raise ValueError("细分建议没有返回可用的人群、场景、动机或任务候选")
         used = set()
         for segment in segments:
+            segment_key = segment.get("segment_key")
+            if not isinstance(segment_key, dict):
+                segment_key = {}
+            else:
+                segment_key = dict(segment_key)
+            for dimension in ("audience", "scenario", "motivation", "task"):
+                value = segment_key.get(dimension)
+                if not isinstance(value, str) or not value.strip():
+                    # An explicit unknown preserves the distinction between absent evidence
+                    # and an invented audience, scenario, motivation, or task.
+                    segment_key[dimension] = "未明确"
+            segment["segment_key"] = segment_key
             segment["segment_id"] = segment.get("segment_id") or _stable("SEG", *(segment.get("segment_key") or {}).values())
             if segment["segment_id"] in used:
                 segment["segment_id"] = _stable("SEG", segment["segment_id"], segment.get("name"))

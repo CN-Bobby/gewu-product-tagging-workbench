@@ -23,6 +23,7 @@
 .ar-form-grid label,.ar-model-grid label,.ar-input-label{display:block;font-size:10px;color:#6d7d70}
 .ar-form-grid select,.ar-model-grid select,.ar-input-label input,.ar-input-label textarea,.ar-history select{box-sizing:border-box;display:block;width:100%;margin-top:6px;padding:9px 10px;border:1px solid #d5ded3;border-radius:7px;background:#fffefa;color:#304638;font:11px 'Microsoft YaHei',sans-serif;outline:none}
 .ar-input-label{margin:13px 0}.ar-input-label input:focus,.ar-input-label textarea:focus,.ar-form-grid select:focus,.ar-model-grid select:focus{border-color:#62846a;box-shadow:0 0 0 3px #62846a1b}
+.ar-source-select select{box-sizing:border-box;display:block;width:100%;margin-top:6px;padding:9px 10px;border:1px solid #d5ded3;border-radius:7px;background:#fffefa;color:#304638;font:11px 'Microsoft YaHei',sans-serif;outline:none}
 .ar-input-label textarea{min-height:108px;resize:vertical;font:12px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace}.ar-input-label>small{display:block;margin-top:5px;color:#849083;font-size:9px}.ar-inline-error{display:block;margin-top:4px;color:#a75038;font-size:9px}
 .ar-model-grid{margin-top:15px}.ar-model-grid select:disabled{color:#919b90}
 .ar-help{margin:9px 0 0;color:#986041;font-size:10px;line-height:1.6}

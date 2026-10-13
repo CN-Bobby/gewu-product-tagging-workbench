@@ -1,5 +1,7 @@
 # 版本与发布规则
 
+> 本机新功能的日常人工测试现统一在 DEV；独立 TEST 服务已停止。便携候选发布的旧 TEST 流程尚未迁移，不能据此声称候选已验收。详见 [DEV 唯一日常人工测试环境](DEV_ONLY_DAILY_TESTING.md)。
+
 应用版本唯一来源为根目录 VERSION.json。后端直接读取，Vite构建注入界面；npm元数据通过 scripts/sync_version.py 生成，CI使用 --check 拒绝漂移。RELEASE_LEDGER.json记录不可复用的客户版本序列和替代关系。
 
 本地交付顺序为 DEV 修改 → 固定干净提交 → `--portable` 生成 ZIP/侧车 → 从该 ZIP 激活 TEST → 人工验收并绑定 ZIP、app manifest、候选报告哈希 → 提升同一 ZIP 到新 beta 程序目录 → PROD 校验提升凭证。候选进入源码仓库 `main` 并完成 PROD 提升后，`scripts/publish-portable-release.ps1` 校验人工结果、候选报告、提升凭证与资产哈希，再将完全相同的人工验收 ZIP/侧车上传到二进制 GitHub Releases；发布说明记录源码 `main` 的完整 commit，二进制仓库的 Release tag 使用产品版本号。在线更新只读 Release 元数据和 assets，不从分支同步源码。源码仓库遗留的 beta tag 工作流会拒绝重构 beta ZIP，避免替换已验收附件。

@@ -355,7 +355,7 @@ def save(body):
         # A partial/legacy package must not turn a missing policy module into an
         # implicit permission to contact a paid model service.
         can_validate=False
-    validation=validate_models(base,selected_secret,text_model,vision_model) if can_validate else {'status':'not_run','overall':'not_run','message':'当前环境默认离线；未发送模型请求'}
+    validation=validate_models(base,selected_secret,text_model,vision_model) if can_validate else {'status':'not_run','overall':'not_run','message':'当前运行实例明确设置为离线；未发送模型请求'}
     credential={'id':credential_id,'name':str(body.get('credential_name') or (current or {}).get('name') or 'Default Key').strip()[:100] or 'Default Key','api_key_env':key_name,'enabled':body.get('credential_enabled',True),'validation':validation}
     credentials=[x for x in existing_credentials if x.get('id')!=credential_id]+[credential]
     models=list(dict.fromkeys([text_model,vision_model]+list(existing.get('models') or [])+[local_model_name(name,m) for m in legacy if local_model_name(name,m)]))

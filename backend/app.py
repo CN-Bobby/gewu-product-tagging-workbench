@@ -37,8 +37,8 @@ AMAZON_REQUEST_BODY_LIMIT = 256 * 1024
 async def lifespan(app):
     app.state.stopping=False
     init_db()
-    # DEV and TEST are offline by default and may opt in only for this process. Persisted
-    # queued/interrupted tasks must never resume merely because one of these environments restarted.
+    # DEV and TEST permit external calls by default. Persisted queued/interrupted tasks must still
+    # never resume merely because one of these environments restarted.
     # Persisted work is recovered only by the real production profile. Test harnesses may
     # explicitly exercise mocked provider paths, but that must never trigger queued-job recovery.
     if external_effects.profile() == 'prod':
@@ -445,6 +445,55 @@ def job_disposition(did:str,jid:str,body:dict):return task_control.disposition(d
 
 @app.post('/api/server/stop')
 async def stop_server():
+    import asyncio,signal
+    app.state.stopping=True
+    asyncio.get_running_loop().call_later(.2,lambda:signal.raise_signal(signal.SIGINT))
+    return {'stopping':True}
+
+@app.post('/api/runtime/exit')
+async def exit_workbench():
+    """Ask the owning Run Center to stop both DEV listeners; otherwise stop this app."""
+    if (os.name == 'nt' and os.environ.get('GEWU_PROFILE', '').lower() == 'dev'
+            and os.environ.get('GEWU_INSTANCE_ID', '').upper() == 'DEV'):
+        local_app_data = os.environ.get('LOCALAPPDATA')
+        if local_app_data:
+            run_center = Path(local_app_data) / 'GeWuWorkbench' / 'RunCenter' / 'run-center.ps1'
+            if run_center.is_file():
+                import subprocess
+                powershell = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'System32' / 'WindowsPowerShell' / 'v1.0' / 'powershell.exe'
+                log_path = run_center.parent / 'logs' / 'DEV' / 'ui-exit.log'
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                run_center_arg = str(run_center).replace("'", "''")
+                powershell_arg = str(powershell).replace("'", "''")
+                launch_command = (
+                    "$stopArgs = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',"
+                    f"'{run_center_arg}','-Profile','DEV','-Action','Stop','-NoOpen'); "
+                    f"Start-Process -FilePath '{powershell_arg}' -ArgumentList $stopArgs -WindowStyle Hidden"
+                )
+                with log_path.open('ab') as log:
+                    log.write(b'Exit request: launching Run Center Stop.\n')
+                    process = subprocess.Popen(
+                        [str(powershell), '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', launch_command],
+                        cwd=str(run_center.parent), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                        creationflags=(subprocess.CREATE_NO_WINDOW |
+                                       getattr(subprocess, 'CREATE_BREAKAWAY_FROM_JOB', 0)),
+                    )
+                    log.write(f'Run Center Stop process started: pid={process.pid}.\n'.encode('ascii'))
+                    log.flush()
+                def record_stop_launcher_status():
+                    try:
+                        exit_code = process.wait(timeout=20)
+                        status = f'Run Center Stop process exited: pid={process.pid}, exit_code={exit_code}.\n'
+                    except subprocess.TimeoutExpired:
+                        status = f'Run Center Stop process still running after 20 seconds: pid={process.pid}.\n'
+                    try:
+                        with log_path.open('ab') as status_log:
+                            status_log.write(status.encode('ascii'))
+                    except OSError:
+                        pass
+                import threading
+                threading.Thread(target=record_stop_launcher_status, daemon=True).start()
+                return {'stopping': True, 'managed_by': 'Run Center'}
     import asyncio,signal
     app.state.stopping=True
     asyncio.get_running_loop().call_later(.2,lambda:signal.raise_signal(signal.SIGINT))

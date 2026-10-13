@@ -8,12 +8,40 @@
 - 评论由 product_reviews 提供，站点使用 Amazon marketplace code。
 - 每个 ASIN 以 review_type=Both 调用两次，按 (ASIN, review_date, title, content) 去重。两次调用是重复采样，不是分页。
 - 每次最多 100 条且范围为最近一年；不能将结果称为全历史评论。
+- 美国站可以在页面中选择 Sorftime MCP 或当前项目的 Woot 评论采集器。Woot 采集按 5 个星级和 4 种排序组合请求并翻页、去重；评论量较大时耗时会明显增加。Woot 使用非官方接口，接口可能变化。
+- Woot 仅支持 Amazon 美国站。英国、德国等其他站点仍使用 Sorftime MCP；选择 Woot 时若输入方式需要类目榜单，Sorftime 仍用于取得商品 ASIN。直接输入 ASIN 时，Woot 评论采集不要求配置 Sorftime。
+- Woot 采集实现参考 [mrlong0129/amazon-review-scraper](https://github.com/mrlong0129/amazon-review-scraper)，按其 MIT License 使用；源码文件保留了许可说明。
+
+  ```text
+  MIT License
+
+  Copyright (c) 2026
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+  ```
 - 对返回的每条评论翻译非空标题和正文；按星级映射情感：4–5 星积极、1–2 星消极、3 星中性。
 - Excel 工作表为「全部评论 / 商品评论统计 / 统计汇总」；首表包含 14 个源字段并支持筛选与情感着色。
 
 ## 工作台接入
 
 费用优化分支的前端入口为主导航「Amazon 评论 + VOC」，页面路由为 `#/amazon-reviews-voc`；页面保留评论采集表单，并提供评论拉取 + VOC、仅评论拉取、仅 VOC 三种目标。评论采集提供三种输入方式：类目榜单 Top 50/100、直接输入 ASIN、从类目榜单筛选指定 ASIN。站点、模型及已授权模型 Key 均在任务创建时冻结。
+前端入口为主导航「Amazon 评论」，页面路由为 #/amazon-reviews。页面提供三种输入方式：类目榜单 Top 50/100、直接输入 ASIN、从类目榜单筛选指定 ASIN。站点、评论来源、模型及已授权模型 Key 均在任务创建时冻结。来源选择仅在美国站显示；API 对非美国站的 Woot 请求会拒绝处理。
 
 Sorftime MCP 配置复用工作台「寻龙诀」的设置；翻译模型与凭据复用「总设置」。页面仅检查连接是否配置，不读取或显示密钥。任务和逐商品检查点保存在当前 TAG_STORAGE/amazon-reviews/<job-id>/，支持进度查询、取消、重试和重启后恢复。单次最多并行两个评论任务。
 
@@ -45,7 +73,7 @@ API 路由：
 - GET /api/amazon-reviews/jobs/{job_id}/download
 - GET /api/amazon-reviews/jobs/{job_id}/raw
 
-导出保留两个 Both 调用的完整原始响应、每轮原始/新增去重数量、翻译结果及汇总工作簿。取消或恢复时先读取已保存轮次，只补齐缺少的评论调用，并保留已完成翻译。
+导出保留各来源的完整原始响应、采集方式、原始/新增去重数量、翻译结果及汇总工作簿。Sorftime 的两个 Both 调用仍按已保存轮次恢复；Woot 的一次采集批次包含多个星级/排序请求。
 
 ## 验证
 

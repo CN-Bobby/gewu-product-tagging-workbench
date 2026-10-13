@@ -1,5 +1,7 @@
 # 格物本地运行中心（M1）
 
+> 当前日常开发与人工测试统一使用 DEV，独立 TEST 服务已停止；TEST 的程序与数据保留。旧候选流程说明不代表当前日常测试入口，详见 [DEV 唯一日常人工测试环境](DEV_ONLY_DAILY_TESTING.md)。
+
 `scripts/install-run-center.ps1` 用于安装当前用户的运行中心配置和三个桌面入口。它只写入 `%LOCALAPPDATA%\GeWuWorkbench\RunCenter` 与桌面快捷方式，不会启动服务。已知的旧 beta.7 正式快捷方式和旧 TEST 快捷方式会移入 `%LOCALAPPDATA%\GeWuWorkbench\RunCenter\LegacyShortcuts` 留存；目标不明的同名快捷方式会让安装停止，不会覆盖。
 
 ## 固定入口
@@ -14,7 +16,7 @@
 
 日常开发只在 DEV 工作树进行。冻结脚本要求固定候选工作树指向同一完整提交且干净，然后生成 `builds/<版本>-candidate.<提交前12位>/`：包含程序目录、可直接解压的便携 ZIP 和 `.sha256` 文件。TEST 从该 ZIP 解压后启动，候选报告、程序清单和 ZIP 哈希共同绑定人工验收清单；人工结果通过后，提升脚本将这份 ZIP 解压到新的 beta 目录，只改 Run Center 的 PROD 程序路径，保留原 beta 目录和正式 Data/Cache。
 
-人工验收通过后，接受的提交再进入 GitHub `main`。在线更新读取 `GEWU_UPDATE_REPOSITORY`（默认 `CN-Bobby/gewu-workbench-releases`）的 GitHub Releases 元数据，并提供 Release 中便携 ZIP 的下载链接和 SHA-256；客户端不拉取 `main` 分支文件。发布时上传已人工验收的同一 ZIP 与侧车文件，不重新构建。默认二进制仓库当前尚需建立或配置，仓库不可用时检查更新会明确失败。
+DEV 人工测试通过后，接受的提交进入 GitHub `main`。在线更新读取 `GEWU_UPDATE_REPOSITORY`（默认公开源码仓库 `CN-Bobby/gewu-product-tagging-workbench`）的 GitHub Releases 元数据，并提供 Release 中便携 ZIP 的下载链接和 SHA-256；客户端不拉取 `main` 分支文件。另机安装验收通过后再考虑部署 PROD。发布时上传同一份冻结 ZIP 与侧车文件，不重新构建。
 
 DEV 与 TEST 的模型、SellerSprite、Sorftime 凭证存于当前 Windows 用户 DPAPI vault；DEV/TEST 共用凭证 scope。各自的非秘密模型提供方配置放在 `RunCenter\profiles\DEV\providers` 和 `RunCenter\profiles\TEST\providers`，与业务数据分开，因此 TEST 数据重置不会删除模型选择。PROD 继续使用当前候选及现有数据目录的配置和凭证，不做自动迁移。首次设置先从 `K:\Bobbytagging\Data-Test` 预览并导入 Key，再单独复制不含密钥的 `providers\config.toml`：
 

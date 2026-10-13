@@ -183,8 +183,7 @@ def correct_event(run_id: str, event_id: str, item: CorrectionInput):
 
 
 def recover():
-    service.recover()
-    service.start_worker()
+    service.start_worker(recover_pending=True)
 
 
 def stop_all():

@@ -33,11 +33,11 @@ def release(version='0.5.0-beta.8', *, digest='sha256:' + SHA256, assets=None, *
         'draft': False,
         'published_at': '2026-10-10T12:00:00Z',
         'tag_name': 'v' + version,
-        'html_url': f'https://github.com/CN-Bobby/gewu-workbench-releases/releases/tag/v{version}',
+        'html_url': f'https://github.com/CN-Bobby/gewu-product-tagging-workbench/releases/tag/v{version}',
         'body': '候选发布\n\n修复更新流程。',
         'assets': assets if assets is not None else [{
             'name': expected,
-            'browser_download_url': f'https://github.com/CN-Bobby/gewu-workbench-releases/releases/download/v{version}/{expected}',
+            'browser_download_url': f'https://github.com/CN-Bobby/gewu-product-tagging-workbench/releases/download/v{version}/{expected}',
             'digest': digest,
         }],
     }
@@ -74,13 +74,13 @@ def test_checks_latest_published_release_and_ignores_drafts(monkeypatch):
         'current_version': '0.5.0-beta.7+abc123',
         'latest_version': '0.5.0-beta.8',
         'update_available': True,
-        'download_url': 'https://github.com/CN-Bobby/gewu-workbench-releases/releases/download/v0.5.0-beta.8/GeWuWorkbench-0.5.0-beta.8-portable.zip',
+        'download_url': 'https://github.com/CN-Bobby/gewu-product-tagging-workbench/releases/download/v0.5.0-beta.8/GeWuWorkbench-0.5.0-beta.8-portable.zip',
         'sha256': SHA256,
-        'release_url': 'https://github.com/CN-Bobby/gewu-workbench-releases/releases/tag/v0.5.0-beta.8',
+        'release_url': 'https://github.com/CN-Bobby/gewu-product-tagging-workbench/releases/tag/v0.5.0-beta.8',
         'release_notes_summary': '候选发布 修复更新流程。',
     }
     assert len(calls) == 1
-    assert '/repos/CN-Bobby/gewu-workbench-releases/releases?' in calls[0][0]
+    assert '/repos/CN-Bobby/gewu-product-tagging-workbench/releases?' in calls[0][0]
     assert calls[0][1] == update_service.DEFAULT_TIMEOUT_SECONDS
 
 

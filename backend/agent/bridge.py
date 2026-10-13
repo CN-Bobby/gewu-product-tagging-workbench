@@ -77,7 +77,12 @@ class AgentBridgeError(Exception):
 class SessionNotFound(AgentBridgeError):pass
 class SessionBusy(AgentBridgeError):pass
 class InvalidSessionState(AgentBridgeError):pass
-class BackendStartError(AgentBridgeError):pass
+class BackendStartError(AgentBridgeError):
+    fatal=True
+    def __init__(self,message='',*,stage=None,diagnostic=None):
+        self.stage=stage
+        self.diagnostic=diagnostic
+        super().__init__(message or 'Agent 后端启动失败')
 class BackendSendError(AgentBridgeError):
     """The backend broke its contract: it raised something that was not a BackendError.
     Treated as a failed turn, not a failed session, so the caller may simply try again."""
@@ -142,7 +147,8 @@ class AgentBridge:
         try:backend.start()
         except Exception as error:
             self._fail(session_id,'session_failed',error)
-            raise BackendStartError(str(error)) from error
+            raise BackendStartError(str(error),stage=getattr(error,'stage',None),
+                                    diagnostic=getattr(error,'diagnostic',None)) from error
         remote=None
         try:remote=backend.status().get('remote_session_id')
         except Exception:remote=None

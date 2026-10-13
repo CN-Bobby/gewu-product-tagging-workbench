@@ -102,12 +102,33 @@
     },
     {
       "version": "0.5.0-beta.9",
+      "status": "superseded",
+      "artifact_kind": "portable_candidate",
+      "commit": null,
+      "tag": null,
+      "superseded_by": "0.5.0-beta.10",
+      "note": "未完成冻结的便携候选版本；由 beta.10 的独立 TEST 冻结候选取代，未发布。"
+    },
+    {
+      "version": "0.5.0-beta.10",
+      "status": "superseded",
+      "artifact_kind": "portable_candidate",
+      "commit": "2486e1b7161309b7dc902c186df94eff0ddbffac",
+      "tag": null,
+      "candidate_report": "K:\\GeWuTest\\Reports\\candidate-0.5.0-beta.10+2486e1b71613-2486e1b71613.json",
+      "candidate_report_sha256": "8aca5166bc979fc874e36c52e8be44bd861deaf635c538a01957875a9f50cdb0",
+      "portable_sha256": "527298d0fa6110c0cb3f2d4bc7d7413c42d66750124e6643812bf8c71c733dfb",
+      "superseded_by": "0.5.0-beta.11",
+      "note": "TEST 冻结的独立候选，状态为 running_pending_manual_acceptance；不是 DEV 当前测试提交，没有人工验收、PROD 提升或 GitHub Release。候选文件和报告保留原位，由 beta.11 取代。"
+    },
+    {
+      "version": "0.5.0-beta.11",
       "status": "pending_acceptance",
       "artifact_kind": "portable_candidate",
       "commit": null,
       "tag": null,
       "superseded_by": null,
-      "note": "本地 DEV → 便携包 → TEST 人工验收 → PROD 流程候选。构建、人工验收、PROD 提升与 GitHub Release 均须由相应证据记录；通过前不得发布。"
+      "note": "DEV 人工测试由用户确认完成；绿色包将作为 GitHub Pre-release 供另一台电脑安装验收。另一台电脑验收与 PROD 部署仍待完成。"
     }
   ]
 }

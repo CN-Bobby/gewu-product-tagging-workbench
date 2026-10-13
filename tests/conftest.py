@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 os.environ['TAG_STORAGE']=tempfile.mkdtemp(prefix='product-workbench-tests-')
 os.environ['GEWU_PROFILE']='test'
-os.environ['GEWU_ALLOW_EXTERNAL_EFFECTS']='0'
+os.environ['GEWU_TEST_EXTERNAL_EFFECTS']='offline'
 import pytest
 from backend.db import Base,engine,init_db,cache_engine,VisionCache,TextCache
 from backend import external_effects

@@ -17,7 +17,7 @@ from typing import Any
 from .build_info import VERSION
 
 
-DEFAULT_REPOSITORY = 'CN-Bobby/gewu-workbench-releases'
+DEFAULT_REPOSITORY = 'CN-Bobby/gewu-product-tagging-workbench'
 DEFAULT_TIMEOUT_SECONDS = 8
 MAX_SIDECAR_BYTES = 4096
 MAX_RELEASE_PAGES = 10

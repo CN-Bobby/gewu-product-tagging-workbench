@@ -331,9 +331,10 @@ def test_T11_the_execution_budget_and_backend_contracts_are_unchanged():
     assert declared=={'bind','start','send','cancel','answer_question','cancel_question',
                       'answer_permission','cancel_permission','stop','status'}
     assert callable(getattr(protocol,'line'))
-    # The adapter itself still knows nothing about credentials: resolution belongs above it.
+    # Credential selection stays above the adapter; startup diagnostics only redact secret values.
     source=Path(reasonix.__file__).read_text(encoding='utf-8')
-    assert 'credential' not in source.lower()
+    assert 'credential_selection' not in source
+    assert 'credential_vault' not in source
     assert 'provider_home' not in source
     assert 'MCP_CALL_TIMEOUT_SECONDS' not in source
     assert harness.MCP_CALL_TIMEOUT_SECONDS==300

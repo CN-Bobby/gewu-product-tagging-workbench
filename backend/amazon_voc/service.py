@@ -153,6 +153,8 @@ class AmazonVOCService:
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._scheduled_run_ids: set[str] = set()
+        self._process_all_pending = False
 
     def public_model_settings(self) -> dict[str, Any]:
         settings = read_model_settings()
@@ -245,7 +247,7 @@ class AmazonVOCService:
         self.db.execute("INSERT INTO workbench_model_snapshots(run_id,model_ref,credential_id) VALUES(?,?,?)",
                         (run["id"], selected["model_ref"], selected["credential_id"]))
         self.storage.revision_dir(project_id, run["id"], 1)
-        self._wake.set()
+        self.start_worker(run_id=run["id"])
         return self.public_run(run)
 
     def create_run_from_amazon_reviews(self, source_job_id: str,
@@ -311,6 +313,10 @@ class AmazonVOCService:
                        "project_id": project["id"], "run_id": run["id"],
                        "created_at": created_at, "status": "started"}
             source_summary = amazon_reviews_service.record_voc_handoff(source_job_id, handoff)
+            # A duplicate handoff can be the user's explicit retry for a run that
+            # was created before a worker became available. Schedule only this run.
+            self.start_worker(run_id=run["id"])
+            self.register_completed_run_artifacts(run["id"])
             return {"run": run, "project": project,
                     "source_job": {key: source_summary.get(key) for key in
                                    ("id", "status", "site", "review_count", "voc_handoff")},
@@ -425,14 +431,23 @@ class AmazonVOCService:
         self.db.execute("UPDATE runs SET worker_id='',updated_at=? WHERE status NOT IN ('completed','failed','cancelled')",
                         (now,))
 
-    def start_worker(self) -> None:
+    def start_worker(self, run_id: str | None = None, recover_pending: bool = False) -> None:
         with self._lock:
+            if recover_pending:
+                self.recover()
+                self._process_all_pending = True
+            elif run_id and not self._process_all_pending:
+                run = self.db.get_run(run_id)
+                if not run or run["status"] in TERMINAL:
+                    return
+                self._scheduled_run_ids.add(run_id)
             if self._thread and self._thread.is_alive():
+                self._wake.set()
                 return
-            self.recover()
             self._stop.clear()
             self._thread = threading.Thread(target=self._worker_loop, name="amazon-voc-worker", daemon=True)
             self._thread.start()
+            self._wake.set()
 
     def stop_worker(self) -> None:
         self._stop.set()
@@ -448,7 +463,10 @@ class AmazonVOCService:
             # keeps the worker from starting model calls before a retry can find the
             # idempotency record.
             with self._lock:
-                run_id = self.db.pending_run(worker_id)
+                allowed_run_ids = None if self._process_all_pending else tuple(self._scheduled_run_ids)
+                run_id = self.db.pending_run(worker_id, allowed_run_ids)
+                if run_id and allowed_run_ids is not None:
+                    self._scheduled_run_ids.discard(run_id)
             if not run_id:
                 self._wake.wait(1.0)
                 self._wake.clear()
@@ -458,6 +476,9 @@ class AmazonVOCService:
             except Exception:
                 # The durable run status carries the safe, user-visible failure.
                 pass
+            finally:
+                with self._lock:
+                    self._scheduled_run_ids.discard(run_id)
 
     def cancel(self, run_id: str) -> dict[str, Any]:
         run = self.db.get_run(run_id)
@@ -480,7 +501,7 @@ class AmazonVOCService:
             raise RuntimeError("只有失败或已取消的任务可以重试")
         self.db.update_run(run_id, status="uploaded", error="", cancel_requested=0,
                            completed_at=None, worker_id="")
-        self._wake.set()
+        self.start_worker(run_id=run_id)
         return self.get_run(run_id)
 
     def artifact_path(self, run_id: str, kind: str) -> Path:

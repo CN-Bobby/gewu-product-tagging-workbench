@@ -8,27 +8,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
-import {DEFAULT_PANEL,PANEL} from '../src/agentState.js';
-
 const source=name=>readFileSync(new URL(`../src/${name}`,import.meta.url),'utf8');
 const main=source('main.jsx');
 const panel=source('agentPanel.jsx');
 
-test('the workbench opens on the new agent panel',()=>{
-  assert.equal(DEFAULT_PANEL,PANEL.AGENT);
-  assert.equal(PANEL.AGENT,'agent');
-});
-
-test('the panel mode is initialised from that default rather than a literal',()=>{
-  assert.match(main,/useState\(DEFAULT_PANEL===PANEL\.AGENT\)/);
-  assert.ok(main.includes('import {DEFAULT_PANEL,PANEL} from'),'the default must come from the module');
-});
-
-test('the legacy chat is still reachable as an explicit fallback',()=>{
-  // both titles and the toggle exist, and the legacy subtree is still rendered in the else branch
-  assert.ok(main.includes('Agent 会话'),'the agent panel label');
-  assert.ok(main.includes('标签对话'),'the fallback label');
-  assert.match(main,/\{agentMode\?<AgentPanel did=\{did\}\/>:<>/,'the fallback subtree is intact');
+test('the tagging page renders only the Agent conversation panel',()=>{
+  assert.ok(main.includes('<strong>Agent 会话</strong>'));
+  assert.ok(main.includes('<AgentPanel did={did}/>'));
+  assert.ok(!main.includes('agentMode'));
+  assert.ok(!main.includes('标签对话'));
 });
 
 test('the new panel cannot reach the legacy chat commands',()=>{

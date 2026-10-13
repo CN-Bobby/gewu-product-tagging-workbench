@@ -1270,3 +1270,14 @@ def test_http_contract_does_not_return_key(xlj_home, monkeypatch):
     assert response.status_code == 200
     assert response.json() == {'endpoint': 'https://mcp.example.test/mcp', 'key_configured': True}
     assert 'fake-key' not in response.text
+
+
+def test_http_contract_clears_sorftime_key_without_removing_endpoint(xlj_home, monkeypatch):
+    settings.save('https://mcp.example.test/mcp', 'fake-key')
+    test_app = FastAPI()
+    test_app.include_router(router)
+    with TestClient(test_app) as client:
+        response = client.delete('/api/xunlongjue/settings/key')
+    assert response.status_code == 200
+    assert response.json() == {'endpoint': 'https://mcp.example.test/mcp', 'key_configured': False}
+    assert 'fake-key' not in response.text

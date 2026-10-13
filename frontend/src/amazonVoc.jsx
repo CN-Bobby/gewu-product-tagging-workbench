@@ -2,13 +2,13 @@ import React,{useCallback,useEffect,useMemo,useRef,useState}from'react';
 import{ArrowDownToLine,BookOpenCheck,CheckCircle2,CircleAlert,LoaderCircle,Pause,Play,RefreshCw,Save,Upload}from'lucide-react';
 import './amazonVoc.css';
 import{amazonVocEndpoints as ENDPOINTS,buildAmazonVocRunForm,hasAmazonVocArtifacts,isAmazonVocActive}from'./amazonVocState';
+import{primaryCredentialForModel}from'./modelCredential';
 
 const STATUS={uploaded:'已上传待运行',cleaned:'评论已清洗',extracting:'提取评论事件',reviewing:'复核事件证据',normalizing:'规范洞察标签',segmenting:'整理需求分群',journey:'构建用户旅程',compiling:'生成 HTML / Excel',completed:'已完成',failed:'失败',cancelled:'已取消'};
 const MODULES=['评论事件','需求标签','评论对比','需求分群','用户旅程','探索性信号'];
 const providersOf=settings=>settings?.providers||[];
 const modelsOf=settings=>providersOf(settings).flatMap(provider=>(provider.model_refs||[]).map(ref=>({ref,provider:provider.name})));
-const credentialsOf=(settings,model)=>providersOf(settings).find(p=>p.name===String(model||'').split('/')[0])?.credentials?.filter(c=>c.id&&c.enabled!==false&&c.authorized!==false)||[];
-const defaultCredential=(settings,model)=>providersOf(settings).find(p=>p.name===String(model||'').split('/')[0])?.credentials?.find(c=>c.id&&c.enabled!==false&&c.authorized!==false)?.id||'';
+const defaultCredential=(settings,model)=>primaryCredentialForModel(settings,model);
 const dateText=value=>{if(!value)return'—';const date=new Date(value);return Number.isNaN(date.getTime())?String(value):date.toLocaleString()};
 
 export function AmazonVOC({api,initialRunId='',initialNotice='',onNoticeConsumed,workspaceId='',forceRefresh=false}){
@@ -88,7 +88,7 @@ export function AmazonVOC({api,initialRunId='',initialNotice='',onNoticeConsumed
     <label className="av-field">选择项目<select value={projectId} onChange={e=>setProjectId(e.target.value)}><option value="">选择 VOC 项目</option>{scopedProjects.map(item=><option key={item.id} value={item.id}>{item.name} · {item.marketplace} · {item.category}</option>)}</select></label>
     <details className="av-create-project"><summary>新建 VOC 项目</summary><div className="av-fields"><label>项目名<input value={projectName} onChange={e=>setProjectName(e.target.value)} placeholder="例如：Tankini 评论分析"/></label><label>品类<input value={category} onChange={e=>setCategory(e.target.value)} placeholder="例如：Swimwear"/></label><label>Amazon 站点<input value={marketplace} onChange={e=>setMarketplace(e.target.value.toUpperCase())} maxLength={16}/></label><label>国家/地区<input value={country} onChange={e=>setCountry(e.target.value)}/></label><label>评论语言<input value={language} onChange={e=>setLanguage(e.target.value)}/></label><button disabled={busy||!projectName.trim()||!category.trim()} onClick={createProject}>创建项目</button></div></details>
     <label className="av-field">评论 Excel（唯一分析输入）<input type="file" accept=".xlsx,.xlsm" onChange={e=>{const candidate=e.target.files?.[0]||null;setError('');if(candidate&&!/\.(xlsx|xlsm)$/i.test(candidate.name)){setFile(null);setError('仅支持 .xlsx 或 .xlsm 评论 Excel。')}else setFile(candidate)}}/><small>{file?`${file.name} · ${(file.size/1024/1024).toFixed(2)} MiB`:'支持工作台导出表及常见评论表头'}</small></label>
-    <div className="av-model-fields"><label>共享文本模型<select value={model} onChange={e=>{setModel(e.target.value);setCredentialId(defaultCredential(settings,e.target.value))}}><option value="">选择模型</option>{modelOptions.map(item=><option key={item.ref} value={item.ref}>{item.ref}</option>)}</select></label><label>使用的凭据<select value={credentialId} onChange={e=>setCredentialId(e.target.value)}><option value="">选择已授权凭据</option>{credentialOptions.map(item=><option key={item.id} value={item.id}>{item.name||item.id}</option>)}</select></label></div>
+    <div className="av-model-fields"><label>共享文本模型<select value={model} onChange={e=>{setModel(e.target.value);setCredentialId(defaultCredential(settings,e.target.value))}}><option value="">选择模型</option>{modelOptions.map(item=><option key={item.ref} value={item.ref}>{item.ref}</option>)}</select><small>自动使用该服务在总设置中设为当前的 Key。</small></label></div>
     <div className="av-callout"><BookOpenCheck size={17}/><span>仅上传这一份评论表。站点、国家、语言和品类用于解释评论上下文，不会引入 Alexa、外部补全或其他分析数据源。文本模型与凭据沿用工作台“总设置”。</span></div>
     <button className="av-primary" disabled={busy||!projectId||!file||!model||!credentialId} onClick={start}>{busy?<LoaderCircle className="av-spin" size={16}/>:<Upload size={16}/>}上传并开始分析</button>
    </section>
