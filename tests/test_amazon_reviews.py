@@ -10,9 +10,9 @@ from backend.keyword_research.llm_client import LLMError
 from backend.local_result_cache import LocalResultCache
 
 
-ASIN_A = "B0D5TQJXRN"
-ASIN_B = "B0GY6VX976"
-NODE = "17269957011"
+ASIN_A = "B000000004"
+ASIN_B = "B000000005"
+NODE = "123456789"
 
 
 @pytest.fixture(autouse=True)

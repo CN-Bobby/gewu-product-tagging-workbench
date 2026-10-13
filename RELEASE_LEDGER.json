@@ -123,12 +123,25 @@
     },
     {
       "version": "0.5.0-beta.11",
+      "status": "superseded",
+      "artifact_kind": "portable_candidate",
+      "commit": "01bb1f19d76c454ceb67ae358a3a020e9dac7f31",
+      "tag": null,
+      "portable_sha256": "88782744adacfae2e74a708448fea043ef585b1cbc8dbf1ee4fcee30eca5d4fb",
+      "build_manifest_sha256": "86470c93bf26e4bf1905b23493b877bdcf2ca037b7f50e66162780f11f78dadb",
+      "automated_report": "K:\\GeWuTest\\Reports\\offline-20261013-033339-01bb1f19d76c.json",
+      "automated_report_sha256": "8e7ce641c0b0d6ca74505c694e845ce75969594632261d97fb0845c909d7395e",
+      "superseded_by": "0.5.0-beta.12",
+      "note": "本地 beta.11 绿色候选已构建并复制到桌面，但公开仓库审核发现真实商品 ASIN 示例；没有推送、打 Tag 或创建 Release。为遵守冻结不可覆盖规则，保留原包并由清理后的 beta.12 接替。"
+    },
+    {
+      "version": "0.5.0-beta.12",
       "status": "pending_acceptance",
       "artifact_kind": "portable_candidate",
       "commit": null,
       "tag": null,
       "superseded_by": null,
-      "note": "DEV 人工测试由用户确认完成；绿色包将作为 GitHub Pre-release 供另一台电脑安装验收。另一台电脑验收与 PROD 部署仍待完成。"
+      "note": "DEV 人工测试由用户确认完成；本版为清理公开源码样例后的绿色候选，待另一台电脑安装验收。PROD 部署仍待完成。"
     }
   ]
 }

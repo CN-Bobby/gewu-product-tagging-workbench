@@ -25,10 +25,6 @@ EXPECTED_REVIEW_HEADERS = [
     "#", "来源站点", "品类节点", "ASIN", "商品标题", "变体", "评论日期", "星级", "情感",
     "评论标题(EN)", "评论内容(EN)", "评论标题(中文)", "评论内容(中文)", "拉取批次",
 ]
-DEFAULT_ASINS = ["B0D5TQJXRN"]
-DEFAULT_NODE = "17269957011"
-
-
 def _safe(value: Any, secret: str = "") -> str:
     message = str(value or "验证失败")
     if secret:
@@ -69,7 +65,7 @@ def main() -> int:
     parser.add_argument("--key-stdin", action="store_true", help="read the Sorftime key from stdin; never pass it as a command argument")
     parser.add_argument("--endpoint", default="https://mcp.sorftime.com", help="Sorftime MCP HTTP endpoint")
     parser.add_argument("--site", default="US")
-    parser.add_argument("--node-id", default=DEFAULT_NODE)
+    parser.add_argument("--node-id")
     parser.add_argument("--asins", nargs="+")
     parser.add_argument("--resume-run-id", help="resume one failed run in its existing isolated storage")
     parser.add_argument("--timeout-seconds", type=int, default=900)
@@ -120,8 +116,10 @@ def main() -> int:
             parser.error("saved Amazon Reviews job is still active")
     else:
         run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
-        asins = list(dict.fromkeys(value.strip().upper() for value in (args.asins or DEFAULT_ASINS)))
-        node_id = str(args.node_id).strip()
+        if not args.asins:
+            parser.error("--asins must be supplied explicitly; this live verifier has no default product target")
+        asins = list(dict.fromkeys(value.strip().upper() for value in args.asins))
+        node_id = str(args.node_id or "").strip()
         if not asins or any(not re.fullmatch(r"B[0-9A-Z]{9}", value) for value in asins):
             parser.error("ASINs must be Amazon 10-character ASINs")
         if args.site.upper() != "US":

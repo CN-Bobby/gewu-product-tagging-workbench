@@ -90,7 +90,7 @@ API 路由：
 
     python scripts/verify_sorftime_reviews_live.py --key-stdin
 
-该脚本在仓库忽略目录 builds/sorftime-reviews-live/<run-id>/ 创建独立 SQLite、任务数据、Excel、原始 JSON 和验证报告，不使用正式或绿色工作台数据目录。默认使用已确认位于美国站 Node 17269957011 的 ASIN B0D5TQJXRN，调用 1 次榜单接口和 2 次评论接口；可用 --asins 追加多个同类目 ASIN。遇到可重试失败时通过工作台重试路由补齐未完成工作，最多重试两次。最终校验数据去重、译文覆盖、三张工作表及计数一致性。
+该脚本在仓库忽略目录 builds/sorftime-reviews-live/<run-id>/ 创建独立 SQLite、任务数据、Excel、原始 JSON 和验证报告，不使用正式或绿色工作台数据目录。运行时必须显式传入美国站 Node 和 ASIN（支持多个）；脚本不会预设商品目标。调用榜单和评论接口会访问真实 Sorftime/Amazon 服务，并可能产生费用。遇到可重试失败时通过工作台重试路由补齐未完成工作，最多重试两次。最终校验数据去重、译文覆盖、三张工作表及计数一致性。
 
 若某次真实任务已完成评论采集、但后续翻译失败，可将已清除凭据的隔离任务安全恢复：
 

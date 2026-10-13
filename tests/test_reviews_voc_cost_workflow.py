@@ -63,7 +63,7 @@ def test_translation_cache_hits_across_jobs_and_force_refresh_records_usage(tmp_
     monkeypatch.setattr(reviews, "TRANSLATION_CACHE",
                         LocalResultCache("reviews-translation", root=tmp_path / "cache"))
     client = TranslationClient()
-    source = {"asin": "B0D5TQJXRN", "title": "Easy fit", "content": "Comfortable for swimming."}
+    source = {"asin": "B000000004", "title": "Easy fit", "content": "Comfortable for swimming."}
 
     first = {"id": "a" * 32, "workspace_id": "workspace-translation", "model": client.model}
     reviews._save({**first, "status": "running", "items": []})
@@ -101,11 +101,11 @@ def test_reviews_modes_default_to_no_translation_model_and_combined_autohandoff(
     monkeypatch.setattr(reviews.sorftime_settings, "connection", lambda: ("https://mcp.invalid", "hidden"))
 
     combined = reviews.create({
-        "mode": "asins", "site": "US", "asins": ["B0D5TQJXRN"],
+        "mode": "asins", "site": "US", "asins": ["B000000004"],
         "workflow_mode": "combined", "translate_enabled": False,
     })
     reviews_only = reviews.create({
-        "mode": "asins", "site": "US", "asins": ["B0GY6VX976"],
+        "mode": "asins", "site": "US", "asins": ["B000000005"],
         "workflow_mode": "reviews_only", "translate_enabled": False,
     })
     assert combined["auto_voc_policy"] == "any_exported"
@@ -129,10 +129,10 @@ def test_reviews_collection_cache_and_force_refresh_keep_exported_workbook(tmp_p
         folder = reviews._job_dir(job_id)
         (folder / "raw").mkdir(parents=True, exist_ok=True)
         job = {"id": job_id, "status": "queued", "mode": "asins", "site": "US", "node_id": "",
-               "asins": ["B0D5TQJXRN"], "rank_limit": 50, "model": "", "credential_id": "",
+               "asins": ["B000000004"], "rank_limit": 50, "model": "", "credential_id": "",
                "workspace_id": "workspace-collection", "workflow_mode": "reviews_only",
                "translate_enabled": False, "force_refresh": force_refresh, "auto_voc_policy": "none",
-               "created_at": time.time(), "attempt": 0, "items": [{"asin": "B0D5TQJXRN",
+               "created_at": time.time(), "attempt": 0, "items": [{"asin": "B000000004",
                "status": "pending", "review_count": 0, "error": ""}], "errors": [], "review_count": 0,
                "review_collection_contract": reviews.REVIEW_CALL_CONTRACT}
         reviews._save(job)
