@@ -20,19 +20,20 @@ from .db import STORAGE, ProjectArtifact, Session, Workspace, now, require
 
 PROJECTS = STORAGE / "projects"
 FOLDERS = {
-    "source": "source/raw",
+    "source": "source",
     "data_x": "data-x",
-    # Keep internal legacy kinds accepted for modules that still register them.
-    # The project-library UI intentionally presents only the six user-facing kinds.
-    "product_archive": "product-archive",
+    # Module artifacts stay in the project storage root but outside the six visible
+    # user categories. The project tree intentionally presents only the first six.
+    "product_archive": "_system/product-archive",
     "reviews": "reviews",
     "voc": "voc",
     "keywords": "keywords",
     "other": "other",
-    "images": "images",
-    "reports": "reports",
-    "legacy": "legacy-index",
+    "images": "_system/images",
+    "reports": "_system/reports",
+    "legacy": "_system/legacy-index",
 }
+TRASH_FOLDER = "_system/trash"
 MANAGED_EXTENSIONS = {".xlsx", ".html"}
 _ID = re.compile(r"^[a-f0-9]{32}$")
 
@@ -53,10 +54,40 @@ def ensure_project(workspace_id: str) -> Path:
     with Session() as session:
         require(session, Workspace, workspace_id)
     root = project_dir(workspace_id)
-    root.mkdir(parents=True, exist_ok=True)
-    for relative in FOLDERS.values():
-        (root / relative).mkdir(parents=True, exist_ok=True)
+    create_project_directories(workspace_id)
     return root
+
+
+def create_project_directories(workspace_id: str) -> Path:
+    """Create the canonical user categories and reserved system directories."""
+    root = project_dir(workspace_id)
+    root.mkdir(parents=True, exist_ok=True)
+    for relative in [*FOLDERS.values(), TRASH_FOLDER]:
+        target = root / relative
+        current = root
+        for part in Path(relative).parts:
+            current = current / part
+            if current.is_symlink() or getattr(current, "is_junction", lambda: False)():
+                raise ValueError("项目类别目录不能是链接")
+        target.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def remove_empty_project_directories(workspace_id: str) -> None:
+    """Best-effort rollback for project creation; never removes files."""
+    root = project_dir(workspace_id)
+    if not root.exists() or root.is_symlink() or getattr(root, "is_junction", lambda: False)():
+        return
+    for directory in sorted((path for path in root.rglob("*") if path.is_dir()),
+                            key=lambda path: len(path.parts), reverse=True):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    try:
+        root.rmdir()
+    except OSError:
+        pass
 
 
 def _safe_name(value: str) -> str:
@@ -147,6 +178,20 @@ def _copy_no_overwrite(source: Path, destination: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _unlink_if_unreferenced(workspace_id: str, relative_path: str) -> bool:
+    """Remove a managed copy only after its last active artifact reference moves."""
+    with Session() as session:
+        references = session.scalars(select(ProjectArtifact).where(
+            ProjectArtifact.workspace_id == workspace_id,
+            ProjectArtifact.relative_path == relative_path,
+        )).all()
+        if any(not (reference.metadata_json or {}).get("deleted_at") for reference in references):
+            return False
+    _, path = _managed_path(workspace_id, relative_path)
+    path.unlink(missing_ok=True)
+    return True
+
+
 def upload(workspace_id: str, name: str, content: bytes, kind: str = "other", *,
            source_type: str = "manual_upload", source_id: str | None = None) -> dict[str, Any]:
     """Register an uploaded XLSX/HTML as a managed, project-owned artifact."""
@@ -215,7 +260,7 @@ def update(workspace_id: str, artifact_id: str, *, name: str | None = None,
     except Exception:
         destination.unlink(missing_ok=True)
         raise
-    source.unlink(missing_ok=True)
+    _unlink_if_unreferenced(workspace_id, old["relative_path"])
     with Session() as session:
         return _public(session.get(ProjectArtifact, artifact_id))
 
@@ -235,7 +280,7 @@ def recycle(workspace_id: str, artifact_id: str) -> dict[str, Any]:
     root, source = _managed_path(workspace_id, public["relative_path"])
     if not source.is_file():
         raise ValueError("托管文件缺失，无法回收")
-    trash_relative = f".trash/{artifact_id}-{public['name']}"
+    trash_relative = f"{TRASH_FOLDER}/{artifact_id}-{source.name}"
     _, target = _managed_path(workspace_id, trash_relative)
     _copy_no_overwrite(source, target)
     stamp = datetime.now(timezone.utc).isoformat()
@@ -250,7 +295,7 @@ def recycle(workspace_id: str, artifact_id: str) -> dict[str, Any]:
     except Exception:
         target.unlink(missing_ok=True)
         raise
-    source.unlink(missing_ok=True)
+    _unlink_if_unreferenced(workspace_id, public["relative_path"])
     with Session() as session:
         return _public(session.get(ProjectArtifact, artifact_id))
 
@@ -265,7 +310,8 @@ def restore(workspace_id: str, artifact_id: str) -> dict[str, Any]:
             return _public(item)
         public = _public(item)
     root, source = _managed_path(workspace_id, public["relative_path"])
-    destination_relative = metadata.get("restore_path") or f"{public['kind']}/{public['name']}"
+    restore_path = metadata.get("restore_path") or source.name
+    destination_relative = f"{FOLDERS[public['kind']]}/{Path(str(restore_path).replace(chr(92), '/')).name}"
     _, destination = _managed_path(workspace_id, destination_relative)
     if not source.is_file():
         raise ValueError("回收站文件缺失，无法恢复")
@@ -325,7 +371,7 @@ def register_file(workspace_id: str, kind: str, source_path: str | Path, *,
         suffix = Path(display_name).suffix[:20]
         stem = Path(display_name).stem[:100]
         target_name = f"{stem}-{digest[:12]}{suffix}"
-        target = root / FOLDERS[kind] / target_name
+        target = _category_target(root, kind, target_name)
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.resolve().is_relative_to(root.resolve()) is False:
             raise ValueError("项目文件路径越界")

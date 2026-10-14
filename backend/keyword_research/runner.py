@@ -6,6 +6,7 @@ HTTP 线程上的取消与流水线自己的检查点看到的是同一个事实
 import hashlib
 import json
 import threading
+from pathlib import Path
 
 from . import credentials, engine_runner, registry
 from .. import project_files
@@ -261,12 +262,27 @@ def _register_project_artifacts(run_id, status=None):
     if not workspace_id:
         return
     output = registry.run_dir(run_id) / 'output'
+    effective_status = status or state.get('status')
+    if effective_status == registry.DONE:
+        # Only the registry's final deliverables belong in the project library.
+        # Keep the identity aligned with project_link.sync_run_artifacts so this
+        # fallback is idempotent if the primary sync already succeeded.
+        for artifact in state.get('artifacts') or []:
+            name = Path(str(artifact.get('name') or '')).name
+            path = output / name
+            if path.suffix.casefold() != '.xlsx' or not path.is_file():
+                continue
+            project_files.register_file(workspace_id, 'keywords', path,
+                source_type='keyword_research', source_id=run_id, name=name,
+                metadata={'run_id': run_id, 'source_task_url': f'#/keyword/run/{run_id}',
+                          'sha256': artifact.get('sha256')})
+        return
     if output.is_dir():
         for path in sorted(output.iterdir()):
             if path.is_file():
                 project_files.register_file(workspace_id, 'keywords', path,
                     source_type='keyword_run_output', source_id=run_id + ':' + path.name,
-                    name=path.name, metadata={'run_id': run_id, 'status': status or state.get('status')})
+                    name=path.name, metadata={'run_id': run_id, 'status': effective_status})
 
 
 def execute(run_id, cancel_event=None):

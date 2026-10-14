@@ -512,8 +512,17 @@ def datasets():return service.list_datasets()
 @app.get('/api/projects')
 def project_list():return templates.projects()
 
+@app.get('/api/projects/trash')
+def project_trash_list():return templates.trashed_projects()
+
 @app.post('/api/projects')
 def project_create(body:dict):return templates.create_project(body.get('name'))
+
+@app.delete('/api/projects/{wid}')
+def project_trash(wid:str):return templates.trash_project(wid)
+
+@app.post('/api/projects/{wid}/restore')
+def project_restore(wid:str):return templates.restore_project(wid)
 
 @app.get('/api/projects/{wid}/artifacts')
 def project_artifacts(wid:str,kind:str|None=None):return project_files.list_artifacts(wid,kind)

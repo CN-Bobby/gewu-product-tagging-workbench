@@ -136,12 +136,21 @@
     },
     {
       "version": "0.5.0-beta.12",
+      "status": "superseded",
+      "artifact_kind": "portable_candidate",
+      "commit": null,
+      "tag": null,
+      "superseded_by": "0.5.0-beta.13",
+      "note": "DEV 人工测试由用户确认完成；本版为清理公开源码样例后的绿色候选，待另一台电脑安装验收。PROD 部署仍待完成。"
+    },
+    {
+      "version": "0.5.0-beta.13",
       "status": "pending_acceptance",
       "artifact_kind": "portable_candidate",
       "commit": null,
       "tag": null,
       "superseded_by": null,
-      "note": "DEV 人工测试由用户确认完成；本版为清理公开源码样例后的绿色候选，待另一台电脑安装验收。PROD 部署仍待完成。"
+      "note": "DEV 人工验收已由用户确认；新增项目左树文件管理、六类目录迁移及关键词任务产物归档修复。待完成外机安装门禁评估、PROD 身份核验和 GitHub 便携包发布。"
     }
   ]
 }

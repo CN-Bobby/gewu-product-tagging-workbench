@@ -49,7 +49,7 @@ def test_recycle_restore_uses_per_project_trash_and_preserves_record():
     assert trashed["downloadable"] is False
     assert not original.exists()
     trash_path = project_files.project_dir(project["id"]) / trashed["relative_path"]
-    assert ".trash" in trash_path.parts
+    assert "_system" in trash_path.parts and "trash" in trash_path.parts
     assert trash_path.read_bytes() == b"workbook bytes"
     assert project_files.list_trash(project["id"])[0]["id"] == item["id"]
     assert all(row["id"] != item["id"] for row in project_files.list_artifacts(project["id"]))

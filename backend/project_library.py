@@ -24,9 +24,9 @@ from .db import ProjectArtifact, Session
 from .importer import wps_images
 
 FOLDER_ORDER = ("source", "data_x", "reviews", "voc", "keywords", "other")
-FOLDER_LABELS = {"source": "原始上传数据", "data_x": "打标结果",
-                 "reviews": "评论文件", "voc": "VOC 报告",
-                 "keywords": "关键词研究", "other": "其他资源"}
+FOLDER_LABELS = {"source": "来源文件", "data_x": "数据",
+                 "reviews": "评论", "voc": "VOC",
+                 "keywords": "关键词", "other": "其他"}
 WORKBOOK_TYPES = {
     "source": {"dataset"},
     "data_x": {"data_x_snapshot"},

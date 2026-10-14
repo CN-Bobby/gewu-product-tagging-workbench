@@ -214,7 +214,8 @@ def test_live_shaped_node_job_deduplicates_translates_and_exports(monkeypatch, t
     monkeypatch.setattr(service.sorftime, "call", fake_sorftime)
     created = service.create({
         "mode": "node_asins", "site": "US", "node_id": NODE, "asins": [ASIN_A, ASIN_B],
-        "rank_limit": 50, "model": "mock/model", "credential_id": "mock-key",
+        "rank_limit": 50, "collection_source": "sorftime",
+        "model": "mock/model", "credential_id": "mock-key",
     })
 
     deadline = time.monotonic() + 10
@@ -266,7 +267,7 @@ def test_create_rejects_unconfigured_sorftime(monkeypatch):
 
     try:
         service.create({
-            "mode": "asins", "site": "US", "asins": [ASIN_A],
+            "mode": "asins", "site": "US", "asins": [ASIN_A], "collection_source": "sorftime",
             "model": "mock/model", "credential_id": "mock-key",
         })
     except ValueError as exc:

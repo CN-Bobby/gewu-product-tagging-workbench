@@ -41,7 +41,7 @@ test('project library uses the artifact API, folder routes, search, time sorting
 
 test('global project tree is present on application pages and previews use workbook and sandboxed HTML contracts', () => {
   assert.match(taggingPage, /<ProjectSidebar/);
-  assert.match(projectTree, /\/api\/projects\/\$\{project\.id\}\/library/);
+  assert.match(projectTree, /\/api\/projects\/\$\{encodeURIComponent\(project\.id\)\}\/library/);
   assert.match(projectFilesState, /data_x/);
   assert.match(projectPreview, /\/workbook\?/);
   assert.match(projectPreview, /limit: '50'/);

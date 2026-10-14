@@ -29,6 +29,12 @@ class Workspace(Record, Base):
     __tablename__ = 'workspace'
     name = Column(String, nullable=False)
 
+class WorkspaceTrash(Record, Base):
+    """Recoverable project removal marker; project data and files stay intact."""
+    __tablename__ = 'workspace_trash'
+    workspace_id = Column(String, ForeignKey('workspace.id'), nullable=False, unique=True, index=True)
+    deleted_at = Column(String, nullable=False, default=now)
+
 class ProjectArtifact(Record, Base):
     """Immutable, project-scoped copy/reference to a workflow artifact."""
     __tablename__ = 'project_artifact'
