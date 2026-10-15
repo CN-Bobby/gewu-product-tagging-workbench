@@ -374,6 +374,7 @@ def test_shutdown_with_live_stub_pipeline_emits_one_interrupted_terminal(
     monkeypatch.setattr(runner.credentials, 'model_target',
                         lambda *args: ('https://fake.invalid', 'synthetic-key', 'm1'))
     monkeypatch.setattr(runner.credentials, 'mcp_endpoint', lambda: 'https://fake.invalid/mcp')
+    monkeypatch.setattr(runner.credentials, 'mcp_headers', lambda: {'secret-key': 'synthetic-secret'})
     monkeypatch.setattr(runner.engine_runner, 'asset_digest', lambda: {'sha256': 'a' * 64, 'files': 1})
     monkeypatch.setattr(runner, 'EngineConfig', lambda **kw: SimpleNamespace(**kw))
     class WaitingPipeline:

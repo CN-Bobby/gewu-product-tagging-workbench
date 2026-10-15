@@ -81,7 +81,7 @@ class Pipeline:
         self.call_log = CallLog(self.task_dir / "cache" / "call_log.json")
         if mcp is None:
             mcp = MCPClient(config.mcp_endpoint, self.rate_limiter,
-                            self.call_log, on_event=self.on_event)
+                            self.call_log, on_event=self.on_event, headers=config.mcp_headers)
         self.mcp = mcp
         if llm is None:
             llm = LLMClient(config.llm_base_url, config.llm_api_key,

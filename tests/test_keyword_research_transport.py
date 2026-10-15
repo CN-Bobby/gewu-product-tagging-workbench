@@ -20,7 +20,7 @@ import uvicorn
 from mcp.server.fastmcp import FastMCP
 
 from backend.keyword_research.call_log import CallLog
-from backend.keyword_research.mcp_client import MCPClient, MCPError
+from backend.keyword_research.mcp_client import MCPClient, MCPError, test_mcp_connection as probe_mcp_connection
 from backend.keyword_research.rate_limiter import RateLimiter
 from tests.test_keyword_research_pipeline import offline_only  # noqa: F401  离线护栏
 
@@ -39,6 +39,18 @@ def local_endpoint():
                          "nodeIdPath": (request or {}).get("nodeIdPath")}}
 
     app = server.streamable_http_app()
+    headers_seen = []
+
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    class HeaderRecorder(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            value = request.headers.get("secret-key")
+            if value:
+                headers_seen.append(value)
+            return await call_next(request)
+
+    app.add_middleware(HeaderRecorder)
     config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
     running = uvicorn.Server(config)
     thread = threading.Thread(target=running.run, daemon=True, name="local-mcp-server")
@@ -53,7 +65,7 @@ def local_endpoint():
         port = running.servers[0].sockets[0].getsockname()[1]
         paths = [route.path for route in app.routes if getattr(route, "path", "").endswith("mcp")]
         path = paths[0] if paths else "/mcp"
-        yield f"http://127.0.0.1:{port}{path}"
+        yield f"http://127.0.0.1:{port}{path}", headers_seen
     finally:
         running.should_exit = True
         thread.join(timeout=15)
@@ -63,8 +75,10 @@ def local_endpoint():
 def test_production_client_calls_a_streamable_http_server(local_endpoint, tmp_path):
     """生产传输路径端到端：解包、会话、调用、解析、调用日志，一次走完。"""
     log = CallLog(tmp_path / "call_log.json")
-    client = MCPClient(local_endpoint,
-                       RateLimiter(max_calls=100, window_seconds=60.0, min_interval=0.0), log)
+    endpoint, headers_seen = local_endpoint
+    client = MCPClient(endpoint,
+                       RateLimiter(max_calls=100, window_seconds=60.0, min_interval=0.0), log,
+                       headers={"secret-key": "offline-header-probe"})
 
     data = asyncio.run(client.call("product_node", {"request": {"nodeIdPath": "1055398"}},
                                    "transport-probe"))
@@ -72,6 +86,12 @@ def test_production_client_calls_a_streamable_http_server(local_endpoint, tmp_pa
     assert data["code"] == "OK"
     assert data["data"]["items"][0]["asin"] == "X1"
     assert data["data"]["nodeIdPath"] == "1055398"
+    assert headers_seen and set(headers_seen) == {"offline-header-probe"}
+    checked = probe_mcp_connection(endpoint, timeout=10,
+                                   rate_limiter=RateLimiter(max_calls=100, window_seconds=60.0, min_interval=0.0),
+                                   headers={"secret-key": "offline-header-probe"})
+    assert checked == {"ok": True, "tools": 1}
+    assert set(headers_seen) == {"offline-header-probe"}
 
     recorded = log.as_dict() if hasattr(log, "as_dict") else None
     calls = recorded["calls"] if recorded else None
@@ -96,9 +116,9 @@ def test_nested_transport_group_is_actionable_redacted_and_not_retried(tmp_path,
 
     monkeypatch.setattr(mcp_client,'streamable_http_client',lambda *args,**kwargs:FailedStream())
     log=CallLog(tmp_path/'call_log.json')
-    client=MCPClient('https://example.invalid/mcp?secret-key=sk-private-credential',
+    client=MCPClient('https://example.invalid/mcp',
                      RateLimiter(max_calls=100,window_seconds=60.0,min_interval=0.0),log,
-                     max_temp_retries=1)
+                     max_temp_retries=1, headers={"secret-key": "sk-private-credential"})
     with pytest.raises(MCPError) as raised:
         asyncio.run(client.call('traffic_extend',{},'safe scope'))
     message=str(raised.value)
@@ -111,6 +131,7 @@ def test_nested_transport_group_is_actionable_redacted_and_not_retried(tmp_path,
     assert private_asin not in json.dumps(calls)
     assert 'example.invalid' not in json.dumps(calls)
     assert 'sk-private-credential' not in json.dumps(calls)
+    assert 'sk-private-credential' not in message
 
 
 @pytest.mark.parametrize("retry_budget", [2, 10])

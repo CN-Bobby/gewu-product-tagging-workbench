@@ -66,6 +66,19 @@ test('the topbar carries the entry to the keyword page',()=>{
   assert.match(main,/<button className=\{page===PAGE\.KEYWORD\?'active':''\} onClick=\{\(\)=>navigate\('keyword'\)\}>关键词调研<\/button>/,'the entry switches the page');
 });
 
+test('Product Archive has a separate dossier route and read-only sample page',()=>{
+  const page=source('productArchive.jsx');
+  assert.ok(main.includes("import {ProductArchive} from './productArchive'"));
+  assert.ok(main.includes("parts[0]==='product-archive'"));
+  assert.ok(main.includes("page==='product-archive'?<ProductArchive"));
+  assert.ok(main.includes("navigate('product-archive')"));
+  assert.ok(page.includes('PRODUCT / MARKET OVERVIEW'));
+  assert.ok(page.includes('MARKET SIZE'));
+  assert.ok(page.includes('COMPETITIVE STRUCTURE'));
+  assert.ok(page.includes('READ ONLY PREVIEW'));
+  assert.ok(page.includes('确认映射并生成快照'));
+});
+
 test('the topbar carries the entry to the Xunlongjue module',()=>{
   assert.ok(main.includes('寻龙诀'),'the entry label is in the topbar');
   assert.match(main,/<button className=\{page===PAGE\.XUNLONGJUE\?'active':''\} onClick=\{\(\)=>navigate\('xunlongjue'\)\}>寻龙诀<\/button>/,'the entry switches to the module');

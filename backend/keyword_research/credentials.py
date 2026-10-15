@@ -11,7 +11,6 @@ model_settings.read() 无条件遍历（不按 kind 过滤，model_settings.py:1
 import os
 import re
 from datetime import datetime, timezone
-from urllib.parse import quote
 
 from ..runtime_isolation import CredentialUnavailable
 
@@ -72,11 +71,18 @@ def clear_secret():
 
 
 def mcp_endpoint():
-    """完整端点：地址 + URL 编码后的 secret-key 查询参数（SellerSprite 的鉴权方式）。"""
+    """Return a credential-free endpoint; authentication travels only in request headers."""
+    if not read_secret():
+        raise CredentialUnavailable('尚未配置 SellerSprite MCP 密钥，请在关键词调研页面填写')
+    return DEFAULT_MCP_URL.rstrip('/')
+
+
+def mcp_headers():
+    """Return auth headers for the HTTP transport; never persist them in run data."""
     secret = read_secret()
     if not secret:
         raise CredentialUnavailable('尚未配置 SellerSprite MCP 密钥，请在关键词调研页面填写')
-    return DEFAULT_MCP_URL.rstrip('/') + '?secret-key=' + quote(secret, safe='')
+    return {'secret-key': secret}
 
 
 def model_target(model_ref=None, credential_id=None):

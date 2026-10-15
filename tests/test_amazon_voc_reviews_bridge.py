@@ -173,3 +173,37 @@ def test_oversize_is_rejected_before_workbook_read(bridge, monkeypatch):
     response = handoff(api, job_id)
     assert response.status_code == 400
     assert "50 MiB" in response.text
+
+
+def test_review_source_scope_is_written_into_html_and_excel(tmp_path):
+    from openpyxl import Workbook, load_workbook
+    from backend.amazon_voc.service import _append_review_scope, _review_source_context
+
+    context = _review_source_context({
+        "id": "review-job", "status": "completed_with_errors", "review_count": 12,
+        "items": [
+            {"asin": "B000000001", "status": "completed", "review_count": 12},
+            {"asin": "B000000002", "status": "failed", "review_count": 0},
+            {"asin": "B000000003", "status": "completed", "review_count": 0},
+        ],
+    })
+    assert context["requested_asin_count"] == 3
+    assert context["comment_asin_count"] == 1
+    assert context["failed_asins"] == ["B000000002"]
+    assert "最近一年" in context["analysis_scope"]
+
+    html_path = tmp_path / "report.html"
+    html_path.write_text("<html><body><main>Report</main></body></html>", encoding="utf-8")
+    excel_path = tmp_path / "report.xlsx"
+    workbook = Workbook()
+    workbook.save(excel_path)
+    _append_review_scope(html_path, excel_path, context)
+
+    html_report = html_path.read_text(encoding="utf-8")
+    assert "评论采集范围与 ASIN 覆盖" in html_report
+    assert "B000000002" in html_report
+    workbook = load_workbook(excel_path, read_only=True)
+    assert "采集范围" in workbook.sheetnames
+    values = list(workbook["采集范围"].values)
+    assert values[5][1] == 1
+    assert values[10][1] == "B000000002"

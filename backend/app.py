@@ -12,13 +12,15 @@ from .db import *
 from . import importer, service, jobs, harness
 from .exporter import export_run
 from . import draft,batch,draft_export,text_facts
-from . import field_catalog,worksheet_query,task_control,project_files,project_library
+from . import field_catalog,worksheet_query,task_control,project_files
+from . import project_library
 from . import knowledge,templates,storage_management,model_settings,capabilities
 from .keyword_research import routes as keyword_research_routes
 from .keyword_research import registry as keyword_registry, runner as keyword_runner
 from . import amazon_scraper
 from .amazon_reviews import service as amazon_reviews
 from .amazon_voc import router as amazon_voc
+from .product_archive import router as product_archive_router
 from .amazon_scraper_http import (AmazonRequestBodyTooLarge, InvalidAmazonContentLength,
                                   buffer_amazon_request_body)
 from .xunlongjue import router as xunlongjue_router, home_summary as xunlongjue_home_summary
@@ -53,6 +55,7 @@ async def lifespan(app):
 
 app=FastAPI(title='商品特征工程工作台',version=VERSION,lifespan=lifespan)
 app.include_router(amazon_voc.router)
+app.include_router(product_archive_router)
 
 @app.middleware('http')
 async def localhost(request:Request,call_next):
@@ -118,6 +121,21 @@ def amazon_reviews_settings():return amazon_reviews.model_settings_public()
 
 @app.post('/api/amazon-reviews/jobs')
 def amazon_reviews_start(body:dict):return amazon_reviews.create(body)
+
+@app.post('/api/amazon-reviews/from-product-archive/{archive_id}')
+def amazon_reviews_from_archive(archive_id:str,body:dict):
+    from .product_archive import service as archive_service
+    body=body or {}
+    targets=archive_service.dispatch_targets(archive_id,body.get('product_ids') or [],
+                                              child_only=bool(body.get('child_only',False)))
+    requested_workspace=str(body.get('workspace_id') or targets.get('workspace_id') or '')
+    if requested_workspace!=str(targets.get('workspace_id') or ''):
+        raise ValueError('档案和选中行不属于同一项目')
+    archive=archive_service._read(archive_id)
+    return amazon_reviews.create({'mode':'asins','site':archive.get('marketplace') or 'US',
+        'asins':targets['asins'],'model':body.get('model'),'credential_id':body.get('credential_id'),
+        'workspace_id':targets.get('workspace_id'),'source_dataset_id':targets.get('dataset_id'),
+        'source_archive_id':archive_id,'auto_voc_policy':body.get('auto_voc_policy','none')})
 
 @app.get('/api/amazon-reviews/jobs')
 def amazon_reviews_jobs():return amazon_reviews.list_jobs()
@@ -199,7 +217,6 @@ def settings_sorftime_clear():
     from .xunlongjue import settings as sorftime_settings
     sorftime_settings.clear_key()
     return sorftime_settings.status()
-
 
 @app.post('/api/settings/models/{provider}/credentials/{credential_id}/{action}')
 def settings_credential_action(provider:str,credential_id:str,action:str):return model_settings.credential_action(provider,credential_id,action)
@@ -330,6 +347,32 @@ def job_disposition(did:str,jid:str,body:dict):return task_control.disposition(d
 @app.post('/api/server/stop')
 async def stop_server():
     import asyncio,signal
+    app.state.stopping=True
+    asyncio.get_running_loop().call_later(.2,lambda:signal.raise_signal(signal.SIGINT))
+    return {'stopping':True}
+
+@app.post('/api/runtime/exit')
+async def exit_workbench():
+    """Use the owning Run Center to stop both DEV listeners; otherwise stop this app."""
+    if (os.name == 'nt' and os.environ.get('GEWU_PROFILE', '').lower() == 'dev'
+            and os.environ.get('GEWU_INSTANCE_ID', '').upper() == 'DEV'):
+        local_app_data = os.environ.get('LOCALAPPDATA')
+        if local_app_data:
+            run_center = Path(local_app_data) / 'GeWuWorkbench' / 'RunCenter' / 'run-center.ps1'
+            if run_center.is_file():
+                import subprocess
+                powershell = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'System32' / 'WindowsPowerShell' / 'v1.0' / 'powershell.exe'
+                log_path = run_center.parent / 'logs' / 'DEV' / 'ui-exit.log'
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                with log_path.open('ab') as log:
+                    subprocess.Popen(
+                        [str(powershell), '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(run_center),
+                         '-Profile', 'DEV', '-Action', 'Stop', '-NoOpen'],
+                        cwd=str(run_center.parent), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
+                    )
+                return {'stopping': True, 'managed_by': 'Run Center'}
+    import asyncio, signal
     app.state.stopping=True
     asyncio.get_running_loop().call_later(.2,lambda:signal.raise_signal(signal.SIGINT))
     return {'stopping':True}
@@ -550,6 +593,8 @@ def draft_version(did:str):
     data=draft.sheet(did,item['id'])
     workspace_id=(data.get('dataset') or {}).get('workspace_id')
     if workspace_id:
+        # Data X is the project's reusable tagged dataset. Unknown/unjudged values
+        # must remain genuinely blank instead of becoming a literal tag value.
         export_path=draft_export.export(did,[column['id'] for column in data.get('columns',[])],
                                         item['id'],unknown_as_blank=True)
         item['project_artifact']=project_files.register_file(workspace_id,'data_x',export_path,

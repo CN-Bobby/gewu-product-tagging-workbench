@@ -308,7 +308,8 @@ def test_mcp_endpoint_requires_a_configured_secret():
     with pytest.raises(CredentialUnavailable):
         credentials.mcp_endpoint()
     credentials.save_secret('sk-live-1')
-    assert credentials.mcp_endpoint() == 'https://mcp.sellersprite.com/mcp?secret-key=sk-live-1'
+    assert credentials.mcp_endpoint() == 'https://mcp.sellersprite.com/mcp'
+    assert credentials.mcp_headers() == {'secret-key': 'sk-live-1'}
 
 
 # --- runner ---------------------------------------------------------------
@@ -523,4 +524,3 @@ def test_runner_produces_a_downloadable_report_over_the_real_pipeline(monkeypatc
     assert [event['sequence'] for event in events] == list(range(1, len(events) + 1))
     assert events[-1]['event_type'] == 'run_finished'
     assert 'artifact_ready' in [event['event_type'] for event in events]
-
