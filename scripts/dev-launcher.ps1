@@ -1,7 +1,7 @@
 param(
-    [string]$Storage = 'K:\Bobbytagging\Data-Test',
-    [string]$Cache = '',
-    [int]$Port = 0,
+    [string]$Storage = 'K:\GeWuTest\Data',
+    [string]$Cache = 'K:\GeWuTest\Cache',
+    [int]$Port = 8895,
     [string]$Build = '',
     [switch]$Stop,
     [switch]$Acceptance,
