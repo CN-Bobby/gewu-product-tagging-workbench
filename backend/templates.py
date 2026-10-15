@@ -6,13 +6,18 @@ from . import draft
 
 
 def projects():
-    with Session() as s:return [obj(w) for w in s.scalars(select(Workspace).order_by(Workspace.created_at))]
+    from . import project_files
+    with Session() as s:items=[obj(w) for w in s.scalars(select(Workspace).order_by(Workspace.created_at))]
+    return [{**item, **project_files.public_project(item['id'])} for item in items]
 
 
 def create_project(name):
     if not isinstance(name,str) or not 1<=len(name.strip())<=100:raise ValueError('项目名称需为1–100字')
     with Session.begin() as s:
-        w=Workspace(name=name.strip());s.add(w);s.flush();return obj(w)
+        w=Workspace(name=name.strip());s.add(w);s.flush();result=obj(w)
+    from . import project_files
+    project_files.ensure_project(result['id'])
+    return {**result, **project_files.public_project(result['id'])}
 
 
 def list_templates(workspace_id):

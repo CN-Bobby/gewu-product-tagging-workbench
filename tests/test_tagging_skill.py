@@ -9,7 +9,7 @@ from fixture_data import FIXTURE_PATH
 
 def fake_facts(model,messages,metrics,lock):
     inputs=json.loads(messages[-1]['content'])
-    return {'results':[{'product_id':p['product_id'],'facts':[{'attribute':'原始标题','value':str(p['text']['title']), 'raw_value':p['text']['title'],'state':'observed','evidence':[{'field':'title','quote':p['text']['title']}]}]} for p in inputs]}
+    return {'results':[{'product_id':p['product_id'],'facts':[{'attribute':'原始标题','value':str(p['text']['title']), 'raw_value':p['text']['title'],'state':'observed','evidence':[{'field':'title','quote':p['text']['title']}]}], 'source_attributes':[]} for p in inputs]}
 
 def test_rules_frozen_and_enter_request(dataset,monkeypatch):
     did=dataset['id'];col=add(did,judgment={'synonyms':{'Two Piece':'2件套'}});j=job(did,col)

@@ -86,6 +86,17 @@ def test_export_preserves_70_fields_images_and_selected_order(dataset):
     assert ws.cell(2,71).value=='【待处理】'
     assert wb['AI_Detail'].max_row==21 and wb['Tag_Dictionary'].max_row==3
 
+def test_project_data_x_export_keeps_unknown_values_blank(dataset):
+    did=dataset['id'];column=add(did,'hard_distinction');row=draft.sheet(did)['rows'][0]
+    draft.correct(did,row['id'],column['id'],None)
+    version=draft.save_version(did)
+    default_path=draft_export.export(did,[column['id']],version['id'])
+    project_path=draft_export.export(did,[column['id']],version['id'],unknown_as_blank=True)
+    default_wb=openpyxl.load_workbook(default_path,data_only=True)
+    project_wb=openpyxl.load_workbook(project_path,data_only=True)
+    assert default_wb['Product_Result'].cell(2,71).value=='【未知】'
+    assert project_wb['Product_Result'].cell(2,71).value is None
+
 def test_scope_approval_staleness_and_cross_dataset(dataset):
     did=dataset['id'];c=add(did);ids=[x['id'] for x in draft.sheet(did)['rows'][:3]]
     p=draft.propose(did,'执行',[{'kind':'execute','column_ids':[c['id']],'product_ids':ids}])
