@@ -25,6 +25,51 @@ def _optional(workdir, name, default):
     return common.read_json(path) if os.path.exists(path) else default
 
 
+def _redact_full_review_text(payload, events):
+    """Keep verbatim full reviews out of report text, even if a model copies one into a summary field."""
+    normalize = lambda value: re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+    review_texts = sorted({normalize(event.get("review_text")) for event in events
+                           if len(normalize(event.get("review_text"))) >= 20}, key=len, reverse=True)
+    omission = "完整评论原文未嵌入报告；请在 Excel 评论证据索引中回查。"
+
+    def has_full_review(text):
+        normalized = normalize(text)
+        if len(normalized) < 20:
+            return False
+        for source in review_texts:
+            if len(source) > len(normalized):
+                continue
+            if source in normalized:
+                return True
+        return False
+
+    def visit(value):
+        if isinstance(value, dict):
+            redacted = 0
+            quote_redacted = False
+            for key, item in list(value.items()):
+                value[key], count = visit(item)
+                redacted += count
+                if key == "quote" and count:
+                    quote_redacted = True
+            if quote_redacted:
+                value["quote_omitted"] = True
+            return value, redacted
+        if isinstance(value, list):
+            output = []
+            redacted = 0
+            for item in value:
+                cleaned, count = visit(item)
+                output.append(cleaned)
+                redacted += count
+            return output, redacted
+        if isinstance(value, str) and has_full_review(value):
+            return omission, 1
+        return value, 0
+
+    return visit(payload)[1]
+
+
 def _workarounds(events):
     rows = []
     for event in events:
@@ -144,6 +189,9 @@ def compile_analysis(workdir):
 
     quality = _optional(workdir, "quality_report.json", {})
     dictionary = _optional(workdir, "tag_dictionary.json", {"tags": [], "mappings": []})
+    tags = dictionary.get("tags") or []
+    normalized_tag_count = sum(tag.get("normalization_status") != "raw_unmerged" for tag in tags)
+    raw_unmerged_tag_count = sum(tag.get("normalization_status") == "raw_unmerged" for tag in tags)
     output = {
         "schema": "amazon-voc-analysis/v4",
         "task": {
@@ -168,12 +216,13 @@ def compile_analysis(workdir):
                                       (model.get("metadata") or {}).get("model")]),
         },
         "counts": {"reviews": denominator, "events": len(events), "segments": len(segments),
-                   "tags": len(dictionary.get("tags") or [])},
+                   "tags": normalized_tag_count, "raw_unmerged_tags": raw_unmerged_tag_count},
         "segments": segments,
         "journey": journey_doc,
         "validation": validation,
         "quality": quality,
     }
+    output["method"]["full_review_text_redacted_field_count"] = _redact_full_review_text(output, events)
     common.write_json(common.cache_path(workdir, "journey_matrix.json"), journey_doc)
     common.write_json(common.cache_path(workdir, "evidence_index.json"), evidence_index)
     common.write_json(common.cache_path(workdir, "analysis.json"), output)

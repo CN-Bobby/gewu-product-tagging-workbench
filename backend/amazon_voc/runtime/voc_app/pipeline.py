@@ -25,6 +25,10 @@ MAPPING_EVENTS_PER_CALL = 50
 ASSIGNMENT_EVENTS_PER_CALL = 100
 JOURNEY_EVENTS_PER_CALL = 100
 MAPPING_REPAIR_VALUES_PER_CALL = 400
+MAX_DICTIONARY_MODEL_INPUT_BYTES = 192_000
+MAX_SEGMENT_PROPOSAL_INPUT_BYTES = 96_000
+MAX_JOURNEY_STAGE_PROPOSAL_INPUT_BYTES = 192_000
+JOURNEY_STAGE_SAMPLES_PER_SEGMENT = 2
 
 
 def _write(path, value):
@@ -93,6 +97,138 @@ def _repair_event_quotes(events):
 def _chunks(rows, size):
     for offset in range(0, len(rows), size):
         yield rows[offset:offset + size]
+
+
+def _json_size_bytes(value):
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _bounded_signal_text(value, limit):
+    parts = []
+
+    def visit(item):
+        if isinstance(item, dict):
+            for nested in item.values():
+                visit(nested)
+        elif isinstance(item, (list, tuple)):
+            for nested in item:
+                visit(nested)
+        elif item is not None and not isinstance(item, bool):
+            text = re.sub(r"\s+", " ", str(item)).strip()
+            if text:
+                parts.append(text)
+
+    visit(value)
+    return "；".join(parts)[:max(0, int(limit))]
+
+
+def build_journey_stage_proposal_input(events, segments,
+                                       max_bytes=MAX_JOURNEY_STAGE_PROPOSAL_INPUT_BYTES,
+                                       samples_per_segment=JOURNEY_STAGE_SAMPLES_PER_SEGMENT):
+    """Build bounded, date-stratified comment signals for dynamic journey-stage discovery."""
+    events = list(events or [])
+    segments = list(segments or [])
+    event_by_id = {event.get("event_id"): event for event in events if event.get("event_id")}
+    samples_per_segment = max(1, int(samples_per_segment or 1))
+    max_bytes = max(1024, int(max_bytes or MAX_JOURNEY_STAGE_PROPOSAL_INPUT_BYTES))
+
+    def make_payload(sample_limit, text_limit):
+        compact_segments = []
+        sampled_count = 0
+        for segment in segments:
+            member_events = [event_by_id[event_id] for event_id in segment.get("member_event_ids") or []
+                             if event_id in event_by_id]
+            if not member_events:
+                continue
+            member_events.sort(key=lambda event: (str(event.get("review_date") or ""),
+                                                   str(event.get("event_id") or "")))
+            sample_count = min(sample_limit, len(member_events))
+            if sample_count == 1:
+                sample_indexes = [0]
+            else:
+                sample_indexes = sorted({round(index * (len(member_events) - 1) / (sample_count - 1))
+                                         for index in range(sample_count)})
+            signals = []
+            for index in sample_indexes:
+                event = member_events[index]
+                signals.append({
+                    "event_id": str(event.get("event_id") or ""),
+                    "scenario": _bounded_signal_text(event.get("scenario"), text_limit),
+                    "motivation": _bounded_signal_text(event.get("motivation"), text_limit),
+                    "job": _bounded_signal_text(event.get("task"), text_limit),
+                    "experience": _bounded_signal_text(event.get("experience"), text_limit),
+                    "workaround": _bounded_signal_text(event.get("workaround"), text_limit),
+                    "evidence_quote": _bounded_signal_text(event.get("evidence_quote"), text_limit),
+                })
+            sampled_count += len(signals)
+            compact_segments.append({
+                "segment_id": str(segment.get("segment_id") or ""),
+                "name": _bounded_signal_text(segment.get("name"), text_limit),
+                "persona_summary": _bounded_signal_text(segment.get("persona_summary"), text_limit * 2),
+                "jtbd_statement": _bounded_signal_text(segment.get("jtbd_statement"), text_limit * 2),
+                "member_event_count": len(member_events),
+                "review_signals": signals,
+            })
+        payload = {
+            "event_count": len(events),
+            "sampling_method": "evenly_spaced_by_review_date_within_each_active_segment",
+            "max_samples_per_segment": sample_limit,
+            "segments": compact_segments,
+        }
+        return payload, sampled_count
+
+    for sample_limit, text_limit in ((samples_per_segment, 112), (1, 80), (1, 48), (1, 24)):
+        payload, sampled_count = make_payload(sample_limit, text_limit)
+        if _json_size_bytes(payload) <= max_bytes:
+            payload["sampling"] = {
+                "sampled_event_count": sampled_count,
+                "active_segment_count": len(payload["segments"]),
+                "max_samples_per_segment": sample_limit,
+                "text_limit_chars": text_limit,
+            }
+            if _json_size_bytes(payload) <= max_bytes:
+                return payload
+    raise ValueError("旅程阶段样本摘要超过安全输入上限")
+
+
+def build_segment_proposal_batches(proposal_input, max_bytes=MAX_SEGMENT_PROPOSAL_INPUT_BYTES):
+    """Split complete profiles into bounded requests without truncating evidence."""
+    profiles = list(proposal_input.get("profiles") or [])
+    if not profiles:
+        return []
+    fixed = {key: value for key, value in proposal_input.items() if key not in ("profiles", "coverage")}
+    full_coverage = proposal_input.get("coverage") or {}
+    profile_chunks = []
+    current = []
+    for profile in profiles:
+        candidate = current + [profile]
+        if current and _json_size_bytes({**fixed, "profiles": candidate}) > max(1, max_bytes - 1024):
+            profile_chunks.append(current)
+            current = []
+        current.append(profile)
+    if current:
+        profile_chunks.append(current)
+
+    result = []
+    for index, chunk in enumerate(profile_chunks, 1):
+        chunk_event_count = sum(int(profile.get("e") or 0) for profile in chunk)
+        payload = {
+            **fixed,
+            "profiles": chunk,
+            "coverage": {
+                "event_count": chunk_event_count,
+                "profile_count": len(chunk),
+                "all_events_included": True,
+                "review_count_is_not_additive_across_profiles": True,
+                "full_event_count": int(full_coverage.get("event_count") or 0),
+                "full_profile_count": int(full_coverage.get("profile_count") or len(profiles)),
+                "proposal_batch_index": index,
+                "proposal_batch_count": len(profile_chunks),
+            },
+        }
+        result.append({"payload": payload, "profile_count": len(chunk),
+                       "event_count": chunk_event_count, "input_bytes": _json_size_bytes(payload)})
+    return result
 
 
 def _profile_value(value):
@@ -187,7 +323,8 @@ def build_segment_proposal_input(events, dictionary, minimum_formal_reviews):
     namespaces = {"audience", "scenario", "motivation", "task", "desired_outcome", "object", "component",
                   "attribute", "result", "pain", "itch", "workaround_action"}
     tag_catalog = [{key: tag.get(key, "") for key in ("namespace", "canonical_name", "definition")}
-                   for tag in dictionary.get("tags") or [] if tag.get("namespace") in namespaces]
+                   for tag in dictionary.get("tags") or []
+                   if tag.get("namespace") in namespaces and tag.get("normalization_status") != "raw_unmerged"]
     return {
         "profiles": profiles,
         "tag_catalog": tag_catalog,
@@ -279,8 +416,9 @@ class Pipeline:
         _write(path, rounds)
         return rounds[task]
 
-    def _call(self, run, revision, workdir, task, batch_id, payload, reviewer=False):
+    def _call(self, run, revision, workdir, task, batch_id, payload, reviewer=False, schema_override=None):
         prompt_meta, instructions = self.prompts.load(task)
+        schema = schema_override or SCHEMAS[task]
         digest = _hash({"prompt_version": prompt_meta["version"], "payload": payload})
         existing = self.db.one("SELECT * FROM batches WHERE run_id=? AND revision=? AND stage=? AND batch_id=?",
                                (run["id"], revision, task, batch_id))
@@ -297,17 +435,25 @@ class Pipeline:
                         (run["id"], revision, task, batch_id, digest, str(output_path), now))
         errors = []
         attempts = self.settings.max_repairs + 2
+        attempts_made = 0
+        retryable_error = True
         for attempt in range(attempts):
+            attempts_made = attempt + 1
             model = self.settings.reviewer_model if reviewer or attempt == attempts - 1 else self.settings.extractor_model
             request_payload = payload if not errors else {"original_input": payload, "validation_errors": errors,
                                                            "repair_instruction": "修复结构并返回完整结果"}
+            allowed_segment_ids = (((schema.get("properties") or {}).get("assignments") or {}).get("items") or {}).get("properties", {}).get("segment_id", {}).get("enum")
+            if errors and allowed_segment_ids:
+                request_payload["repair_instruction"] += "；segment_id 只能使用这些候选 ID：" + json.dumps(allowed_segment_ids, ensure_ascii=False)
             started = datetime.now(timezone.utc)
             try:
-                result, usage = self.provider.call(task, model, instructions, request_payload, SCHEMAS[task])
-                errors = _schema_errors(result, SCHEMAS[task])
+                result, usage = self.provider.call(task, model, instructions, request_payload, schema)
+                errors = _schema_errors(result, schema)
                 status, error_text = ("completed", "") if not errors else ("invalid", "; ".join(errors[:8]))
+                retryable_error = True
             except Exception as exc:
                 result, usage, errors, status, error_text = None, {}, [str(exc)], "failed", str(exc)
+                retryable_error = bool(getattr(exc, "retryable", True))
             latency = usage.get("latency_ms") if usage else None
             if latency is None:
                 latency = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
@@ -321,8 +467,10 @@ class Pipeline:
                 self.db.execute("UPDATE batches SET status='completed',attempts=?,updated_at=? WHERE run_id=? AND revision=? AND stage=? AND batch_id=?",
                                 (attempt + 1, utcnow(), run["id"], revision, task, batch_id))
                 return result
+            if result is None and not retryable_error:
+                break
         self.db.execute("UPDATE batches SET status='failed',attempts=?,updated_at=? WHERE run_id=? AND revision=? AND stage=? AND batch_id=?",
-                        (attempts, utcnow(), run["id"], revision, task, batch_id))
+                        (attempts_made, utcnow(), run["id"], revision, task, batch_id))
         raise ValueError("%s/%s 连续结构校验失败: %s" % (task, batch_id, "; ".join(errors[:8])))
 
     def _call_many(self, run, revision, workdir, task, jobs, reviewer=False):
@@ -400,6 +548,155 @@ class Pipeline:
         _write(Path(workdir) / "cache" / "review_processing.json",
                {"schema": "amazon-voc-review-processing/v1", "reviews": processing})
 
+    def _reconcile_extraction_coverage(self, run, revision, workdir):
+        """Recover event-backed processing rows and re-extract omitted reviews only."""
+        cache = Path(workdir) / "cache"
+        cleaned = (_read(cache / "cleaned_reviews.json", {"rows": []}) or {}).get("rows") or []
+        events_doc = _read(cache / "events.json", {"events": [], "metadata": {}}) or {}
+        events = events_doc.get("events") or []
+        processing_doc = _read(cache / "review_processing.json", {"reviews": []}) or {}
+        processing = []
+        processing_signatures = {}
+        for row in processing_doc.get("reviews") or []:
+            review_id = row.get("review_id")
+            signature = (review_id, row.get("status"), row.get("reason"), row.get("event_count"))
+            if review_id and signature in processing_signatures:
+                # Identical duplicate rows are a recoverable cache artifact. Conflicting
+                # rows remain visible to the quality gate for manual diagnosis.
+                continue
+            if review_id:
+                processing_signatures[signature] = True
+            processing.append(row)
+        cleaned_by_id = {row.get("review_id"): row for row in cleaned if row.get("review_id")}
+        event_counts = {}
+        for event in events:
+            review_id = event.get("review_id")
+            if review_id in cleaned_by_id:
+                event_counts[review_id] = event_counts.get(review_id, 0) + 1
+
+        # If events survived a prior interruption but their processing row did not,
+        # reconstruct that row from the event cache without making a model call.
+        processing_by_id = {}
+        for row in processing:
+            review_id = row.get("review_id")
+            if review_id and review_id not in processing_by_id:
+                processing_by_id[review_id] = row
+        for review in cleaned:
+            review_id = review.get("review_id")
+            if not review_id:
+                continue
+            row = processing_by_id.get(review_id)
+            if event_counts.get(review_id) and (
+                    not row or row.get("status") != "已生成事件" or
+                    int(row.get("event_count") or 0) != event_counts[review_id]):
+                recovered = {"review_id": review_id, "status": "已生成事件",
+                             "reason": "由已有语义事件缓存恢复处理记录",
+                             "event_count": event_counts[review_id]}
+                if row:
+                    row.update(recovered)
+                else:
+                    processing.append(recovered)
+                    processing_by_id[review_id] = recovered
+
+        def pending_reviews():
+            rows = []
+            for review in cleaned:
+                review_id = review.get("review_id")
+                processing_row = processing_by_id.get(review_id)
+                if (not processing_row or processing_row.get("status") == "失败" or
+                        (processing_row.get("status") == "已生成事件" and not event_counts.get(review_id))):
+                    rows.append(review)
+            return rows
+
+        pending = pending_reviews()
+        coverage_round = self._coverage_round(workdir, "extraction")
+        for attempt in range(2):
+            if not pending:
+                break
+            for batch_number, chunk in enumerate(_chunks(pending, max(1, int(self.settings.batch_reviews))), 1):
+                requested_ids = {row["review_id"] for row in chunk}
+                batch_id = "extract-coverage-r%02d-%05d-a%02d" % (coverage_round, batch_number, attempt + 1)
+                payload = {"marketplace": (_read(cache / "master.json", {}) or {}).get("marketplace"),
+                           "category": (_read(cache / "master.json", {}) or {}).get("category"),
+                           "reviews": chunk,
+                           "required_review_ids": sorted(requested_ids),
+                           "selection_reason": "补齐已清洗评论的抽取处理记录；每个 required_review_id 必须返回一次明确结果。"}
+                try:
+                    result = self._call(run, revision, workdir, "extract_events", batch_id, payload)
+                except Exception:
+                    # Keep the unresolved reviews explicit below; a provider failure
+                    # must never be recast as an evidence-free no-signal decision.
+                    continue
+                accepted = set()
+                for review_result in result.get("reviews") or []:
+                    review_id = review_result.get("review_id")
+                    if review_id not in requested_ids or review_id in accepted:
+                        continue
+                    source = cleaned_by_id.get(review_id)
+                    if not source:
+                        continue
+                    status = review_result.get("status")
+                    rows = review_result.get("events") or []
+                    if status == "已生成事件" and rows:
+                        event_rows = []
+                        for ordinal, event in enumerate(rows, 1):
+                            item = dict(event)
+                            item["event_id"] = "%s-事%02d" % (review_id, ordinal)
+                            item["review_id"] = review_id
+                            item["asin"] = source.get("asin", "")
+                            item["rating"] = source.get("rating", "")
+                            item["review_date"] = source.get("review_date", "")
+                            item["review_text"] = source.get("content", "")
+                            event_rows.append(item)
+                        known_event_ids = {event.get("event_id") for event in events}
+                        if any(event["event_id"] in known_event_ids for event in event_rows):
+                            continue
+                        events.extend(event_rows)
+                        event_counts[review_id] = len(event_rows)
+                        processing_row = {"review_id": review_id, "status": "已生成事件",
+                                          "reason": "缺失评论的定向补抽完成",
+                                          "event_count": len(event_rows)}
+                    elif status == "无可用需求信号" and not rows and str(review_result.get("no_signal_reason") or "").strip():
+                        processing_row = {"review_id": review_id, "status": "无可用需求信号",
+                                          "reason": str(review_result.get("no_signal_reason"))[:500],
+                                          "event_count": 0}
+                        event_counts[review_id] = 0
+                    else:
+                        continue
+                    if review_id in processing_by_id:
+                        processing_by_id[review_id].update(processing_row)
+                    else:
+                        processing.append(processing_row)
+                        processing_by_id[review_id] = processing_row
+                    accepted.add(review_id)
+            events_doc["events"] = events
+            processing_doc["reviews"] = processing
+            _write(cache / "events.json", events_doc)
+            _write(cache / "review_processing.json", processing_doc)
+            pending = pending_reviews()
+
+        if pending:
+            pending_ids = {row.get("review_id") for row in pending}
+            for review in pending:
+                review_id = review.get("review_id")
+                failed = {"review_id": review_id, "status": "失败",
+                          "reason": "抽取模型未返回可验证的处理结果，未将其视为无需求信号",
+                          "event_count": event_counts.get(review_id, 0)}
+                if review_id in processing_by_id:
+                    processing_by_id[review_id].update(failed)
+                else:
+                    processing.append(failed)
+                    processing_by_id[review_id] = failed
+            processing_doc["reviews"] = processing
+            _write(cache / "review_processing.json", processing_doc)
+            self._advance_coverage_round(workdir, "extraction")
+            raise ValueError("抽取覆盖仍缺少 %s 条评论的有效结果" % len(pending_ids))
+
+        events_doc["events"] = events
+        processing_doc["reviews"] = processing
+        _write(cache / "events.json", events_doc)
+        _write(cache / "review_processing.json", processing_doc)
+
     @staticmethod
     def _review_selection(events):
         selected = {e["event_id"] for e in events if e.get("confidence") == "低" or
@@ -426,11 +723,20 @@ class Pipeline:
     def _review(self, run, revision, workdir):
         path = Path(workdir) / "cache" / "events.json"
         doc = _read(path); events = doc["events"]
-        selected = self._review_selection(events)
-        _, unresolved_before = _repair_event_quotes(events)
-        review_rows = [e for e in events if e["event_id"] in selected]
         review_path = Path(workdir) / "cache" / "semantic_review.json"
         previous = _read(review_path, {}) or {}
+        coverage_round = self._coverage_round(workdir, "review")
+        dropped_unverifiable_event_ids = set(previous.get("dropped_unverifiable_event_ids") or [])
+        event_review_ids = {event.get("event_id"): event.get("review_id") for event in events}
+        _, unresolved_before = _repair_event_quotes(events)
+        # After two focused reviewer rounds, do not keep spending calls on an event whose
+        # quote still cannot be verified verbatim. Exclude it from all downstream claims.
+        if coverage_round >= 2:
+            dropped_unverifiable_event_ids.update(unresolved_before)
+            events = [event for event in events if event.get("event_id") not in unresolved_before]
+            doc["events"] = events
+        selected = self._review_selection(events)
+        review_rows = [e for e in events if e["event_id"] in selected]
         current_event_ids = {event["event_id"] for event in events}
         current_selection_rule = "低置信/无依据推断/无效原文证据 + ASIN×评分10%分层抽样；空缺的可选字段不单独触发复核"
         reuse_previous = str(previous.get("selection_rule", "")).startswith(
@@ -442,7 +748,6 @@ class Pipeline:
         for event_id in unresolved_before:
             decisions_by_id.pop(event_id, None)
         missing_event_ids = []
-        coverage_round = self._coverage_round(workdir, "review")
         call_chunks = []
         for batch_number, chunk in enumerate(_chunks(review_rows, REVIEW_EVENTS_PER_CALL), 1):
             pending = [event for event in chunk if event["event_id"] not in decisions_by_id]
@@ -511,8 +816,19 @@ class Pipeline:
         doc["events"] = list(by_id.values())
         repaired_after, unresolved_after = _repair_event_quotes(doc["events"])
         unresolved_after = sorted(set(unresolved_after))
+        if unresolved_after and coverage_round >= 2:
+            dropped_unverifiable_event_ids.update(unresolved_after)
+            unresolved_ids = set(unresolved_after)
+            doc["events"] = [event for event in doc["events"] if event.get("event_id") not in unresolved_ids]
+            unresolved_after = []
         review_doc["unresolved_quote_event_ids"] = unresolved_after
-        review_doc["complete"] = not unresolved_after
+        review_doc["complete"] = not missing_event_ids and not unresolved_after
+        review_doc["dropped_unverifiable_event_ids"] = sorted(dropped_unverifiable_event_ids)
+        review_doc["dropped_unverifiable_event_count"] = len(dropped_unverifiable_event_ids)
+        review_doc["dropped_unverifiable_reason"] = (
+            "引文经过两轮定向复核仍无法在原评论中精确定位，相关事件已排除"
+            if dropped_unverifiable_event_ids else ""
+        )
         if repaired_after:
             review_doc["evidence_quotes_repaired"] = repaired_after
         doc["metadata"]["review_model"] = self.settings.reviewer_model
@@ -526,7 +842,12 @@ class Pipeline:
         for row in processing_doc["reviews"]:
             row["event_count"] = counts.get(row["review_id"], 0)
             if not row["event_count"] and row["status"] == "已生成事件":
-                row["status"], row["reason"] = "无可用需求信号", "复核后无合格事件"
+                excluded_for_quote = any(
+                    event_id in dropped_unverifiable_event_ids and event_review_ids.get(event_id) == row["review_id"]
+                    for event_id in dropped_unverifiable_event_ids
+                )
+                reason = "引文无法精确定位到评论原文，相关事件已排除" if excluded_for_quote else "复核后无合格事件"
+                row["status"], row["reason"] = "无可用需求信号", reason
         _write(processing_path, processing_doc)
         if unresolved_after:
             self._advance_coverage_round(workdir, "review")
@@ -534,14 +855,46 @@ class Pipeline:
             _write(review_path, review_doc)
             raise ValueError("有 %s 个事件的复核引用仍无法精确定位到评论原文" % len(unresolved_after))
 
+    @staticmethod
+    def _withhold_unbounded_inferences(workdir):
+        cache = Path(workdir) / "cache"
+        events_path = cache / "events.json"
+        events_doc = _read(events_path, {}) or {}
+        withheld = []
+        for event in events_doc.get("events") or []:
+            motivation = event.get("motivation") or {}
+            if motivation.get("inferred") and not (motivation.get("inference_basis") or []):
+                motivation["inferred"] = ""
+                motivation["inference_basis"] = []
+                event["motivation"] = motivation
+                if event.get("event_id"):
+                    withheld.append(event["event_id"])
+        if not withheld:
+            return 0
+        _write(events_path, events_doc)
+        review_path = cache / "semantic_review.json"
+        review_doc = _read(review_path, {}) or {}
+        prior = set(review_doc.get("unbounded_inference_withheld_event_ids") or [])
+        prior.update(withheld)
+        review_doc["unbounded_inference_withheld_event_ids"] = sorted(prior)
+        review_doc["unbounded_inference_withheld_count"] = len(prior)
+        review_doc["unbounded_inference_withheld_reason"] = (
+            "复核后仍缺少可核验推理依据，已撤下推断字段；事件中有证据支持的其他内容保留。"
+        )
+        _write(review_path, review_doc)
+        return len(withheld)
+
     def _normalize(self, run, revision, workdir):
         events = _read(Path(workdir) / "cache" / "events.json")["events"]
         master = _read(Path(workdir) / "cache" / "master.json")
         dictionary_path = Path(workdir) / "cache" / "tag_dictionary.json"
         prior_dictionary = _read(dictionary_path, {}) or {}
-        result = self._call(run, revision, workdir, "build_dictionary", "dictionary",
-                            {"events": events, "namespaces": NAMESPACES, "marketplace": master.get("marketplace"),
-                             "category": master.get("category")})
+        dictionary_payload = {"events": events, "namespaces": NAMESPACES,
+                              "marketplace": master.get("marketplace"), "category": master.get("category")}
+        dictionary_input_bytes = _json_size_bytes(dictionary_payload)
+        raw_passthrough_only = dictionary_input_bytes > MAX_DICTIONARY_MODEL_INPUT_BYTES
+        result = ({"tags": []} if raw_passthrough_only else
+                  self._call(run, revision, workdir, "build_dictionary", "dictionary", dictionary_payload))
         event_by_id = {e["event_id"]: e for e in events}
         tags = []
         for tag in result.get("tags") or []:
@@ -550,6 +903,7 @@ class Pipeline:
             tag["support_event_ids"] = sorted({eid for eid in tag.get("support_event_ids") or [] if eid in event_by_id})
             if not tag["support_event_ids"]:
                 continue
+            tag["normalization_status"] = "normalized"
             reviews = {event_by_id[eid]["review_id"] for eid in tag["support_event_ids"]}
             tag["independent_review_count"] = len(reviews)
             tag["status"] = "formal" if len(reviews) >= 2 else "exploratory"
@@ -557,6 +911,9 @@ class Pipeline:
         tag_by_id = {tag.get("tag_id"): tag for tag in tags}
         valid_mappings = {}
         repair_round = self._coverage_round(workdir, "mapping")
+        prior_metadata = prior_dictionary.get("metadata") or {}
+        prior_model_unmapped = int(prior_metadata.get(
+            "mapping_model_unmapped_count", prior_metadata.get("mapping_missing_count", 0)) or 0)
         expected_mapping_keys = set()
         expected_mapping_rows = {}
         mapping_chunks = []
@@ -577,12 +934,14 @@ class Pipeline:
             compact_tags = [{key: tag.get(key, "") for key in ("tag_id", "namespace", "canonical_name", "definition")}
                             for tag in tags if tag.get("namespace") in used_namespaces]
             expected_mapping_keys.update(required_keys)
-            payload = {"events": compact_events, "tag_dictionary": compact_tags,
-                       "field_namespace_map": FIELD_NAMESPACES}
-            batch_prefix = "mapping-r00-%05d" % batch_number
-            mapping_chunks.append((batch_prefix, compact_events, compact_tags, required_keys, payload))
-        base_results = self._call_many(run, revision, workdir, "map_dictionary",
-                                       [(batch_id, payload) for batch_id, _, _, _, payload in mapping_chunks])
+            if not raw_passthrough_only:
+                payload = {"events": compact_events, "tag_dictionary": compact_tags,
+                           "field_namespace_map": FIELD_NAMESPACES}
+                batch_prefix = "mapping-r00-%05d" % batch_number
+                mapping_chunks.append((batch_prefix, compact_events, compact_tags, required_keys, payload))
+        base_results = (self._call_many(run, revision, workdir, "map_dictionary",
+                                        [(batch_id, payload) for batch_id, _, _, _, payload in mapping_chunks])
+                        if mapping_chunks else [])
 
         def accept_valid(rows, allowed_keys):
             for row in rows:
@@ -590,13 +949,17 @@ class Pipeline:
                 tag = tag_by_id.get(row.get("tag_id"))
                 expected_namespace = FIELD_NAMESPACES.get(row.get("field_path"))
                 if key in allowed_keys and tag and tag.get("namespace") == expected_namespace:
-                    valid_mappings.setdefault(key, row)
+                    valid_mappings.setdefault(key, {**row, "mapping_method": "model_normalized"})
 
         for (batch_prefix, compact_events, compact_tags, required_keys, _), result in zip(mapping_chunks, base_results):
             accept_valid(result.get("mappings") or [], required_keys)
 
         missing_keys = expected_mapping_keys - set(valid_mappings)
-        for repair_number in range(1, 3):
+        # A previous run may already have exhausted both focused mapping repairs.
+        # Reusing its dictionary should not charge for the same unsuccessful requests;
+        # exact-value passthrough below preserves coverage transparently.
+        repair_attempts = 0 if prior_model_unmapped or raw_passthrough_only else 2
+        for repair_number in range(1, repair_attempts + 1):
             if not missing_keys:
                 break
             missing_rows = [expected_mapping_rows[key] for key in sorted(missing_keys)]
@@ -630,12 +993,57 @@ class Pipeline:
             missing_keys = expected_mapping_keys - set(valid_mappings)
         mappings = [valid_mappings[key] for key in sorted(valid_mappings)]
         missing_mapping_count = len(expected_mapping_keys - set(valid_mappings))
+        raw_fallback_count = 0
         if missing_mapping_count:
+            # Preserve uncategorized model output faithfully. Exact raw-value tags
+            # complete the evidence mapping but remain visibly distinct from
+            # model-normalized vocabulary and are excluded from segment proposals.
+            missing_rows = [expected_mapping_rows[key] for key in sorted(expected_mapping_keys - set(valid_mappings))]
+            fallback_groups = {}
+            for row in missing_rows:
+                group_key = (row["namespace"], _normal_text(row["raw_value"]))
+                group = fallback_groups.setdefault(group_key, {"raw_values": [], "event_ids": set(), "rows": []})
+                if row["raw_value"] not in group["raw_values"]:
+                    group["raw_values"].append(row["raw_value"])
+                group["event_ids"].add(row["event_id"])
+                group["rows"].append(row)
+            used_tag_ids = {tag.get("tag_id") for tag in tags}
+            for (namespace, normalized_raw), group in sorted(fallback_groups.items()):
+                raw_value = sorted(group["raw_values"], key=lambda value: (len(value), value))[0]
+                tag_id = _stable("RAW", namespace, normalized_raw)
+                if tag_id in used_tag_ids:
+                    tag_id = _stable("RAW", namespace, normalized_raw, "passthrough")
+                used_tag_ids.add(tag_id)
+                support_ids = sorted(group["event_ids"])
+                review_count = len({event_by_id[event_id]["review_id"] for event_id in support_ids})
+                tags.append({"tag_id": tag_id, "namespace": namespace, "canonical_name": raw_value,
+                             "definition": "原始字段值透传，未执行同义词归并；不代表已确认的标准术语。",
+                             "parent_tag_id": "", "raw_variants": sorted(group["raw_values"]),
+                             "include_examples": [], "exclude_examples": [],
+                             "support_event_ids": support_ids, "independent_review_count": review_count,
+                             "confidence": "原始表达透传", "status": "exploratory",
+                             "normalization_status": "raw_unmerged"})
+                for row in group["rows"]:
+                    key = (row["event_id"], row["field_path"], _normal_text(row["raw_value"]))
+                    valid_mappings[key] = {"event_id": row["event_id"], "field_path": row["field_path"],
+                                           "raw_value": row["raw_value"], "tag_id": tag_id,
+                                           "mapping_method": "raw_passthrough"}
+                    raw_fallback_count += 1
+            mappings = [valid_mappings[key] for key in sorted(valid_mappings)]
+        unresolved_mapping_count = len(expected_mapping_keys - set(valid_mappings))
+        if unresolved_mapping_count:
             self._advance_coverage_round(workdir, "mapping")
         _write(dictionary_path,
                {"schema": "amazon-voc-tag-dictionary/v1", "metadata": {"prompt_version": self.prompts.load("build_dictionary")[0]["version"],
                   "model": self.settings.extractor_model, "generated_at": (prior_dictionary.get("metadata") or {}).get("generated_at") or utcnow(),
-                  "mapping_coverage_round": repair_round, "mapping_missing_count": missing_mapping_count}, "tags": tags,
+                  "mapping_coverage_round": repair_round, "mapping_missing_count": unresolved_mapping_count,
+                  "mapping_model_unmapped_count": missing_mapping_count,
+                  "normalized_tag_count": sum(tag.get("normalization_status") != "raw_unmerged" for tag in tags),
+                  "raw_unmerged_tag_count": sum(tag.get("normalization_status") == "raw_unmerged" for tag in tags),
+                  "raw_passthrough_mapping_count": raw_fallback_count,
+                  "dictionary_generation_mode": ("raw_passthrough_input_too_large" if raw_passthrough_only
+                                                 else "model_normalized"),
+                  "dictionary_input_bytes": dictionary_input_bytes}, "tags": tags,
                   "mappings": mappings})
 
     def _segment(self, run, revision, workdir):
@@ -648,8 +1056,25 @@ class Pipeline:
         minimum = max(int(config.get("segment_min_review_count", 2)),
                       int(math.ceil(len(cleaned) * float(config.get("segment_min_review_rate", .005)))))
         proposal_input = build_segment_proposal_input(events, dictionary, minimum)
-        proposals = self._call(run, revision, workdir, "propose_segments", "segments", proposal_input)
-        segments = proposals.get("segments") or []
+        proposal_batches = build_segment_proposal_batches(proposal_input)
+        proposal_results = self._call_many(
+            run, revision, workdir, "propose_segments",
+            [("segments" if len(proposal_batches) == 1 else "segments-b%04d" % index, batch["payload"])
+             for index, batch in enumerate(proposal_batches, 1)])
+        segments = []
+        seen_segment_keys = set()
+        for proposals in proposal_results:
+            for proposed in proposals.get("segments") or []:
+                segment = dict(proposed)
+                segment_key = segment.get("segment_key") or {}
+                stable_key = tuple(_normal_text(segment_key.get(key))
+                                   for key in ("audience", "scenario", "motivation", "task"))
+                if not any(stable_key) or stable_key in seen_segment_keys:
+                    continue
+                seen_segment_keys.add(stable_key)
+                segments.append(segment)
+        if not segments:
+            raise ValueError("细分建议没有返回可用的人群、场景、动机或任务候选")
         used = set()
         for segment in segments:
             segment["segment_id"] = segment.get("segment_id") or _stable("SEG", *(segment.get("segment_key") or {}).values())
@@ -660,7 +1085,10 @@ class Pipeline:
         coverage_round = self._coverage_round(workdir, "assignment")
         assignment_chunks = []
         for batch_number, chunk in enumerate(_chunks(events, ASSIGNMENT_EVENTS_PER_CALL), 1):
-            batch_id = "assignment-r%02d-%05d" % (coverage_round, batch_number)
+            # Keep deterministic base IDs stable across pipeline retries. Input
+            # hashes already invalidate changed payloads; bumping this ID after
+            # a coverage failure would reissue every completed base assignment.
+            batch_id = "assignment-r00-%05d" % batch_number
             payload = {"events": chunk, "segments": segments,
                        "required_event_ids": sorted(event["event_id"] for event in chunk)}
             assignment_chunks.append((batch_id, chunk, payload))
@@ -668,15 +1096,21 @@ class Pipeline:
                                        [(batch_id, payload) for batch_id, _, payload in assignment_chunks])
         for (base_batch_id, chunk, _), assignment in zip(assignment_chunks, base_results):
             pending = list(chunk)
-            for attempt in range(3):
+            for attempt in range(4):
                 if not pending:
                     break
                 requested_ids = {event["event_id"] for event in pending}
                 if attempt:
-                    batch_id = base_batch_id + "-coverage-%02d" % attempt
+                    if attempt <= 2:
+                        batch_id = base_batch_id + "-coverage-%02d" % attempt
+                    else:
+                        batch_id = base_batch_id + "-coverage-r%02d-%02d" % (coverage_round, attempt)
+                    repair_schema = json.loads(json.dumps(SCHEMAS["assign_segments"]))
+                    repair_schema["properties"]["assignments"]["items"]["properties"]["segment_id"]["enum"] = sorted(used)
                     assignment = self._call(run, revision, workdir, "assign_segments", batch_id,
                                             {"events": pending, "segments": segments,
-                                             "required_event_ids": sorted(requested_ids)})
+                                             "required_event_ids": sorted(requested_ids)},
+                                            schema_override=repair_schema)
                 for row in assignment.get("assignments") or []:
                     event_id = row.get("event_id")
                     if event_id in requested_ids and row.get("segment_id") in used:
@@ -694,8 +1128,21 @@ class Pipeline:
             reviews = {event_by_id[eid]["review_id"] for eid in segment["member_event_ids"] if eid in event_by_id}
             segment["status"] = "formal" if len(reviews) >= minimum else "exploratory"
             segment["evidence_event_ids"] = segment["member_event_ids"][:20]
+        proposed_segment_count = len(segments)
+        inactive_segments = [segment for segment in segments if not segment["member_event_ids"]]
+        segments = [segment for segment in segments if segment["member_event_ids"]]
+        if not segments:
+            raise ValueError("细分归属后没有包含样本事件的有效细分")
         metadata = {"model": self.settings.extractor_model, "model_version": self.settings.extractor_model,
-                    "prompt_version": self.prompts.load("propose_segments")[0]["version"], "generated_at": utcnow()}
+                    "prompt_version": self.prompts.load("propose_segments")[0]["version"], "generated_at": utcnow(),
+                    "proposal_mode": "profile_batches" if len(proposal_batches) > 1 else "single_profile_batch",
+                    "proposal_batch_count": len(proposal_batches),
+                    "proposal_profile_count": len(proposal_input.get("profiles") or []),
+                    "proposed_segment_count": proposed_segment_count,
+                    "inactive_candidate_count": len(inactive_segments),
+                    "proposal_event_count": len(events),
+                    "proposal_input_bytes": _json_size_bytes(proposal_input),
+                    "proposal_max_batch_bytes": max((batch["input_bytes"] for batch in proposal_batches), default=0)}
         _write(cache / "segment_model.json", {"schema": "amazon-voc-segment-model/v3", "metadata": metadata,
                                                "segments": segments, "journey": {}})
 
@@ -706,10 +1153,11 @@ class Pipeline:
         segment_by_event = {event_id: segment["segment_id"]
                             for segment in doc["segments"]
                             for event_id in segment.get("member_event_ids") or []}
+        stage_proposal = build_journey_stage_proposal_input(events, doc["segments"])
+        stage_payload = {**stage_proposal, "event_assignments": [], "fixed_stages": []}
         stages_result = self._call(
             run, revision, workdir, "build_journey", "journey-stages",
-            {"events": events, "segments": doc["segments"], "event_assignments": [],
-             "fixed_stages": []})
+            stage_payload)
         stages = stages_result.get("stages") or []
         if not stages:
             raise ValueError("旅程阶段目录为空")
@@ -738,7 +1186,8 @@ class Pipeline:
             assigned_ids = set()
             pending_ids = set(chunk_ids)
             for row in result.get("assignments") or []:
-                if row.get("event_id") in pending_ids and row.get("stage_id") in {s["stage_id"] for s in stages}:
+                if (row.get("event_id") in pending_ids and row.get("event_id") not in assigned_ids and
+                        row.get("stage_id") in {s["stage_id"] for s in stages}):
                     assignments.append(row)
                     assigned_ids.add(row["event_id"])
             pending_ids -= assigned_ids
@@ -763,6 +1212,14 @@ class Pipeline:
                 self._advance_coverage_round(workdir, "journey")
                 raise ValueError("旅程阶段归属仍缺少 %s 个事件" % len(chunk_ids - assigned_ids))
         doc["journey"] = {"stages": stages,
+                          "stage_generation": {
+                              "method": stage_proposal["sampling_method"],
+                              "event_count": stage_proposal["event_count"],
+                              "sampled_event_count": stage_proposal["sampling"]["sampled_event_count"],
+                              "active_segment_count": stage_proposal["sampling"]["active_segment_count"],
+                              "max_samples_per_segment": stage_proposal["sampling"]["max_samples_per_segment"],
+                              "input_bytes": _json_size_bytes(stage_payload),
+                          },
                           "event_assignments": [{"event_id": row.get("event_id"), "stage_id": row.get("stage_id")}
                                                 for row in assignments]}
         _write(cache / "segment_model.json", doc)
@@ -807,8 +1264,10 @@ class Pipeline:
                 self._initialize(run, workdir); self._status(run_id, "cleaned")
             if not (workdir / "cache" / "events.json").exists():
                 self._status(run_id, "extracting"); self._extract(run, revision, workdir)
+            self._status(run_id, "extracting"); self._reconcile_extraction_coverage(run, revision, workdir)
             if not self._review_cache_complete(workdir):
                 self._status(run_id, "reviewing"); self._review(run, revision, workdir)
+            self._withhold_unbounded_inferences(workdir)
             self._status(run_id, "normalizing"); self._normalize(run, revision, workdir)
             self._status(run_id, "segmenting"); self._segment(run, revision, workdir)
             self._status(run_id, "journey"); self._journey(run, revision, workdir)

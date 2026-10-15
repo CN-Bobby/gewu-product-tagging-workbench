@@ -70,6 +70,7 @@ def build_excel(workdir):
         ["类KANO边界", data.get("method", {}).get("kano_boundary")],
         ["事件数量", (data.get("counts") or {}).get("events", len(events))],
         ["动态标签数量", (data.get("counts") or {}).get("tags", len(dictionary.get("tags") or []))],
+        ["未归并原始表达标签数量", (data.get("counts") or {}).get("raw_unmerged_tags", 0)],
         ["模型", data.get("method", {}).get("models")],
         ["Prompt版本", data.get("method", {}).get("prompt_versions")],
     ])
@@ -109,13 +110,15 @@ def build_excel(workdir):
 
     write_sheet(workbook, "动态标签词典",
                 ["标签ID", "命名空间", "标准名称", "定义", "父标签", "原始变体", "包含例", "排除例",
-                 "支持事件ID", "独立评论数", "置信度", "状态"],
+                 "支持事件ID", "独立评论数", "置信度", "状态", "归一状态"],
                 [[item.get("tag_id"), item.get("namespace"), item.get("canonical_name"), item.get("definition"),
                   item.get("parent_tag_id"), item.get("raw_variants"), item.get("include_examples"),
                   item.get("exclude_examples"), item.get("support_event_ids"), item.get("independent_review_count"),
-                  item.get("confidence"), item.get("status")] for item in dictionary.get("tags") or []])
-    write_sheet(workbook, "事件标签映射", ["事件ID", "字段路径", "原始值", "标签ID"],
-                [[item.get("event_id"), item.get("field_path"), item.get("raw_value"), item.get("tag_id")]
+                  item.get("confidence"), item.get("status"), item.get("normalization_status", "normalized")]
+                 for item in dictionary.get("tags") or []])
+    write_sheet(workbook, "事件标签映射", ["事件ID", "字段路径", "原始值", "标签ID", "映射方式"],
+                [[item.get("event_id"), item.get("field_path"), item.get("raw_value"), item.get("tag_id"),
+                  item.get("mapping_method", "model_normalized")]
                  for item in dictionary.get("mappings") or []])
 
     segment_rows = []
