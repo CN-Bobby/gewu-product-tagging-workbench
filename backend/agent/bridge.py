@@ -77,7 +77,12 @@ class AgentBridgeError(Exception):
 class SessionNotFound(AgentBridgeError):pass
 class SessionBusy(AgentBridgeError):pass
 class InvalidSessionState(AgentBridgeError):pass
-class BackendStartError(AgentBridgeError):pass
+class BackendStartError(AgentBridgeError):
+    fatal=True
+    def __init__(self,message='',*,stage=None,diagnostic=None):
+        self.stage=stage
+        self.diagnostic=diagnostic
+        super().__init__(message or 'Agent 后端启动失败')
 class BackendSendError(AgentBridgeError):
     """The backend broke its contract: it raised something that was not a BackendError.
     Treated as a failed turn, not a failed session, so the caller may simply try again."""
@@ -142,7 +147,8 @@ class AgentBridge:
         try:backend.start()
         except Exception as error:
             self._fail(session_id,'session_failed',error)
-            raise BackendStartError(str(error)) from error
+            raise BackendStartError(str(error),stage=getattr(error,'stage',None),
+                                    diagnostic=getattr(error,'diagnostic',None)) from error
         remote=None
         try:remote=backend.status().get('remote_session_id')
         except Exception:remote=None
@@ -179,26 +185,50 @@ class AgentBridge:
             self._running[session_id]=message_id
         self._buffers.pop(session_id,None)
         # Only message metadata is recorded: the prompt text itself is not part of an event.
-        started=time.perf_counter()
-        self._record(session_id,'message_started',message_id=message_id,text_chars=len(text))
+        usage_event_id=None
         try:
+            from ..usage import start_usage_event
+            usage_event_id=start_usage_event(
+                kind='agent_turn',module='agent',task_id=session.get('dataset_id'),
+                provider=session.get('provider'),model=session.get('model'),
+                metadata={'agent_session_id':session_id,'message_id':message_id},
+            )
+        except Exception:
+            pass
+        started=time.perf_counter()
+        def finish_usage(status):
+            try:
+                from ..usage import finish_usage_event
+                finish_usage_event(usage_event_id,status=status,
+                    duration_ms=round((time.perf_counter()-started)*1000),
+                    usage_source='agent_provider_usage_unavailable')
+            except Exception:
+                pass
+        try:
+            self._record(session_id,'message_started',message_id=message_id,text_chars=len(text))
             self._backends[session_id].send(text)
             self._flush_delta(session_id,'completed')
-            return self._record(session_id,'message_completed',message_id=message_id,seconds=_elapsed(started))
+            result=self._record(session_id,'message_completed',message_id=message_id,seconds=_elapsed(started))
+            finish_usage('completed')
+            return result
         except CancelledError as error:
             self._flush_delta(session_id,'cancelled')
             self._record(session_id,'message_cancelled',message_id=message_id,seconds=_elapsed(started))
+            finish_usage('cancelled')
             raise
         except BackendError as error:
             self._flush_delta(session_id,'failed')
             self._record(session_id,'message_failed',message_id=message_id,error=type(error).__name__,fatal=bool(error.fatal))
+            finish_usage('failed')
             if error.fatal:self._fail(session_id,'session_failed',error)
             raise
         except AgentBridgeError:
+            finish_usage('failed')
             raise
         except Exception as error:
             self._flush_delta(session_id,'failed')
             self._record(session_id,'message_failed',message_id=message_id,error=type(error).__name__,fatal=False)
+            finish_usage('failed')
             raise BackendSendError(str(error)) from error
         finally:
             with self._lock:

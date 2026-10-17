@@ -11,6 +11,7 @@ cancel, answer/refuse an inbound interaction, status and stop. Cancelling abando
 keeps the session; stopping is the only move that discards the runtime.
 """
 import os
+import re
 import threading
 import time
 import uuid
@@ -170,6 +171,18 @@ def _detail(error):
     return ('%s: %s' % (type(error).__name__,error))[:DETAIL_LIMIT]
 
 
+def _redact_diagnostic(value,env=None):
+    """Keep startup diagnostics useful without allowing credentials to escape over HTTP."""
+    text=str(value or '')
+    for name,secret in (env or {}).items():
+        if any(part in str(name).lower() for part in ('key','token','secret','password','authorization')):
+            candidate=str(secret or '')
+            if len(candidate)>=4:text=text.replace(candidate,'[REDACTED]')
+    text=re.sub(r'(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]+',r'\1 [REDACTED]',text)
+    text=re.sub(r'(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization)\b\s*[:=]\s*["\']?[^\s,;"\']+',r'\1=[REDACTED]',text)
+    return text[:DETAIL_LIMIT]
+
+
 def _text(value):
     return value.strip() if isinstance(value,str) else ''
 
@@ -258,7 +271,9 @@ class ReasonixAdapter:
                 runtime.start()
             except Exception as error:
                 self._runtime=None
-                raise RuntimeUnavailable('运行时启动失败',detail=_detail(error)) from error
+                safe=_redact_diagnostic(_detail(error),self._config.env)
+                raise RuntimeUnavailable('运行时启动失败',detail={'message':safe},stage='process_start',
+                    diagnostic={'message':safe,'process':{'pid':None,'exit_code':None,'alive':False}}) from error
             try:
                 self._handshake=self._initialize(runtime)
                 if self._config.resume is None:
@@ -267,6 +282,19 @@ class ReasonixAdapter:
                 else:
                     self._resume(runtime,self._config.resume)
                     self._started_as='resumed'
+            except RuntimeUnavailable as error:
+                self._teardown()
+                if error.stage:
+                    raw=error.detail
+                    detail=raw if isinstance(raw,dict) else {'message':_redact_diagnostic(raw,self._config.env)}
+                    exit_state=self._exit or {}
+                    error.diagnostic={
+                        'error_code':detail.get('error_code'),
+                        'message':detail.get('message') or error.args[0],
+                        'process':{'pid':exit_state.get('pid'),'exit_code':exit_state.get('returncode'),
+                                   'alive':bool(exit_state.get('alive',False))},
+                    }
+                raise
             except BaseException:
                 self._teardown()
                 raise
@@ -649,23 +677,30 @@ class ReasonixAdapter:
                 'clientInfo':{'name':self._config.client_name,'version':self._config.client_version}}
         try:result=runtime.request('initialize',params,timeout=INITIALIZE_TIMEOUT_SECONDS)
         except Exception as error:
-            raise RuntimeUnavailable('initialize 失败',detail=_detail(error)) from error
+            raise RuntimeUnavailable('initialize 失败',detail=self._startup_detail(error),stage='initialize') from error
         if not isinstance(result,dict):
-            raise RuntimeUnavailable('initialize 未返回协商结果')
+            raise RuntimeUnavailable('initialize 未返回协商结果',stage='initialize')
         negotiated=result.get('protocolVersion')
         if negotiated!=PROTOCOL_VERSION:
             raise RuntimeUnavailable('initialize 协商的协议版本不受支持',
-                detail='expected=%s negotiated=%s' % (PROTOCOL_VERSION,negotiated))
+                detail={'message':'expected=%s negotiated=%s' % (PROTOCOL_VERSION,negotiated)},stage='initialize')
         return result
 
     def _create_session(self,runtime):
         try:result=runtime.request('session/new',{'cwd':self._config.cwd,'mcpServers':[]},
                                    timeout=SESSION_TIMEOUT_SECONDS)
         except Exception as error:
-            raise RuntimeUnavailable('创建会话失败',detail=_detail(error)) from error
+            raise RuntimeUnavailable('创建会话失败',detail=self._startup_detail(error),stage='session_new') from error
         session_id=result.get('sessionId') if isinstance(result,dict) else None
-        if not _text(str(session_id)):raise RuntimeUnavailable('创建会话未返回会话标识')
+        if not _text(str(session_id)):raise RuntimeUnavailable('创建会话未返回会话标识',stage='session_new')
         return str(session_id)
+
+    def _startup_detail(self,error):
+        message=_redact_diagnostic(error,self._config.env)
+        code=getattr(error,'error_code',None)
+        if isinstance(code,(int,str)) and not isinstance(code,bool):
+            return {'error_code':code,'message':message}
+        return {'message':message}
 
     def _resume(self,runtime,resume):
         """Resume, then re-establish the extension surface before the session counts as ready."""

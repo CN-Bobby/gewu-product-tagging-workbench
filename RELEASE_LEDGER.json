@@ -90,6 +90,67 @@
       "manual_values_check": "17/17 unchanged",
       "upgrade_backup": "K:\\Bobbytagging\\Data\\backups\\upgrade-20260916T231915515425Z",
       "rollback": "available (backup restore + old candidate, verified)"
+    },
+    {
+      "version": "0.5.0-beta.8",
+      "status": "superseded",
+      "artifact_kind": "internal_candidate",
+      "commit": "738da1a1e382cad9769c0724dd93773c7648748b",
+      "tag": null,
+      "superseded_by": "0.5.0-beta.9",
+      "note": "本地遗留 app 清单标记 build_mode=dev、release=false、distribution=development build, not for distribution；没有与之绑定的 TEST 人工验收报告。只作为开发构建记录，不可分发。"
+    },
+    {
+      "version": "0.5.0-beta.9",
+      "status": "superseded",
+      "artifact_kind": "portable_candidate",
+      "commit": null,
+      "tag": null,
+      "superseded_by": "0.5.0-beta.10",
+      "note": "未完成冻结的便携候选版本；由 beta.10 的独立 TEST 冻结候选取代，未发布。"
+    },
+    {
+      "version": "0.5.0-beta.10",
+      "status": "superseded",
+      "artifact_kind": "portable_candidate",
+      "commit": "2486e1b7161309b7dc902c186df94eff0ddbffac",
+      "tag": null,
+      "candidate_report": "K:\\GeWuTest\\Reports\\candidate-0.5.0-beta.10+2486e1b71613-2486e1b71613.json",
+      "candidate_report_sha256": "8aca5166bc979fc874e36c52e8be44bd861deaf635c538a01957875a9f50cdb0",
+      "portable_sha256": "527298d0fa6110c0cb3f2d4bc7d7413c42d66750124e6643812bf8c71c733dfb",
+      "superseded_by": "0.5.0-beta.11",
+      "note": "TEST 冻结的独立候选，状态为 running_pending_manual_acceptance；不是 DEV 当前测试提交，没有人工验收、PROD 提升或 GitHub Release。候选文件和报告保留原位，由 beta.11 取代。"
+    },
+    {
+      "version": "0.5.0-beta.11",
+      "status": "superseded",
+      "artifact_kind": "portable_candidate",
+      "commit": "01bb1f19d76c454ceb67ae358a3a020e9dac7f31",
+      "tag": null,
+      "portable_sha256": "88782744adacfae2e74a708448fea043ef585b1cbc8dbf1ee4fcee30eca5d4fb",
+      "build_manifest_sha256": "86470c93bf26e4bf1905b23493b877bdcf2ca037b7f50e66162780f11f78dadb",
+      "automated_report": "K:\\GeWuTest\\Reports\\offline-20261013-033339-01bb1f19d76c.json",
+      "automated_report_sha256": "8e7ce641c0b0d6ca74505c694e845ce75969594632261d97fb0845c909d7395e",
+      "superseded_by": "0.5.0-beta.12",
+      "note": "本地 beta.11 绿色候选已构建并复制到桌面，但公开仓库审核发现真实商品 ASIN 示例；没有推送、打 Tag 或创建 Release。为遵守冻结不可覆盖规则，保留原包并由清理后的 beta.12 接替。"
+    },
+    {
+      "version": "0.5.0-beta.12",
+      "status": "superseded",
+      "artifact_kind": "portable_candidate",
+      "commit": null,
+      "tag": null,
+      "superseded_by": "0.5.0-beta.13",
+      "note": "DEV 人工测试由用户确认完成；本版为清理公开源码样例后的绿色候选，待另一台电脑安装验收。PROD 部署仍待完成。"
+    },
+    {
+      "version": "0.5.0-beta.13",
+      "status": "pending_acceptance",
+      "artifact_kind": "portable_candidate",
+      "commit": null,
+      "tag": null,
+      "superseded_by": null,
+      "note": "DEV 人工验收已由用户确认；新增项目左树文件管理、六类目录迁移及关键词任务产物归档修复。待完成外机安装门禁评估、PROD 身份核验和 GitHub 便携包发布。"
     }
   ]
 }

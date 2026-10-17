@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, StrictBool
 from starlette.datastructures import UploadFile
 
@@ -71,7 +71,7 @@ async def create_run(project_id: str, request: Request):
     try:
         if len(uploads) != 1 or uploads[0][0] != "reviews":
             raise HTTPException(422, "每个 VOC 任务只能上传一个评论Excel文件")
-        allowed = {"reviews", "model", "credential_id"}
+        allowed = {"reviews", "model", "credential_id", "force_refresh"}
         unexpected = [name for name, _ in form.multi_items() if name not in allowed]
         if unexpected:
             raise HTTPException(422, "评论Excel之外只能提交模型选项，不能上传其他分析数据源")
@@ -81,8 +81,13 @@ async def create_run(project_id: str, request: Request):
         data = await upload.read(MAX_REVIEW_BYTES + 1)
         if len(data) > MAX_REVIEW_BYTES:
             raise HTTPException(413, "评论Excel文件最大支持 50 MiB")
+        force_refresh_raw = str(form.get("force_refresh") or "false").casefold()
+        if force_refresh_raw not in ("true", "false", "1", "0"):
+            raise HTTPException(422, "force_refresh 只能为 true 或 false")
         return service.create_run(project_id, upload.filename or "reviews.xlsx", data,
-                                  form.get("model"), form.get("credential_id"))
+                                  form.get("model"), form.get("credential_id"),
+                                  force_refresh=force_refresh_raw in ("true", "1"),
+                                  analysis_mode="full_voc_v2")
     except HTTPException:
         raise
     except Exception as exc:
@@ -136,6 +141,8 @@ def retry(run_id: str):
 def artifact(run_id: str, kind: str):
     try:
         path = service.artifact_path(run_id, kind)
+        if kind == "html":
+            return HTMLResponse(content=path.read_text(encoding="utf-8-sig"))
         media = {"html": "text/html; charset=utf-8", "excel": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                  "quality": "application/json"}[kind]
         return FileResponse(path, filename=path.name, media_type=media)
@@ -176,8 +183,7 @@ def correct_event(run_id: str, event_id: str, item: CorrectionInput):
 
 
 def recover():
-    service.recover()
-    service.start_worker()
+    service.start_worker(recover_pending=True)
 
 
 def stop_all():

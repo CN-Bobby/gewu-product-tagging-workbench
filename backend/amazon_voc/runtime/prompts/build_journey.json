@@ -1,9 +1,10 @@
 {
   "task": "build_journey",
-  "version": "4.1.0",
-  "objective": "fixed_stages 为空时依据评论生成动态阶段目录且不分配事件；fixed_stages 非空时原样复用，并把 required_event_ids 中每个事件各映射到一个阶段。",
-  "forbidden": ["套用固定七阶段", "强制每个细分覆盖全部阶段", "把需求类别当旅程阶段", "遗漏或重复 required_event_ids", "新增输入中没有的事件ID", "改写fixed_stages"],
-  "input_fields": ["events", "segments", "event_assignments", "fixed_stages", "required_event_ids (仅阶段映射请求)"],
-  "positive_example": "fixed_stages为空时只定义旅程阶段并返回空assignments；fixed_stages非空时原样复用这些阶段，并只为event_assignments列出的事件返回一次映射。",
-  "negative_example": "在每个分批请求中重新发明阶段ID，或即使event_assignments为空也返回所有事件映射。"
+  "version": "4.3.0",
+  "objective": "fixed_stages 为空时依据按活跃细分和评论时间抽样的压缩评论信号归纳动态中英双语旅程阶段且不分配事件；fixed_stages 非空时原样复用，并把 required_event_ids 中每个事件各映射到一个阶段，只返回事件ID和阶段ID。",
+  "forbidden": ["套用固定七阶段", "强制每个细分覆盖全部阶段", "把需求类别当旅程阶段", "把抽样评论信号的频次误当全样本频次", "遗漏或重复 required_event_ids", "新增输入中没有的事件ID", "改写fixed_stages"],
+  "input_fields": ["阶段目录请求：event_count, sampling_method, segments（persona_summary, jtbd_statement, member_event_count, review_signals）", "阶段映射请求：事件ID、事件字段与短证据引文（不含完整评论原文）、segments, event_assignments, fixed_stages, required_event_ids"],
+  "instructions": ["每个阶段必须同时给出 name/name_en 和 definition/definition_en，含义一致、简洁自然。", "从重复动作和进展模式归纳阶段，不把单条评论动作原样罗列为阶段名；不编造样本未体现的阶段。", "固定阶段目录映射请求必须完整保留目录中所有双语阶段字段，不得重新生成或改写。"],
+  "positive_example": "阶段目录请求按 member_event_count 理解细分体量，并将相近动作抽象成少量清楚的阶段，提供中英名称与定义；fixed_stages非空时原样复用这些阶段，并只为event_assignments列出的事件返回一次映射。",
+  "negative_example": "把阶段目录请求中的抽样评论信号数量当成全部评论分布；在每个分批请求中重新发明阶段ID，或即使event_assignments为空也返回所有事件映射。"
 }

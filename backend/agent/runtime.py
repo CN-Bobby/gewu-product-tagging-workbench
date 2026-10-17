@@ -29,6 +29,15 @@ def timestamp():
     return datetime.now(timezone.utc).isoformat()
 
 
+class ACPRemoteError(RuntimeError):
+    """A JSON-RPC error reply with the peer's machine-readable code retained."""
+    def __init__(self,error):
+        error=error if isinstance(error,dict) else {}
+        self.error_code=error.get('code')
+        self.remote_message=str(error.get('message') or 'ACP error')
+        super().__init__(self.remote_message)
+
+
 class RingBuffer:
     """Fixed-capacity tail: diagnostics are readable long after the moment they happened."""
     def __init__(self,capacity):
@@ -342,7 +351,7 @@ class Runtime:
     def _resolve(self,message):
         future=self.pending.get(protocol.message_id(message))
         if not future or future.done():return
-        if protocol.is_error(message):future.set_exception(RuntimeError(protocol.error_message(message)))
+        if protocol.is_error(message):future.set_exception(ACPRemoteError(message.get('error')))
         else:future.set_result(protocol.result_of(message))
 
     def _read_stderr(self):

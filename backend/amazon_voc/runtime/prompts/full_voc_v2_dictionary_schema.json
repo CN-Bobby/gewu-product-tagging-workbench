@@ -1,0 +1,48 @@
+{
+  "type": "object",
+  "properties": {
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "namespace": {
+            "type": "string",
+            "enum": [
+              "audience",
+              "desired_outcome",
+              "itch",
+              "motivation",
+              "object",
+              "pain",
+              "result",
+              "scenario",
+              "task",
+              "workaround_action"
+            ]
+          },
+          "candidate_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 2
+          },
+          "canonical_name": { "type": "string" },
+          "canonical_name_en": { "type": "string" },
+          "definition": { "type": "string" },
+          "definition_en": { "type": "string" }
+        },
+        "required": [
+          "namespace",
+          "candidate_ids",
+          "canonical_name",
+          "canonical_name_en",
+          "definition",
+          "definition_en"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["groups"],
+  "additionalProperties": false
+}

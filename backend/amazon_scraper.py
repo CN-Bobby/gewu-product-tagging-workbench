@@ -243,6 +243,8 @@ def _gallery_urls(page) -> list[str]:
 
 
 def _fetch_product(item: dict[str, str], proxy: str | None, cancel: threading.Event) -> dict[str, Any]:
+    from .external_effects import assert_allowed
+    assert_allowed('amazon_collection')
     if cancel.is_set():
         return {"status": "cancelled", "error": "用户取消"}
     _public_dns(urllib.parse.urlsplit(item["url"]).hostname or "")

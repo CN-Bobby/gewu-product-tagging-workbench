@@ -49,6 +49,11 @@ class RuntimeUnavailable(BackendError):
     """The backend can no longer do any work; the session must be rebuilt or recovered."""
     fatal=True
 
+    def __init__(self,message='',detail=None,*,stage=None,diagnostic=None):
+        self.stage=stage
+        self.diagnostic=diagnostic
+        super().__init__(message,detail)
+
 
 @runtime_checkable
 class AgentBackend(Protocol):

@@ -185,7 +185,12 @@ def create(dataset_id,model=None):
         raise ValueError('创建 agent 会话需要 dataset_id')
     with _LOCK:
         if _SHUTTING_DOWN:raise ApplicationStopping('应用正在关闭，无法创建新的 Agent 会话')
-    model=model or harness.DEFAULT_MODEL
+    # Agent sessions share the same configured text model as the rest of the workbench.  Resolve
+    # its provider and primary credential together below, then keep that identity frozen on the
+    # session's bridge for its lifetime.
+    if not model:
+        from .model_settings import defaults
+        model=defaults()[0]
     # Model, provider and credential are resolved together, once, before the session row exists.
     # From here on the session carries this configuration: a later settings change cannot move a live
     # session onto another key, and a recovery resumes with the key the session was created with.

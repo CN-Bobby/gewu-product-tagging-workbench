@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   release:
+    if: ${{ !contains(github.ref_name, '-beta.') }}
     runs-on: windows-latest
     environment: release
     timeout-minutes: 75
@@ -38,6 +39,7 @@ jobs:
           python scripts/sync_version.py --check
           $version = (Get-Content VERSION.json -Raw | ConvertFrom-Json).version
           if ($env:GITHUB_REF_NAME -ne "v$version") { throw "tag and VERSION.json disagree" }
+          if ($version -match '-beta\.\d+$') { throw 'Beta portable releases must use the exact manually accepted ZIP via scripts/publish-portable-release.ps1; this legacy workflow rebuilds installer assets.' }
           if ((Get-Content VERSION.json -Raw | ConvertFrom-Json).release_status -ne 'accepted') { throw 'release_status is not accepted' }
           $evidence = "docs/evidence/$version.json"
           if (-not (Test-Path $evidence)) { throw "missing sanitized evidence: $evidence" }
