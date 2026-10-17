@@ -39,7 +39,10 @@ _BEARER_RE = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
 _KEY_RE = re.compile(r"\bsk-[A-Za-z0-9._-]{8,}\b")
 
 
-def _sanitize_diagnostic(text: str) -> str:
+def _sanitize_diagnostic(text: str, secrets=()) -> str:
+    for secret in secrets or ():
+        if secret:
+            text = str(text).replace(str(secret), "[密钥已隐藏]")
     text = _BEARER_RE.sub("Bearer [已隐藏]", str(text))
     text = _KEY_RE.sub("[密钥已隐藏]", text)
     text = _URL_RE.sub("[服务地址已隐藏]", text)
@@ -47,18 +50,18 @@ def _sanitize_diagnostic(text: str) -> str:
     return text.replace("\r", " ").replace("\n", " ")[:500]
 
 
-def diagnostic_for_exception(exc: BaseException) -> str:
+def diagnostic_for_exception(exc: BaseException, secrets=()) -> str:
     """Unwrap concurrent transport failures into a safe, actionable message."""
     nested = getattr(exc, "exceptions", None)
     if isinstance(nested, (list, tuple)):
         parts = []
         for child in nested:
-            message = diagnostic_for_exception(child)
+            message = diagnostic_for_exception(child, secrets)
             if message and message not in parts:
                 parts.append(message)
         if parts:
             return "并发请求失败：" + "；".join(parts)
-    message = _sanitize_diagnostic(str(exc).strip())
+    message = _sanitize_diagnostic(str(exc).strip(), secrets)
     return message or type(exc).__name__
 
 
@@ -90,8 +93,11 @@ class MCPClient:
         request_timeout: float = 180.0,
         rate_limit_retry_wait: float = 60.0,
         task_retry_budget: int = 10,
+        headers: dict[str, str] | None = None,
+        usage_context: dict | None = None,
     ) -> None:
         self.endpoint = endpoint
+        self.headers = {str(key): str(value) for key, value in (headers or {}).items()}
         self.rate_limiter = rate_limiter
         self.call_log = call_log
         self.on_event = on_event
@@ -100,6 +106,7 @@ class MCPClient:
         self.rate_limit_retry_wait = rate_limit_retry_wait
         self.task_retry_budget = max(0, int(task_retry_budget))
         self.task_retries_used = 0
+        self.usage_context = dict(usage_context or {})
 
     def set_task_retry_budget(self, retry_budget: int, retries_used: int = 0) -> None:
         """Set the confirmed plan's allowance and retries already recorded for this run."""
@@ -132,30 +139,31 @@ class MCPClient:
 
     async def _call_once(self, tool: str, arguments: dict) -> dict:
         """单次调用（不重试）。调用方负责限流等待与日志。"""
+        from ..external_effects import assert_allowed
+        assert_allowed('mcp')
         try:
             # 只取读写两条流：mcp 1.29.1 还会多 yield 一个 session-id 取值器（2.x 没有），
             # 这里对两者都成立，不需要固定解包长度。每次调用各自开一个会话，用不到它。
-            async with streamable_http_client(self.endpoint, terminate_on_close=False) as (
-                read,
-                write,
-                *_,
-            ):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    result = await session.call_tool(tool, arguments=arguments)
-                    if getattr(result, "isError", False):
-                        err_text = self._describe_error(result)
-                        raise MCPError(err_text, retryable=self._is_retryable(err_text),
-                                       unauthorized=self._is_unauthorized(err_text))
-                    data = self._decode_result(result)
-                    self._raise_business_error(data)
-                    return data
+            import httpx
+            async with httpx.AsyncClient(headers=self.headers, timeout=self.request_timeout) as http_client:
+                async with streamable_http_client(self.endpoint, http_client=http_client,
+                                                  terminate_on_close=False) as (read, write, *_):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        result = await session.call_tool(tool, arguments=arguments)
+                        if getattr(result, "isError", False):
+                            err_text = self._describe_error(result)
+                            raise MCPError(err_text, retryable=self._is_retryable(err_text),
+                                           unauthorized=self._is_unauthorized(err_text))
+                        data = self._decode_result(result)
+                        self._raise_business_error(data)
+                        return data
         except MCPError as exc:
-            raise MCPError(_sanitize_diagnostic(str(exc)),
+            raise MCPError(_sanitize_diagnostic(str(exc), self.headers.values()),
                            retryable=exc.retryable, unauthorized=exc.unauthorized,
                            rate_limited=exc.rate_limited) from None
         except Exception as exc:  # transport wrappers may themselves be ExceptionGroups
-            message = diagnostic_for_exception(exc)
+            message = diagnostic_for_exception(exc, self.headers.values())
             raise MCPError(f"传输/并发请求错误: {message}",
                            retryable=self._is_retryable(message),
                            unauthorized=self._is_unauthorized(message),
@@ -233,6 +241,19 @@ class MCPClient:
                 planned_total=planned_total,
                 hard_cap=hard_cap,
             )
+            usage_event_id = None
+            try:
+                from urllib.parse import urlparse
+                from ..usage import start_usage_event
+                usage_event_id = start_usage_event(
+                    kind="mcp", module=self.usage_context.get("module", "keyword_research"),
+                    task_id=self.usage_context.get("task_id"),
+                    task_title=self.usage_context.get("task_title"),
+                    function_name=tool, server_name=urlparse(self.endpoint).hostname or "SellerSprite",
+                    attempt=attempt + 1, metadata={"is_retry": attempt > 0},
+                )
+            except Exception:
+                usage_event_id = None
             self._emit("call_start", seq=seq, tool=tool, scope=scope)
             if attempt > 0:
                 # This synchronous section has no await, so concurrent coroutines
@@ -242,12 +263,19 @@ class MCPClient:
             # Count every request attempt, including one that fails in transport
             # or at the business layer, so the limiter reflects actual traffic.
             self.rate_limiter.record_call()
+            usage_started = asyncio.get_running_loop().time()
             try:
                 data = await self._call_once(tool, arguments)
             except MCPError as exc:
                 last_error = exc
                 returned = None
                 self.call_log.finish_call(seq, success=False, error=str(exc))
+                try:
+                    from ..usage import finish_usage_event
+                    finish_usage_event(usage_event_id, status="failed",
+                                       duration_ms=round((asyncio.get_running_loop().time()-usage_started)*1000))
+                except Exception:
+                    pass
                 self._emit("call_error", seq=seq, tool=tool, error=str(exc),
                            retryable=exc.retryable)
                 if exc.retryable and attempt < self.max_temp_retries:
@@ -268,6 +296,12 @@ class MCPClient:
             truncated = self._detect_truncation(data)
             self.call_log.finish_call(seq, success=True, returned=returned,
                                       truncated=truncated)
+            try:
+                from ..usage import finish_usage_event
+                finish_usage_event(usage_event_id, status="success",
+                                   duration_ms=round((asyncio.get_running_loop().time()-usage_started)*1000))
+            except Exception:
+                pass
             self._emit("call_success", seq=seq, tool=tool, returned=returned,
                        truncated=truncated)
             return data
@@ -380,7 +414,8 @@ class MCPClient:
 
 
 def test_mcp_connection(endpoint: str, timeout: float = 60.0,
-                        rate_limiter: RateLimiter | None = None) -> dict:
+                        rate_limiter: RateLimiter | None = None,
+                        headers: dict[str, str] | None = None) -> dict:
     """设置页“测试连接”：list_tools 验证凭据与连通性（不产生业务调用）。
 
     连接测试也走限流器（默认模块级限流器，30次/滚动60秒，间隔至少1秒）。
@@ -390,17 +425,18 @@ def test_mcp_connection(endpoint: str, timeout: float = 60.0,
     limiter = rate_limiter or _DEFAULT_TEST_LIMITER
 
     async def _run() -> int:
+        from ..external_effects import assert_allowed
+        assert_allowed('mcp_connection_test')
         limiter.wait_until_allowed()
         try:
-            async with streamable_http_client(endpoint, terminate_on_close=False) as (
-                read,
-                write,
-                *_,
-            ):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    tools = await session.list_tools()
-                    return len(tools.tools)
+            import httpx
+            async with httpx.AsyncClient(headers=headers or {}, timeout=timeout) as http_client:
+                async with streamable_http_client(endpoint, http_client=http_client,
+                                                  terminate_on_close=False) as (read, write, *_):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        tools = await session.list_tools()
+                        return len(tools.tools)
         finally:
             limiter.record_call()
 
@@ -408,7 +444,7 @@ def test_mcp_connection(endpoint: str, timeout: float = 60.0,
         count = asyncio.run(asyncio.wait_for(_run(), timeout=timeout))
         return {"ok": True, "tools": count}
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc)[:300]}
+        return {"ok": False, "error": _sanitize_diagnostic(str(exc), (headers or {}).values())}
 
 
 # 模块级默认限流器（测试连接共享，防止连点高频）

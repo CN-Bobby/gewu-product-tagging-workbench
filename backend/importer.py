@@ -51,6 +51,55 @@ def wps_images(z):
         if name and rid in targets and targets[rid] in z.namelist(): result[name] = z.read(targets[rid])
     return result
 
+def sheet_candidates(data):
+    """Return worksheets whose first row looks like a product table header."""
+    book = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+    aliases = {alias.casefold() for values in ALIASES.values() for alias in values}
+    identity_aliases = {alias.casefold() for key in ('asin', 'sku', 'title', 'url', 'image_url')
+                        for alias in ALIASES[key]}
+    candidates = []
+    for ws in book.worksheets:
+        first = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+        headers = {str(value).strip().casefold() for value in first if value is not None}
+        known = headers & aliases
+        identity = headers & identity_aliases
+        if len(known) >= 2 or (known and identity):
+            candidates.append(ws.title)
+    book.close()
+    return candidates
+
+def _product_row_signal(raw, mapping):
+    """Identify likely item rows for trailing note-row detection, not row rejection generally."""
+    for role in ('asin', 'sku', 'title', 'url', 'image_url'):
+        header = mapping.get(role)
+        value = raw.get(header) if header else None
+        if not isinstance(value, str) or not value.strip():
+            continue
+        text = value.strip()
+        if role == 'asin' and re.fullmatch(r'[A-Za-z0-9]{10}', text):
+            return True
+        if role == 'url' and text.lower().startswith(('https://', 'http://')):
+            return True
+        if role == 'image_url' and text.lower().startswith(('https://', 'http://')):
+            return True
+        if role == 'sku' and len(text) <= 120:
+            return True
+        if role == 'title' and len(text) >= 4:
+            return True
+    return False
+
+def _skip_trailing_notes(rows, mapping):
+    """Skip sparse trailing rows that lack any product identity signal."""
+    signals = [_product_row_signal(row['raw'], mapping) for row in rows]
+    last_product = max((i for i, value in enumerate(signals) if value), default=-1)
+    skipped = [row['row'] for i, row in enumerate(rows)
+               if i > last_product and not signals[i]
+               and sum(1 for v in row['raw'].values() if v is not None and str(v).strip()) <= 1]
+    if not skipped:
+        return rows, []
+    skip_set = set(skipped)
+    return [row for row in rows if row['row'] not in skip_set], skipped
+
 def parse(data, sheet=None):
     if len(data) > 100 * 1024 * 1024: raise ValueError('表格超过 100 MB')
     with zipfile.ZipFile(io.BytesIO(data)) as z:
@@ -60,7 +109,13 @@ def parse(data, sheet=None):
     book = openpyxl.load_workbook(io.BytesIO(data), data_only=False)
     cached = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
     if sheet and sheet not in book.sheetnames: raise ValueError('工作表不存在')
-    ws = book[sheet] if sheet else book.active
+    if sheet:
+        ws = book[sheet]
+    else:
+        candidates = sheet_candidates(data)
+        if len(candidates) != 1:
+            raise ValueError('请先从预览中选择一个商品工作表')
+        ws = book[candidates[0]]
     if ws.max_row > 100001 or ws.max_column > 500: raise ValueError('支持至多 100000 行、500 列')
     headers = [str(v) if v is not None else f'未命名列_{i+1}' for i,v in enumerate(next(ws.values))]
     if len(set(headers)) != len(headers): raise ValueError('表头有重复列名，请先为重复列命名')
@@ -87,6 +142,9 @@ def parse(data, sheet=None):
                 fields[key] = clean(cached[ws.title][cell.coordinate].value) if cell.data_type == 'f' else raw[header]
         anchor,identity_source=choose(fields,row[0].row)
         rows.append({'row': row[0].row, 'anchor':anchor, 'identity_source':identity_source, 'raw':raw, 'fields':fields, 'images':images})
+    rows, skipped_notes = _skip_trailing_notes(rows, mapping)
+    if skipped_notes:
+        warnings.append('已跳过疑似非商品尾部行：' + ', '.join(str(x) for x in skipped_notes))
     if not rows: raise ValueError('工作表中没有商品数据')
     dupes = [k for k,v in Counter(r['anchor'] for r in rows).items() if v > 1]
     if dupes: warnings.append(f'存在重复商品标识，保留独立行：{", ".join(dupes[:10])}')
@@ -102,8 +160,27 @@ def parse(data, sheet=None):
     return {'sheets':book.sheetnames, 'sheet':ws.title, 'headers':headers, 'mapping':mapping, 'rows':rows, 'warnings':warnings}
 
 def inspect(data, sheet=None):
-    p = parse(data, sheet)
-    return {**{k:v for k,v in p.items() if k!='rows'}, 'count':len(p['rows']), 'embedded_images':sum(len(r['images']) for r in p['rows']), 'sample':[{k:v for k,v in r.items() if k!='images'} for r in p['rows'][:3]]}
+    book = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+    sheets = list(book.sheetnames);book.close()
+    candidates = sheet_candidates(data)
+    if sheet:
+        if sheet not in sheets: raise ValueError('工作表不存在')
+        selected = sheet
+    elif len(candidates) == 1:
+        selected = candidates[0]
+    elif len(candidates) > 1:
+        return {'sheets':sheets,'candidate_sheets':candidates,'sheet':None,'sheet_required':True,
+                'headers':[],'mapping':{},'warnings':['检测到多个商品工作表，请选择要导入的工作表。'],
+                'count':0,'embedded_images':0,'sample':[]}
+    else:
+        return {'sheets':sheets,'candidate_sheets':[],'sheet':None,'sheet_required':True,
+                'headers':[],'mapping':{},'warnings':['未能自动识别商品工作表，请手动选择工作表。'],
+                'count':0,'embedded_images':0,'sample':[]}
+    p = parse(data, selected)
+    return {**{k:v for k,v in p.items() if k!='rows'}, 'candidate_sheets':candidates,
+            'sheet_required':False,'count':len(p['rows']),
+            'embedded_images':sum(len(r['images']) for r in p['rows']),
+            'sample':[{k:v for k,v in r.items() if k!='images'} for r in p['rows'][:3]]}
 
 def import_file(data, filename, sheet=None, workspace_id=None, mapping=None):
     p = parse(data, sheet)
@@ -123,7 +200,7 @@ def import_file(data, filename, sheet=None, workspace_id=None, mapping=None):
             workspace = Workspace(name=Path(filename).stem)
             s.add(workspace); s.flush()
         version = (s.scalar(select(func.max(Dataset.version)).where(Dataset.workspace_id==workspace.id)) or 0)+1
-        dataset = Dataset(id=ident, workspace_id=workspace.id, name=Path(filename).stem, version=version, original_file=str(original), source_filename=Path(filename).name, sha256=hashlib.sha256(data).hexdigest(), sheet=p['sheet'], headers=p['headers'], mapping=p['mapping'], warnings=p['warnings'])
+        dataset = Dataset(id=ident, workspace_id=workspace.id, name=Path(filename).stem, version=version, original_file=str(original), source_filename=Path(filename).name, sha256=hashlib.sha256(data).hexdigest(), sheet=p['sheet'], headers=p['headers'], mapping={**p['mapping'],'__source_attribute_base_headers':list(p['headers']),'__source_attribute_headers':[]}, warnings=p['warnings'])
         s.add(dataset); s.flush()
         for row in p['rows']:
             product = Product(dataset_id=ident, **{k:row[k] for k in ['row','anchor','identity_source','raw','fields']})
@@ -141,6 +218,15 @@ def import_file(data, filename, sheet=None, workspace_id=None, mapping=None):
         result = obj(dataset)
     from . import project_files
     project_files.register_dataset(result['workspace_id'], ident, original, Path(filename).name, result['sha256'])
+    with Session() as session:
+        assets = session.execute(select(Asset).join(Product, Asset.product_id == Product.id)
+            .where(Product.dataset_id == ident, Asset.path.is_not(None))).scalars().all()
+        image_records = [(asset.id, asset.path, asset.image_type, asset.sha256) for asset in assets]
+    for asset_id, asset_path, image_type, digest in image_records:
+        if asset_path and Path(asset_path).is_file():
+            project_files.register_file(result['workspace_id'], 'images', asset_path,
+                source_type='dataset_asset', source_id=asset_id, name=Path(asset_path).name,
+                metadata={'dataset_id': ident, 'image_type': image_type, 'sha256': digest})
     return result
 
 def attach_images(dataset_id, files):

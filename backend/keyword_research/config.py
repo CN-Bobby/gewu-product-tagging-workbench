@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 DEFAULT_MCP_URL = "https://mcp.sellersprite.com/mcp"
 DEFAULT_LLM_BASE_URL = "https://api.deepseek.com"
@@ -20,8 +20,9 @@ DEFAULT_LLM_MAX_TOKENS = 16384
 class EngineConfig:
     """引擎运行配置（限流口径 + MCP/LLM 接入参数）。"""
 
-    # 完整 MCP 端点 URL（地址 + 经 URL 编码的 secret-key 查询参数），由上层注入
+    # Clean MCP endpoint; authentication is kept separately and sent as HTTP headers.
     mcp_endpoint: str = DEFAULT_MCP_URL
+    mcp_headers: dict[str, str] = field(default_factory=dict, repr=False)
     llm_base_url: str = DEFAULT_LLM_BASE_URL
     llm_api_key: str = ""
     llm_model: str = DEFAULT_LLM_MODEL
