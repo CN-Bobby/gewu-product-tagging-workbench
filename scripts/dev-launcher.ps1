@@ -1,13 +1,16 @@
 param(
-    [string]$Storage = 'K:\Bobbytagging\Data-Test',
-    [string]$Cache = '',
-    [int]$Port = 0,
+    [string]$Storage = 'K:\GeWuTest\Data',
+    [string]$Cache = 'K:\GeWuTest\Cache',
+    [int]$Port = 8895,
     [string]$Build = '',
     [switch]$Stop,
     [switch]$Acceptance,
+    [ValidateSet('online', 'offline')][string]$ExternalEffectsMode = 'online',
     [switch]$NoOpen
 )
 $ErrorActionPreference = 'Stop'
+Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
+Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
 
 # Fixed entry for development builds. It reads the current pointer, starts that build directly
 # (no installer, no upgrade step) and refuses to attach to the storage the installed product
@@ -23,7 +26,7 @@ if ($Build) {
     if (-not (Test-Path -LiteralPath $pointer)) {
         throw "No current pointer yet: $pointer. Run scripts\build-test.ps1 first."
     }
-    $directory = (Get-Content -LiteralPath $pointer -Raw | ConvertFrom-Json).current
+    $directory = (Get-Content -LiteralPath $pointer -Raw -Encoding UTF8 | ConvertFrom-Json).current
 }
 $buildDir = if ([IO.Path]::IsPathRooted($directory)) { $directory } else { Join-Path $buildsRoot $directory }
 $appDir = Join-Path $buildDir 'app'
@@ -31,8 +34,12 @@ $exe = Join-Path $appDir 'Workbench.exe'
 $manifestPath = Join-Path $appDir 'build-manifest.json'
 if (-not (Test-Path -LiteralPath $exe)) { throw "This build has no Workbench.exe: $exe" }
 if (-not (Test-Path -LiteralPath $manifestPath)) { throw "This build has no build-manifest.json: $manifestPath (the only source of program identity)" }
-$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+$manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $has = { param($name) $manifest.PSObject.Properties.Name -contains $name }
+if (-not $manifest.commit -or $manifest.dirty -ne $false -or $manifest.build_mode -ne 'dev' -or
+    -not (Select-String -LiteralPath (Join-Path $appDir 'backend\app.py') -Pattern '/api/runtime/status' -Quiet)) {
+    throw 'This TEST entry requires a clean, commit-pinned development build with runtime-status support. Build a new frozen TEST candidate first.'
+}
 
 $storagePath = [IO.Path]::GetFullPath($Storage)
 $cachePath = if ($Cache) { [IO.Path]::GetFullPath($Cache) } else { Join-Path (Split-Path -Parent $storagePath) 'Cache-Test' }
@@ -44,7 +51,7 @@ $installedSettings = Join-Path $env:LOCALAPPDATA 'GeWuWorkbench\desktop.json'
 if (Test-Path -LiteralPath $installedSettings) {
     # Fail closed: when this file exists we cannot prove the target is not the installed product's
     # data directory, so an unreadable value refuses the launch instead of dropping the guard.
-    try { $installedData = (Get-Content -LiteralPath $installedSettings -Raw | ConvertFrom-Json).data }
+    try { $installedData = (Get-Content -LiteralPath $installedSettings -Raw -Encoding UTF8 | ConvertFrom-Json).data }
     catch { throw "Cannot read the installed product's settings at $installedSettings ($($_.Exception.Message)). Refusing to guess which data directory is safe." }
     if (-not $installedData) { throw "The installed product's settings at $installedSettings name no data directory. Refusing to guess which data directory is safe." }
     $installedStorage = [IO.Path]::GetFullPath($installedData)
@@ -112,10 +119,32 @@ if ($existing -and $existing.application -eq 'product-tagging-workbench') {
     if ($existing.commit -ne $manifest.commit -or $existing.build_id -ne $manifest.build_id) {
         throw "Data directory $storagePath is still used by another version (running $($existing.build_id), this build $($manifest.build_id)). Stop that instance first so the upgrade can back up safely."
     }
+    $runtime = $null
+    try { $runtime = Invoke-RestMethod -Uri "$baseUrl/api/runtime/status" -TimeoutSec 2 } catch { }
+    $expectedPolicy = if ($ExternalEffectsMode -eq 'offline') { 'offline' } else { 'live_validation' }
+    if (-not $runtime -or $runtime.profile -ne 'test' -or $runtime.external_effects.policy -ne $expectedPolicy) {
+        throw "The listener does not prove it is the requested $expectedPolicy TEST instance. Nothing was stopped or adopted."
+    }
     Write-Output "Already running: $baseUrl"
 } else {
     $launchArgs = @('--data', $storagePath, '--cache', $cachePath, '--port', "$port", '--no-open')
+    $previousProfile = [Environment]::GetEnvironmentVariable('GEWU_PROFILE', 'Process')
+    $previousTestEffects = [Environment]::GetEnvironmentVariable('GEWU_TEST_EXTERNAL_EFFECTS', 'Process')
+    $previousDevEffects = [Environment]::GetEnvironmentVariable('GEWU_DEV_EXTERNAL_EFFECTS', 'Process')
+    try {
+    $env:GEWU_PROFILE = 'test'
+    Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
+    if ($ExternalEffectsMode -eq 'offline') {
+        $env:GEWU_TEST_EXTERNAL_EFFECTS = 'offline'
+    } else {
+        Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
+    }
     Start-Process -FilePath $exe -ArgumentList $launchArgs -WorkingDirectory $appDir | Out-Null
+    } finally {
+        if ($null -eq $previousProfile) { Remove-Item Env:GEWU_PROFILE -ErrorAction SilentlyContinue } else { $env:GEWU_PROFILE = $previousProfile }
+        if ($null -eq $previousTestEffects) { Remove-Item Env:GEWU_TEST_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue } else { $env:GEWU_TEST_EXTERNAL_EFFECTS = $previousTestEffects }
+        if ($null -eq $previousDevEffects) { Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue } else { $env:GEWU_DEV_EXTERNAL_EFFECTS = $previousDevEffects }
+    }
     $health = $null
     for ($attempt = 0; $attempt -lt 90; $attempt++) {
         Start-Sleep -Milliseconds 500

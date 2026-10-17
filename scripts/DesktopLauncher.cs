@@ -72,6 +72,9 @@ class DesktopLauncher {
      start.EnvironmentVariables["TAG_PROVIDER_HOME"]=Path.Combine(data,"providers");start.EnvironmentVariables["REASONIX_EXE"]=Path.Combine(root,"reasonix","reasonix.exe");
      start.EnvironmentVariables["TAG_FRONTEND_DIST"]=Path.Combine(root,"frontend","dist");start.EnvironmentVariables["PYTHONUTF8"]="1";
      start.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"]="1";
+     foreach(string key in new string[]{"VOC_BATCH_REVIEWS","VOC_BATCH_CHARS","VOC_CONCURRENCY","VOC_MAX_REPAIRS"}) {
+      string value=Environment.GetEnvironmentVariable(key);if(!String.IsNullOrWhiteSpace(value))start.EnvironmentVariables[key]=value;
+     }
      start.EnvironmentVariables.Remove("DATABASE_URL");start.EnvironmentVariables.Remove("REASONIX_HOME");
      var process=Process.Start(start);bool ready=false;
      for(int i=0;i<120;i++){Thread.Sleep(500);health=Health(port);if(Same(health,data)){ready=true;break;}if(process.HasExited)break;}

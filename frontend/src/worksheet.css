@@ -26,3 +26,5 @@
 .definition-gaps{flex:1 1 100%;display:grid;grid-template-columns:auto 1fr;gap:3px 10px;padding:8px 10px;border-left:3px solid #b49345;background:#fff8df;color:#66531e}.definition-gaps span,.definition-gaps small{white-space:normal}.definition-gaps small{grid-column:2;color:#8a7540}
 @media(max-width:1200px){.job-actions{flex:1 1 100%;justify-content:flex-start}.job-actions small{display:inline}.jobs{max-height:42vh}}
 @media(max-width:800px){.jobs{height:160px;min-height:132px;max-height:42vh}.job-summary{flex-basis:100%}}
+
+.proposal-inbox{display:flex;gap:14px;align-items:flex-start;margin:10px 0 14px;padding:12px;border:1px solid #d8e1d2;border-radius:8px;background:#f6f9f2}.proposal-inbox-heading{display:flex;flex-direction:column;gap:4px;min-width:110px;color:#496241;font-size:12px}.proposal-inbox-heading span{color:#84917d;font-size:10px}.proposal-inbox-body{display:grid;gap:8px;flex:1;min-width:0}.proposal-inbox-body .proposal{margin:0}.agent-error-detail{display:block;margin-top:5px;color:#82533c;font-size:11px;line-height:1.5}

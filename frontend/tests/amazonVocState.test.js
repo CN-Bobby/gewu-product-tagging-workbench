@@ -16,7 +16,10 @@ test('upload request contains exactly one review workbook plus task settings',()
   const file=new Blob(['fixture'],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
   file.name='reviews.xlsx';
   const form=buildAmazonVocRunForm({file,model:'shared/text',credentialId:'key-1'});
-  assert.deepEqual([...form.keys()],['reviews','model','credential_id']);
+  assert.deepEqual([...form.keys()],['reviews','model','credential_id','force_refresh']);
+  assert.equal(form.get('force_refresh'),'false');
+  const forced=buildAmazonVocRunForm({file,model:'shared/text',credentialId:'key-1',forceRefresh:true});
+  assert.equal(forced.get('force_refresh'),'true');
   assert.equal(form.get('reviews').name,'reviews.xlsx');
   assert.throws(()=>buildAmazonVocRunForm({file:{name:'reviews.csv'}}),/仅支持/);
   assert.throws(()=>buildAmazonVocRunForm({}),/请选择/);

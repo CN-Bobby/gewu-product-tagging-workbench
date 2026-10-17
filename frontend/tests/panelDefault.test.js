@@ -8,27 +8,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
-import {DEFAULT_PANEL,PANEL} from '../src/agentState.js';
-
 const source=name=>readFileSync(new URL(`../src/${name}`,import.meta.url),'utf8');
 const main=source('main.jsx');
 const panel=source('agentPanel.jsx');
 
-test('the workbench opens on the new agent panel',()=>{
-  assert.equal(DEFAULT_PANEL,PANEL.AGENT);
-  assert.equal(PANEL.AGENT,'agent');
-});
-
-test('the panel mode is initialised from that default rather than a literal',()=>{
-  assert.match(main,/useState\(DEFAULT_PANEL===PANEL\.AGENT\)/);
-  assert.ok(main.includes('import {DEFAULT_PANEL,PANEL} from'),'the default must come from the module');
-});
-
-test('the legacy chat is still reachable as an explicit fallback',()=>{
-  // both titles and the toggle exist, and the legacy subtree is still rendered in the else branch
-  assert.ok(main.includes('Agent 会话'),'the agent panel label');
-  assert.ok(main.includes('标签对话'),'the fallback label');
-  assert.match(main,/\{agentMode\?<AgentPanel did=\{did\}\/>:<>/,'the fallback subtree is intact');
+test('the tagging page renders only the Agent conversation panel',()=>{
+  assert.ok(main.includes('<strong>Agent 会话</strong>'));
+  assert.ok(main.includes('<AgentPanel did={did}/>'));
+  assert.ok(!main.includes('agentMode'));
+  assert.ok(!main.includes('标签对话'));
 });
 
 test('the new panel cannot reach the legacy chat commands',()=>{
@@ -66,15 +54,28 @@ test('the topbar carries the entry to the keyword page',()=>{
   assert.match(main,/<button className=\{page===PAGE\.KEYWORD\?'active':''\} onClick=\{\(\)=>navigate\('keyword'\)\}>关键词调研<\/button>/,'the entry switches the page');
 });
 
+test('Product Archive has a separate dossier route and read-only sample page',()=>{
+  const page=source('productArchive.jsx');
+  assert.ok(main.includes("import {ProductArchive} from './productArchive'"));
+  assert.ok(main.includes("parts[0]==='product-archive'"));
+  assert.ok(main.includes("page==='product-archive'?<ProductArchive"));
+  assert.ok(main.includes("navigate('product-archive')"));
+  assert.ok(page.includes('PRODUCT / MARKET OVERVIEW'));
+  assert.ok(page.includes('MARKET SIZE'));
+  assert.ok(page.includes('COMPETITIVE STRUCTURE'));
+  assert.ok(page.includes('READ ONLY PREVIEW'));
+  assert.ok(page.includes('确认映射并生成快照'));
+});
+
 test('the topbar carries the entry to the Xunlongjue module',()=>{
   assert.ok(main.includes('寻龙诀'),'the entry label is in the topbar');
   assert.match(main,/<button className=\{page===PAGE\.XUNLONGJUE\?'active':''\} onClick=\{\(\)=>navigate\('xunlongjue'\)\}>寻龙诀<\/button>/,'the entry switches to the module');
 });
 
-test('the topbar opens the standalone Amazon VOC page',()=>{
-  assert.ok(main.includes("import {AmazonVOC} from './amazonVoc'"));
-  assert.match(main,/<button className=\{page===PAGE\.AMAZON_VOC\?'active':''\} onClick=\{\(\)=>navigate\('amazon-voc'\)\}>Amazon VOC<\/button>/);
-  assert.ok(main.includes('page===PAGE.AMAZON_VOC?<AmazonVOC api={api} initialRunId={route.runId} initialNotice={vocHandoffNotice} onNoticeConsumed={setVocHandoffNotice}/>'));
+test('the topbar opens one Amazon Reviews and VOC workspace',()=>{
+  assert.ok(main.includes("import {AmazonReviewsVoc} from './amazonReviewsVoc'"));
+  assert.match(main,/<button className=\{\['amazon-reviews','amazon-reviews-voc',PAGE\.AMAZON_VOC\]\.includes\(page\)\?'active':''\} onClick=\{\(\)=>navigate\('amazon-reviews-voc'\)\}>Amazon 评论 \+ VOC<\/button>/);
+  assert.ok(main.includes("['amazon-reviews','amazon-reviews-voc',PAGE.AMAZON_VOC].includes(page)?<AmazonReviewsVoc"));
 });
 
 test('VOC deep links parse an exact run and pass it into the VOC page',()=>{
@@ -83,7 +84,7 @@ test('VOC deep links parse an exact run and pass it into the VOC page',()=>{
   assert.ok(main.includes('onNavigate={(path,message)=>{setVocHandoffNotice(message);navigate(path)}}'));
   assert.ok(main.includes('initialNotice={vocHandoffNotice} onNoticeConsumed={setVocHandoffNotice}'));
   const voc=source('amazonVoc.jsx');
-  assert.match(voc,/export function AmazonVOC\(\{api,initialRunId='',initialNotice='',onNoticeConsumed\}\)/);
+  assert.match(voc,/export function AmazonVOC\(\{api,initialRunId='',initialNotice='',onNoticeConsumed,workspaceId='',forceRefresh=false\}\)/);
   assert.ok(voc.includes('ENDPOINTS.run(initialRunId)'));
   assert.ok(voc.includes('runRef.current=linkedRun.id;setRunId(linkedRun.id)'));
   assert.ok(voc.includes("setNotice(initialNotice);onNoticeConsumed?.('')"));

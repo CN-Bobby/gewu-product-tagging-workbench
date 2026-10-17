@@ -20,6 +20,11 @@ SECRET_PATTERNS = [
     re.compile(r"(?i)authorization\s*[:=]\s*bearer\s+[A-Za-z0-9._~-]{20,}"),
 ]
 SENSITIVE_SAMPLE = re.compile(r"(?:\bB[0-9][A-Z0-9]{8}\b|\bROW-\d+\b|(?:D|C):\\\\)")
+SYNTHETIC_ASINS = {
+    'B0XXXXXXXX', 'B000000000', 'B000000001', 'B000000002', 'B000000003',
+    'B000000004', 'B000000005', 'B000000006', 'B012345678', 'B087654321', 'B0CHILD001',
+    'B0CHILD002', 'B0PARENT01', 'B0PARENT02',
+}
 
 
 def tracked() -> list[str]:
@@ -42,7 +47,9 @@ def main() -> int:
             continue
         if any(pattern.search(text) for pattern in SECRET_PATTERNS):
             secret_hits.append(name)
-        if name != 'scripts/repository_audit.py' and not name.startswith('docs/vendor/') and SENSITIVE_SAMPLE.search(text):
+        unsafe_samples = [match.group(0) for match in SENSITIVE_SAMPLE.finditer(text)
+                          if not match.group(0).startswith('B') or match.group(0) not in SYNTHETIC_ASINS]
+        if name != 'scripts/repository_audit.py' and not name.startswith('docs/vendor/') and unsafe_samples:
             sample_hits.append(name)
     errors: list[str] = []
     if forbidden:
