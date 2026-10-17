@@ -236,6 +236,46 @@ def test_a_session_without_a_dataset_is_refused(client,monkeypatch):
     assert client.post('/api/agent/sessions',json={}).status_code==400
 
 
+def test_session_creation_uses_shared_text_model_and_freezes_provider_key(client,monkeypatch):
+    install(monkeypatch,'normal')
+    from backend import model_settings
+    monkeypatch.setattr(model_settings,'defaults',lambda:('shared-provider/current-text','shared-provider/vision'))
+    monkeypatch.setattr(agent_application,'credential_selection',lambda model,credential_id=None:('shared-provider','cred-test'))
+    monkeypatch.setattr(agent_application.harness,'DEFAULT_MODEL','legacy/hardcoded-fallback')
+    response=client.post('/api/agent/sessions',json={'dataset_id':DATASET})
+    assert response.status_code==200,response.text
+    session=response.json()
+    assert session['model']=='shared-provider/current-text'
+    assert agent_application._IDENTITIES[session['id']]==('shared-provider/current-text','shared-provider','cred-test')
+
+
+@pytest.mark.parametrize(('mode','expected_stage'),[
+    ('initialize_fail','initialize'),('session_new_fail','session_new'),
+])
+def test_start_failure_returns_safe_stage_diagnostic_and_exit_state(
+        client,monkeypatch,workspace,tmp_path,mode,expected_stage):
+    from backend.agent.reasonix import ReasonixAdapter,ReasonixLaunchConfig
+    request_log=tmp_path/'startup.jsonl'
+    def factory(dataset_id,model,credentials=None):
+        def build():
+            return ReasonixAdapter(ReasonixLaunchConfig(executable=sys.executable,model=model,
+                cwd=str(workspace),env=dict(os.environ,STUB_MODE=mode,STUB_LOG=str(request_log)),
+                runtime_key='startup-test'))
+        return build
+    install_seams(monkeypatch,factory)
+    created=client.post('/api/agent/sessions',json={'dataset_id':DATASET,'model':MODEL})
+    assert created.status_code==200,created.text
+    response=client.post('/api/agent/sessions/%s/start'%created.json()['id'])
+    assert response.status_code==502
+    detail=response.json()['detail']
+    assert detail['code']=='backend_start_failed' and detail['fatal'] is True
+    assert detail['stage']==expected_stage
+    assert detail['diagnostic']['error_code']==-32000
+    assert detail['diagnostic']['process']['alive'] is False
+    assert 'stub' in detail['diagnostic']['message']
+    assert client.get('/api/agent/sessions/%s'%created.json()['id']).json()['status']=='failed'
+
+
 # --- concurrency -----------------------------------------------------------
 
 def test_message_and_cancel_racing_stay_bounded(client,monkeypatch):

@@ -280,7 +280,11 @@ def test_17_no_reference_to_the_legacy_caller():
 
 def test_18_initialize_failure_is_runtime_unavailable(workspace,request_log):
     adapter=make(workspace,request_log,mode='initialize_fail')
-    with pytest.raises(RuntimeUnavailable):adapter.start()
+    with pytest.raises(RuntimeUnavailable) as failure:adapter.start()
+    assert failure.value.stage=='initialize'
+    assert failure.value.diagnostic['error_code']==-32000
+    assert 'stub initialize failure' in failure.value.diagnostic['message']
+    assert failure.value.diagnostic['process']['alive'] is False
 
 
 def test_19_no_process_or_reader_survives_initialize_failure(workspace,request_log):
@@ -295,7 +299,10 @@ def test_19_no_process_or_reader_survives_initialize_failure(workspace,request_l
 
 def test_20_session_new_failure_is_runtime_unavailable(workspace,request_log):
     adapter=make(workspace,request_log,mode='session_new_fail')
-    with pytest.raises(RuntimeUnavailable):adapter.start()
+    with pytest.raises(RuntimeUnavailable) as failure:adapter.start()
+    assert failure.value.stage=='session_new'
+    assert failure.value.diagnostic['error_code']==-32000
+    assert 'stub session failure' in failure.value.diagnostic['message']
 
 
 def test_21_no_process_or_reader_survives_session_new_failure(workspace,request_log):
@@ -320,6 +327,13 @@ def test_initialize_protocol_version_is_negotiated(workspace,request_log):
     assert adapter.status()['ready'] is False
     assert adapter.diagnostics()['exit']['alive'] is False
     assert wait_until(lambda:not live_reader_threads())
+
+
+def test_startup_diagnostic_redacts_key_material_from_environment():
+    secret='sk-secret-value-987654'
+    safe=reasonix._redact_diagnostic('provider said API_KEY='+secret,{'MODEL_API_KEY':secret})
+    assert secret not in safe
+    assert 'REDACTED' in safe
 
 
 # --- 22-25: teardown ------------------------------------------------------
