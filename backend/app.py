@@ -13,7 +13,7 @@ from . import importer, service, jobs, harness
 from .exporter import export_run
 from . import draft,batch,draft_export,text_facts
 from . import field_catalog,worksheet_query,task_control,project_files,project_library
-from . import knowledge,templates,storage_management,model_settings,capabilities,update_service
+from . import knowledge,templates,storage_management,model_settings,capabilities,update_service,usage
 from .keyword_research import routes as keyword_research_routes
 from .keyword_research import registry as keyword_registry, runner as keyword_runner
 from . import amazon_scraper
@@ -321,11 +321,40 @@ def settings_models():return {**model_settings.read(),'defaults':model_settings.
 @app.post('/api/settings/models')
 def settings_models_save(body:dict):return model_settings.save(body)
 
+@app.get('/api/settings/sorftime')
+def settings_sorftime():
+    from .xunlongjue import settings as sorftime_settings
+    return sorftime_settings.status()
+
+@app.put('/api/settings/sorftime')
+def settings_sorftime_save(body:dict):
+    from .xunlongjue import settings as sorftime_settings
+    try:
+        return sorftime_settings.save((body or {}).get('endpoint'),(body or {}).get('api_key'))
+    except ValueError as exc:
+        raise HTTPException(status_code=400,detail=str(exc)) from None
+
+@app.delete('/api/settings/sorftime')
+def settings_sorftime_clear():
+    from .xunlongjue import settings as sorftime_settings
+    sorftime_settings.clear_key()
+    return sorftime_settings.status()
+
 @app.post('/api/settings/models/{provider}/credentials/{credential_id}/{action}')
 def settings_credential_action(provider:str,credential_id:str,action:str):return model_settings.credential_action(provider,credential_id,action)
 
 @app.get('/api/storage')
 def storage_usage():return storage_management.usage()
+
+@app.get('/api/usage/summary')
+def usage_summary(request:Request):return usage.summary(dict(request.query_params))
+
+@app.get('/api/usage/events')
+def usage_events(request:Request):return usage.events(dict(request.query_params))
+
+@app.put('/api/usage/tasks/{module}/{task_id}/project')
+def usage_task_project(module:str,task_id:str,body:dict):
+    return usage.set_task_project(module,task_id,(body or {}).get('workspace_id'))
 
 @app.post('/api/storage/clear-cache')
 def cache_clear():return storage_management.clear()
@@ -775,6 +804,8 @@ def draft_version(did:str):
     data=draft.sheet(did,item['id'])
     workspace_id=(data.get('dataset') or {}).get('workspace_id')
     if workspace_id:
+        # Data X is the project's reusable tagged dataset. Unknown/unjudged values
+        # must remain genuinely blank instead of becoming a literal tag value.
         export_path=draft_export.export(did,[column['id'] for column in data.get('columns',[])],
                                         item['id'],unknown_as_blank=True)
         item['project_artifact']=project_files.register_file(workspace_id,'data_x',export_path,

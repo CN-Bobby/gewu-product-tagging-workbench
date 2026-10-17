@@ -379,7 +379,7 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
             nodeTopN:(meta&&meta.node_top_n_options&&meta.node_top_n_options[0])||50}]}))}>
             <Plus size={14}/>再加一个站点组</button>
         </div>
-        <details className="keyword-advanced"><summary>高级选项 · 月份、矩阵、模型与凭据</summary>
+        <details className="keyword-advanced"><summary>高级选项 · 月份、矩阵与模型</summary>
         <div className="keyword-group-grid">
           <label className="settings-field"><span className="field-label">数据月份</span>
             <input aria-label="数据月份" placeholder="202607（留空为执行当月）" value={form.dataMonth}

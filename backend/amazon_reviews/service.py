@@ -291,7 +291,10 @@ def _collect_asins(job: dict[str, Any]) -> list[dict[str, Any]]:
     if job["mode"] == "asins":
         return [{"asin": asin, "title": "", "category": "", "rank": None} for asin in job["asins"]]
     endpoint, key = sorftime_settings.connection()
-    payload = sorftime.call(endpoint, key, "category_report", {"amz_site": job["site"], "node_id": job["node_id"]})
+    with sorftime.usage_scope({"module": "amazon_reviews", "task_id": job["id"],
+                               "task_title": f"Amazon 评论 · {job.get('site') or '未知站点'}",
+                               "attempt": max(1, int(job.get("attempt") or 1))}):
+        payload = sorftime.call(endpoint, key, "category_report", {"amz_site": job["site"], "node_id": job["node_id"]})
     products = _extract_products(payload)
     _atomic_json(_job_dir(job["id"]) / "category_report.json", payload)
     if job["mode"] == "node_asins":
@@ -587,6 +590,11 @@ def _run(job_id: str, cancel: threading.Event) -> None:
             base_url, api_key, model = model_target(job["model"], job["credential_id"])
             require_validated(job["model"], job["credential_id"], "text")
             client = LLMClient(base_url, api_key, model)
+            if hasattr(client, "usage_context"):
+                client.usage_context = {
+                    "module": "amazon_reviews", "task_id": job_id,
+                    "task_title": f"Amazon 评论 · {job.get('site') or '未知站点'}",
+                }
         collection_source = job.get("collection_source", "sorftime")
         endpoint, sorftime_key = sorftime_settings.connection() if (
             collection_source == "sorftime" or job.get("mode") != "asins") else ("", "")
@@ -629,8 +637,12 @@ def _run(job_id: str, cancel: threading.Event) -> None:
                             force_refresh=bool(job.get("force_refresh")))
                         if not cache_hit:
                             try:
-                                payload = sorftime.call(endpoint, sorftime_key, "product_reviews", {
-                                    "amz_site": job["site"], "asin": item["asin"], "review_type": "Both"})
+                                with sorftime.usage_scope({"module": "amazon_reviews", "task_id": job_id,
+                                                           "task_title": f"Amazon 评论 · {job.get('site') or '未知站点'}",
+                                                           "attempt": max(1, int(job.get("attempt") or 1)),
+                                                           "review_round": round_number}):
+                                    payload = sorftime.call(endpoint, sorftime_key, "product_reviews", {
+                                        "amz_site": job["site"], "asin": item["asin"], "review_type": "Both"})
                             except Exception:
                                 record_usage("reviews", job_id, job.get("workspace_id"), {
                                     "stage": "reviews_collection", "model": "Sorftime", "status": "failed",
@@ -1005,6 +1017,10 @@ def create(body: dict[str, Any]) -> dict[str, Any]:
     force_refresh = body.get("force_refresh", False)
     if not isinstance(force_refresh, bool):
         raise ValueError("force_refresh 必须是布尔值")
+    if auto_voc_policy not in ("none", "completed_only", "any_exported"):
+        raise ValueError("自动 VOC 策略无效")
+    if auto_voc_policy != "none" and not workspace_id:
+        raise ValueError("自动 VOC 需要绑定项目")
     job_id = uuid.uuid4().hex
     now = time.time()
     folder = _job_dir(job_id)
@@ -1038,13 +1054,26 @@ def create(body: dict[str, Any]) -> dict[str, Any]:
     return _job_snapshot(job)
 
 
-def list_jobs() -> list[dict[str, Any]]:
+def list_jobs(*, workspace_id: str | None = None, source_archive_id: str | None = None,
+              source_dataset_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
     if not ROOT.exists():
         return []
     jobs = []
-    for path in sorted(ROOT.glob("*/job.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:50]:
+    for path in sorted(ROOT.glob("*/job.json"), key=lambda p: p.stat().st_mtime, reverse=True):
         try:
-            jobs.append(_job_snapshot(_read(path.parent.name)))
+            job = _read(path.parent.name)
+            if workspace_id and str(job.get("workspace_id") or "") != workspace_id:
+                continue
+            if source_archive_id:
+                job_archive_id = str(job.get("source_archive_id") or "")
+                job_dataset_id = str(job.get("source_dataset_id") or "")
+                legacy_dataset_match = not job_archive_id and (
+                    not job_dataset_id or (source_dataset_id and job_dataset_id == source_dataset_id))
+                if job_archive_id != source_archive_id and not legacy_dataset_match:
+                    continue
+            jobs.append(_job_snapshot(job))
+            if len(jobs) >= max(1, min(int(limit), 1000)):
+                break
         except Exception:
             continue
     return jobs

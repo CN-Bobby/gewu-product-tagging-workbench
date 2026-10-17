@@ -116,8 +116,8 @@ export function ProviderSettings({api,onSaved}){
       {validationMessages.map(message=><p key={message} className="settings-error">{message}</p>)}
     </div>
     <details className="settings-card settings-advanced">
-      <summary>高级服务与旧配置</summary>
-      <p className="field-help">可切换已保存服务并管理多个 Key。文本和图片识别模型分别保存，任务创建时会冻结当前模型及 Key 编号。</p>
+      <summary>高级服务与 Key 管理</summary>
+      <p className="field-help">在这里切换已保存服务并管理多个 Key。文本和图片识别模型分别保存，任务创建时会冻结当前模型及 Key 编号。</p>
       {(status?.providers||[]).length>0&&<label className="settings-field"><span className="field-label">已保存服务</span><select aria-label="已保存服务" value={(status.providers||[]).some(p=>p.name===name)?name:''} onChange={event=>chooseProvider(event.target.value)}><option value="">新建兼容服务…</option>{status.providers.map(p=><option key={p.name} value={p.name}>{p.name}</option>)}</select></label>}
       <div className="settings-grid"><label className="settings-field"><span className="field-label">服务标识</span><input aria-label="服务标识" value={name} onChange={event=>{setName(event.target.value);setCredentialId('');setSavedNotice('')}} placeholder="deepseek"/></label><label className="settings-field"><span className="field-label">默认服务</span><span className="checkline"><input type="checkbox" checked={setDefault} onChange={event=>setSetDefault(event.target.checked)}/>保存后设为全局默认</span></label></div>
       <div className="canonical-ref"><span>已保存模型引用</span><div><code>文本：{legacyTextModel?`${name}/${legacyTextModel}`:'—'}</code><code>图片：{legacyVisionModel?`${name}/${legacyVisionModel}`:'—'}</code></div></div>

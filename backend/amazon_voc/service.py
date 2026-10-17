@@ -247,7 +247,16 @@ class AmazonVOCService:
         self.db.execute("INSERT INTO workbench_model_snapshots(run_id,model_ref,credential_id) VALUES(?,?,?)",
                         (run["id"], selected["model_ref"], selected["credential_id"]))
         self.storage.revision_dir(project_id, run["id"], 1)
+        if project.get("workspace_id"):
+            from .. import project_files
+            try:
+                project_files.register_file(project["workspace_id"], "voc", review_path,
+                    source_type="amazon_voc_input", source_id=run["id"], name=Path(filename).name,
+                    metadata={"voc_project_id": project_id, "run_id": run["id"], "reviews_sha256": review_hash})
+            except Exception:
+                pass  # VOC processing remains available if optional library indexing fails.
         self.start_worker(run_id=run["id"])
+        self._wake.set()
         return self.public_run(run)
 
     def create_run_from_amazon_reviews(self, source_job_id: str,
@@ -402,6 +411,24 @@ class AmazonVOCService:
                                  source_context)
             result = self.get_run(run_id)
         self.register_completed_run_artifacts(run_id, result)
+        workspace_id = result.get("workspace_id") if result else None
+        if workspace_id and result and result.get("status") == "completed":
+            from .. import project_files
+            revision = int(result.get("current_revision") or 1)
+            for kind, filename in (("html", "VOC-report.html"), ("excel", "VOC-report.xlsx"),
+                                   ("quality", "VOC-quality.json")):
+                path = self.storage.artifact(result["project_id"], run_id, revision, kind)
+                if path and path.is_file():
+                    project_files.register_file(workspace_id, "voc", path,
+                        source_type="amazon_voc_output", source_id=f"{run_id}:rev{revision}:{kind}",
+                        name=filename, metadata={"voc_project_id": result["project_id"],
+                                                "run_id": run_id, "revision": revision})
+        if result and result.get("status") == "completed":
+            try:
+                from ..product_archive.sync import sync_voc_run
+                result["archive_sync"] = sync_voc_run(self, run_id)
+            except Exception as exc:  # Archive enrichment must not change VOC completion.
+                result["archive_sync"] = {"status": "sync_failed", "error_type": type(exc).__name__}
         return result
 
     def register_completed_run_artifacts(self, run_id: str,

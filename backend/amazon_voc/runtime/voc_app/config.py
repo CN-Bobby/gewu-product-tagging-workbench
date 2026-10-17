@@ -35,6 +35,16 @@ class Settings:
         }
 
     @classmethod
+    def runtime_tuning_from_env(cls) -> dict[str, int]:
+        """Read only bounded pipeline tuning; model and storage identity stay explicit."""
+        return {
+            "batch_reviews": max(1, int(os.getenv("VOC_BATCH_REVIEWS", "40"))),
+            "batch_chars": max(1000, int(os.getenv("VOC_BATCH_CHARS", "80000"))),
+            "concurrency": max(1, int(os.getenv("VOC_CONCURRENCY", "2"))),
+            "max_repairs": max(0, int(os.getenv("VOC_MAX_REPAIRS", "2"))),
+        }
+
+    @classmethod
     def from_env(cls) -> "Settings":
         data_dir = Path(os.getenv("VOC_DATA_DIR", str(PACKAGE_ROOT / "data"))).resolve()
         return cls(

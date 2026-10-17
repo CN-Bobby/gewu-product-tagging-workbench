@@ -9,6 +9,7 @@ forms and persist the canonical provider-local model names.
 import base64
 import io
 import json,os,re,subprocess,tomllib,uuid
+import time
 from urllib.parse import urlparse
 import httpx
 from .runtime_isolation import provider_home,_toml
@@ -225,19 +226,58 @@ def _response_detail(response,secret=''):
     text=_safe_response_error(response,'',secret)
     return text.replace('模型验证失败','').strip('： ')
 
-def _validate_request(endpoint, api_key, model, capability, content, expected_order=None):
+def _validate_request(endpoint, api_key, model, capability, content, expected_order=None, usage_context=None):
+    usage_context=usage_context or {}
     try:
         host=urlparse(endpoint).hostname or ''
         body={'model':model,'messages':[{'role':'user','content':content}],
               'max_tokens':512 if expected_order else 32}
         if host.casefold() in ('api.deepseek.com','api.deepseek.cn'):
             body['thinking']={'type':'disabled'}
-        with httpx.Client(timeout=20) as client:
-            response=client.post(endpoint,headers={'Authorization':'Bearer '+api_key,'Content-Type':'application/json'},json=body)
+        usage_event_id=None
+        try:
+            from .usage import start_usage_event,provider_name
+            usage_event_id=start_usage_event(kind='model',module='model_settings',
+                task_id=usage_context.get('task_id'),task_title=usage_context.get('task_title'),
+                model=model,provider=provider_name(model,endpoint),attempt=1,
+                request_text=body,metadata={'capability':capability})
+        except Exception:
+            pass
+        started=time.perf_counter()
+        try:
+            with httpx.Client(timeout=20) as client:
+                response=client.post(endpoint,headers={'Authorization':'Bearer '+api_key,'Content-Type':'application/json'},json=body)
+        except Exception:
+            try:
+                from .usage import finish_usage_event
+                finish_usage_event(usage_event_id,status='network_error',
+                    duration_ms=round((time.perf_counter()-started)*1000),request_text=body)
+            except Exception:
+                pass
+            raise
     except httpx.TimeoutException as exc:
         raise ProbeFailure('network_error',f'{capability}模型验证超时，请检查服务地址或网络') from exc
     except httpx.HTTPError as exc:
         raise ProbeFailure('network_error',f'{capability}模型验证网络失败，请检查服务地址：{exc.__class__.__name__}') from exc
+    try:
+        response_data=response.json()
+    except Exception:
+        response_data=None
+    response_text=''
+    if isinstance(response_data,dict):
+        choices=response_data.get('choices') or []
+        message=(choices[0].get('message') or {}) if choices else {}
+        response_text=message.get('content') if isinstance(message,dict) else ''
+    try:
+        from .usage import finish_usage_event
+        finish_usage_event(usage_event_id,
+            status='success' if response.status_code==200 and isinstance(response_data,dict) else
+                   'failed' if response.status_code!=200 else 'invalid',
+            duration_ms=round((time.perf_counter()-started)*1000),
+            usage=(response_data.get('usage') or {}) if isinstance(response_data,dict) else None,
+            request_text=body,response_text=response_text or response.text)
+    except Exception:
+        pass
     detail=_response_detail(response,api_key);lower=detail.casefold()
     if response.status_code in (401,403):
         raise ProbeFailure('authentication_failed',f'{capability}模型鉴权失败（HTTP {response.status_code}）',response.status_code)
@@ -271,10 +311,11 @@ def _validate_request(endpoint, api_key, model, capability, content, expected_or
             raise ProbeFailure('response_contract_failed',message,response.status_code)
     return data
 
-def _probe(endpoint,api_key,model,capability,content,expected_order=None):
+def _probe(endpoint,api_key,model,capability,content,expected_order=None,task_id=None):
     checked=__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
     try:
-        _validate_request(endpoint,api_key,model,capability,content,expected_order)
+        _validate_request(endpoint,api_key,model,capability,content,expected_order,
+            usage_context={'task_id':task_id,'task_title':'模型设置连接测试 · '+capability})
         return {'status':'validated','code':None,'message':'验证通过','model':model,'checked_at':checked,'http_status':200}
     except ProbeFailure as exc:
         return {'status':'failed','code':exc.code,'message':str(exc),'model':model,'checked_at':checked,'http_status':exc.http_status}
@@ -287,7 +328,8 @@ def validate_models(base_url, api_key, text_model, vision_model):
     from .external_effects import assert_allowed
     assert_allowed('model_validation')
     endpoint=base_url.rstrip('/')+'/chat/completions'
-    text=_probe(endpoint,api_key,text_model,'文本','连接测试，仅回复 OK')
+    probe_id='probe_'+uuid.uuid4().hex
+    text=_probe(endpoint,api_key,text_model,'文本','连接测试，仅回复 OK',task_id=probe_id)
     try:image=_vision_fixture()
     except Exception as exc:
         checked=__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
@@ -295,7 +337,7 @@ def validate_models(base_url, api_key, text_model, vision_model):
     else:
         order=['circle','triangle','square']
         vision_content=[{'type':'text','text':'观察图片，从左到右识别三个图形。只返回JSON：{"order":["shape1","shape2","shape3"]}，图形名仅用 circle、triangle、square。'},{'type':'image_url','image_url':{'url':'data:image/jpeg;base64,'+image}}]
-        vision=_probe(endpoint,api_key,vision_model,'视觉',vision_content,order)
+        vision=_probe(endpoint,api_key,vision_model,'视觉',vision_content,order,probe_id)
     statuses=[text['status'],vision['status']];overall='validated' if statuses==['validated','validated'] else 'partial' if 'validated' in statuses else 'failed'
     return {'status':overall,'overall':overall,'validated_at':max(text['checked_at'],vision['checked_at']),
             'text_model':text_model,'vision_model':vision_model,'text':text,'vision':vision}

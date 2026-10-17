@@ -22,6 +22,7 @@ from .full_voc_v2 import (PROMPT_VERSION, adapt_result, assemble_full_result, bu
 from .full_voc_v2_extract import (assign_stable_event_ids, normalize_extract_response,
                                   validate_extract_result)
 from .prompts import PromptRegistry
+from .provider import usage_scope
 from .quality import FIELD_NAMESPACES, NAMESPACES, evaluate, iter_values
 from .schemas import SCHEMAS
 
@@ -871,7 +872,12 @@ class Pipeline:
                     provider_payload = (compact_synthesis_request(payload)
                                         if task == "full_voc_v2_synthesis"
                                         else request_payload)
-                    result, usage = self.provider.call(task, model, request_instructions, provider_payload, schema)
+                    context = {"run_id": run["id"],
+                               "task_title": "Amazon VOC · " + str(run.get("project_name") or run.get("name") or "任务"),
+                               "stage": task, "batch_id": batch_id,
+                               "pipeline_attempt": attempt + 1}
+                    with usage_scope(context):
+                        result, usage = self.provider.call(task, model, request_instructions, provider_payload, schema)
                     call_status = "completed"
                     call_error = ""
                 except Exception as exc:

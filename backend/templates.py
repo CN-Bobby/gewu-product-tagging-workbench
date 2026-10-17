@@ -6,9 +6,11 @@ from . import draft
 
 
 def projects():
+    from . import project_files
     with Session() as s:
         removed=set(s.scalars(select(WorkspaceTrash.workspace_id)))
-        return [obj(w) for w in s.scalars(select(Workspace).order_by(Workspace.created_at)) if w.id not in removed]
+        items=[obj(w) for w in s.scalars(select(Workspace).order_by(Workspace.created_at)) if w.id not in removed]
+    return [{**item, **project_files.public_project(item['id'])} for item in items]
 
 
 def trashed_projects():
@@ -33,7 +35,9 @@ def restore_project(workspace_id):
         workspace=require(s,Workspace,workspace_id)
         marker=s.scalar(select(WorkspaceTrash).where(WorkspaceTrash.workspace_id==workspace_id))
         if marker:s.delete(marker)
-        return {**obj(workspace),'restored':True}
+        restored=obj(workspace)
+    from . import project_files
+    return {**restored, **project_files.public_project(workspace_id), 'restored':True}
 
 
 def create_project(name):
@@ -42,14 +46,14 @@ def create_project(name):
         w=Workspace(name=name.strip());s.add(w);s.flush();project=obj(w)
     from . import project_files
     try:
-        project_files.create_project_directories(project['id'])
+        project_files.ensure_project(project['id'])
     except Exception:
         with Session.begin() as s:
             workspace=s.get(Workspace,project['id'])
             if workspace is not None:s.delete(workspace)
         project_files.remove_empty_project_directories(project['id'])
         raise
-    return project
+    return {**project, **project_files.public_project(project['id'])}
 
 
 def list_templates(workspace_id):

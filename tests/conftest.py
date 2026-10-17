@@ -5,7 +5,16 @@ import tempfile
 from pathlib import Path
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-os.environ['TAG_STORAGE']=tempfile.mkdtemp(prefix='product-workbench-tests-')
+TEST_TEMP_ROOT = Path(__file__).resolve().parents[1] / '.test-temp'
+TEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+for variable in ('TEMP', 'TMP', 'TMPDIR'):
+    os.environ[variable] = str(TEST_TEMP_ROOT)
+tempfile.tempdir = str(TEST_TEMP_ROOT)
+
+os.environ['TAG_STORAGE']=tempfile.mkdtemp(
+    prefix='product-workbench-tests-',
+    dir=TEST_TEMP_ROOT,
+)
 os.environ['GEWU_PROFILE']='test'
 os.environ['GEWU_TEST_EXTERNAL_EFFECTS']='offline'
 import pytest
@@ -66,6 +75,11 @@ def loopback_network_only(monkeypatch):
     monkeypatch.setattr(socket.socket,'connect',guarded_connect)
     monkeypatch.setattr(socket.socket,'connect_ex',guarded_connect_ex)
     yield
+
+
+def pytest_configure(config):
+    # Keep pytest's tmp_path/tmpdir fixtures on D: as well as TAG_STORAGE.
+    config.option.basetemp = str(TEST_TEMP_ROOT / 'pytest')
 
 @pytest.fixture(autouse=True)
 def database():

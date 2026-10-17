@@ -302,7 +302,7 @@ def execute(run_id, cancel_event=None):
         selection = plan.get('selection') or {}
         base_url, key, model = credentials.model_target(selection.get('model_ref'),
                                                         selection.get('credential_id'))
-        config = EngineConfig(mcp_endpoint=credentials.mcp_endpoint(), llm_base_url=base_url,
+        config = EngineConfig(mcp_endpoint=credentials.mcp_endpoint(), mcp_headers=credentials.mcp_headers(), llm_base_url=base_url,
                               llm_api_key=key, llm_model=model)
         # 引擎版本与使用的模型身份冻结进运行记录；密钥一律不落盘。
         model_snapshot = {'base_url': base_url, 'model': model}

@@ -1,6 +1,5 @@
 import {defineConfig} from 'vite';
 import {readFileSync} from 'node:fs';
-
 const version = JSON.parse(readFileSync(new URL('../VERSION.json', import.meta.url), 'utf8')).version;
 const devPort = 5174;
 const expectedOrigins = new Set([

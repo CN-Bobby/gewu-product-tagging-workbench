@@ -14,7 +14,7 @@ def safe(v):
         return json.dumps(v,ensure_ascii=False)
     return v
 
-def export(did,selected,version=None,unknown_as_blank=False):
+def export(did,selected,version=None,*,unknown_as_blank=False):
     data=draft.sheet(did,version);cols={c['id']:c for c in data['columns']}
     if len(selected)!=len(set(selected)) or any(c not in cols for c in selected):raise ValueError('导出列无效')
     headers=data['dataset']['headers'];wb=Workbook();ws=wb.active;ws.title='Product_Result'

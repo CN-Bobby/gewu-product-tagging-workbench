@@ -228,6 +228,8 @@ def _check_runtime(request, base_url: str) -> dict:
         visual_validation = validation.get("vision") or validation.get("image")
         if kind == "vision":
             vision_validation_status = (visual_validation or {}).get("status") or "unknown"
+            if visual_validation and vision_validation_status != "validated":
+                raise E2EFailure("vision_model_not_validated", "默认视觉模型尚未通过视觉能力验证")
     return {
         "profile": "dev",
         "policy": "live_validation",
@@ -554,6 +556,8 @@ def main() -> int:
 
                 stage = "start_agent"
                 panel = page.locator(".agent-panel")
+                if panel.count() == 0:
+                    page.get_by_role("button", name="打开 Agent 会话", exact=True).click()
                 if panel.count() != 1:
                     raise E2EFailure("agent_panel_missing", "打标页没有唯一的 Agent 会话面板")
                 panel = page.locator(".agent-panel")
