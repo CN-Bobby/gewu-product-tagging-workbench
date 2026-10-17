@@ -37,7 +37,7 @@ def test_session_copy_backed_up_and_original_preserved(tmp_path,monkeypatch):
     env=runtime_isolation.environment('legacy_copy','existing');target=Path(env['REASONIX_HOME'])
     assert (target/'sessions/existing.jsonl').read_text()=='original transcript'
     assert not (target/'sessions/existing.jsonl.lock').exists()
-    report=json.loads((target/'migration.json').read_text());assert Path(report['backup']).is_dir()
+    report=json.loads((target/'migration.json').read_text(encoding='utf-8'));assert Path(report['backup']).is_dir()
     assert report['status']=='copied_pending_acp_resume'
     assert (sessions/'existing.jsonl').read_text()=='original transcript'
 
@@ -145,6 +145,8 @@ def test_legacy_qualified_model_names_are_migrated(tmp_path,monkeypatch):
 
 def test_provider_config_accepts_legacy_duplicate_reference(tmp_path,monkeypatch):
     home=source(tmp_path,monkeypatch)
+    from backend.credential_vault import set_secret
+    set_secret('model','TEST_KEY','synthetic-test-only')
     from backend.vision import provider_config
     endpoint,key,model=provider_config('test/test/text')
     assert endpoint=='https://test.invalid/v1/chat/completions'

@@ -5,6 +5,12 @@ import pytest
 from backend import model_settings
 
 
+@pytest.fixture(autouse=True)
+def _allow_mocked_provider_probes(monkeypatch):
+    # These tests replace the HTTP client with an in-memory fake; no real provider request runs.
+    monkeypatch.setenv('GEWU_PROFILE', 'prod')
+
+
 class Response:
     def __init__(self,status=200,payload=None):
         self.status_code=status;self._payload=payload or {'choices':[{'message':{'content':'OK'}}]}

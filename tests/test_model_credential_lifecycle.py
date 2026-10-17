@@ -64,6 +64,9 @@ def providers(tmp_path,monkeypatch):
         (home/'.env').write_text('\n'.join('%s="%s-secret"'%(c['api_key_env'],c['id']) for c in credentials)+'\n',
                                  encoding='utf-8')
     write()
+    from backend.credential_vault import set_secret
+    for credential in state['credentials']:
+        set_secret('model', credential['api_key_env'], credential['id']+'-secret')
     monkeypatch.setenv('TAG_PROVIDER_HOME',str(home))
     state['home']=home;state['write']=write
     return state
@@ -118,7 +121,7 @@ def open_run(did,model=MODEL,products=3):
 
 
 def dataset_home(did):
-    return Path(STORAGE)/'datasets'/did/'reasonix'
+    return runtime_isolation._runtime_home(did)
 
 
 def home_bytes(did):
@@ -328,9 +331,10 @@ def test_T11_the_execution_budget_and_backend_contracts_are_unchanged():
     assert declared=={'bind','start','send','cancel','answer_question','cancel_question',
                       'answer_permission','cancel_permission','stop','status'}
     assert callable(getattr(protocol,'line'))
-    # The adapter itself still knows nothing about credentials: resolution belongs above it.
+    # Credential selection stays above the adapter; startup diagnostics only redact secret values.
     source=Path(reasonix.__file__).read_text(encoding='utf-8')
-    assert 'credential' not in source.lower()
+    assert 'credential_selection' not in source
+    assert 'credential_vault' not in source
     assert 'provider_home' not in source
     assert 'MCP_CALL_TIMEOUT_SECONDS' not in source
     assert harness.MCP_CALL_TIMEOUT_SECONDS==300

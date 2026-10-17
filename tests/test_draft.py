@@ -86,6 +86,43 @@ def test_export_preserves_70_fields_images_and_selected_order(dataset):
     assert ws.cell(2,71).value=='【待处理】'
     assert wb['AI_Detail'].max_row==21 and wb['Tag_Dictionary'].max_row==3
 
+def test_export_unknown_as_blank_keeps_unknown_details(dataset):
+    did=dataset['id'];column=add(did,'unknown_blank');row=draft.sheet(did)['rows'][0]
+    draft.correct(did,row['id'],column['id'],None)
+    with Session.begin() as session:
+        cell=draft.get_cell(session,row['id'],column['id'])
+        cell.raw_value='unresolved raw observation'
+        cell.evidence={'explanation':'test evidence remains in the detail sheet'}
+    path=draft_export.export(did,[column['id']],unknown_as_blank=True)
+    workbook=openpyxl.load_workbook(path,data_only=True)
+    result=workbook['Product_Result']
+    detail=workbook['AI_Detail']
+    assert result.cell(2,len(dataset['headers'])+1).value is None
+    assert detail.cell(2,5).value=='未知'
+    assert detail.cell(2,6).value=='unresolved raw observation'
+    assert 'test evidence remains in the detail sheet' in detail.cell(2,9).value
+
+
+def test_project_dataset_version_endpoint_exports_data_x(dataset):
+    from fastapi.testclient import TestClient
+    from backend import project_files
+    from backend.app import app
+    did=dataset['id'];column=add(did,'project_unknown');row=draft.sheet(did)['rows'][0]
+    draft.correct(did,row['id'],column['id'],None)
+    with TestClient(app) as client:
+        response=client.post(f'/api/drafts/{did}/versions',json={})
+    assert response.status_code==200,response.text
+    saved=response.json()
+    assert saved['version']==1
+    assert saved['project_artifact']['kind']=='data_x'
+    artifact_path=project_files.project_dir(dataset['workspace_id'])/saved['project_artifact']['relative_path']
+    workbook=openpyxl.load_workbook(artifact_path,data_only=True)
+    result=workbook['Product_Result']
+    detail=workbook['AI_Detail']
+    assert result.cell(2,len(dataset['headers'])+1).value is None
+    assert detail.cell(2,5).value=='未知'
+
+
 def test_scope_approval_staleness_and_cross_dataset(dataset):
     did=dataset['id'];c=add(did);ids=[x['id'] for x in draft.sheet(did)['rows'][:3]]
     p=draft.propose(did,'执行',[{'kind':'execute','column_ids':[c['id']],'product_ids':ids}])

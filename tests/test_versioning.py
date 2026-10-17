@@ -95,7 +95,7 @@ def test_dev_build_identity_is_read_only_from_fields_the_build_writes():
     assert consumed<=emitted_keys, sorted(consumed-emitted_keys)
     # The UI shows the running build_id and marks a development or uncommitted build.
     page=(root/'frontend'/'src'/'main.jsx').read_text(encoding='utf-8')
-    shown=set(re.findall(r'buildInfo\??\.([a-z_]+)',page))
+    shown=set(re.findall(r'(?:buildInfo|runtimeStatus\.source)\??\.([a-z_]+)',page))
     assert {'build_id','build_mode','dirty'}<=shown<=written|{'version','release_status','commit'}
 
 
