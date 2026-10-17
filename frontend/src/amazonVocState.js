@@ -19,7 +19,7 @@ export const amazonVocEndpoints={
   projectRuns:projectId=>AMAZON_VOC_API+'/projects/'+encodeURIComponent(projectId)+'/runs',
 };
 
-export function buildAmazonVocRunForm({file,model,credentialId}={}){
+export function buildAmazonVocRunForm({file,model,credentialId,forceRefresh=false}={}){
   if(!file)throw new Error('请选择评论 Excel 文件');
   const name=String(file.name||'').toLowerCase();
   if(!name.endsWith('.xlsx')&&!name.endsWith('.xlsm'))throw new Error('仅支持 .xlsx 或 .xlsm 评论文件');
@@ -28,6 +28,7 @@ export function buildAmazonVocRunForm({file,model,credentialId}={}){
   for(const [key,value] of Object.entries({model,credential_id:credentialId})){
     if(value!=null&&String(value).trim())form.append(key,String(value).trim());
   }
+  form.append('force_refresh',String(Boolean(forceRefresh)));
   return form;
 }
 

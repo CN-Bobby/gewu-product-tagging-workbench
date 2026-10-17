@@ -56,15 +56,17 @@ function WorkbookPreview({ workspaceId, item }) {
 
 function HtmlPreview({ workspaceId, item }) {
   const [source, setSource] = useState('');
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
-  useEffect(() => { let live = true; setSource(''); setError(''); fetch(`/api/projects/${workspaceId}/library/${item.id}/html`).then(readResponse).then(response => response.text()).then(value => live && setSource(value)).catch(value => live && setError(value.message)); return () => { live = false; }; }, [workspaceId, item.id]);
+  useEffect(() => { let live = true; setSource(''); setLoaded(false); setError(''); fetch(`/api/projects/${workspaceId}/library/${item.id}/html`).then(readResponse).then(response => response.text()).then(value => { if (live) { setSource(value); setLoaded(true); } }).catch(value => live && setError(value.message)); return () => { live = false; }; }, [workspaceId, item.id]);
   if (error) return <div className="pp-state" role="alert">{error}</div>;
-  if (!source) return <div className="pp-state">正在读取 HTML 报告…</div>;
+  if (!loaded) return <div className="pp-state">正在读取 HTML 报告…</div>;
   return <iframe className="pp-html" title={`${item.name} 预览`} sandbox="" srcDoc={source}/>;
 }
 
 export function ProjectPreview({ workspaceId, item }) {
-  if (item.kind === 'voc' && item.name?.toLowerCase().endsWith('.html')) return <HtmlPreview workspaceId={workspaceId} item={item}/>;
-  if (item.previewable && /\.(xlsx|xlsm|xls)$/i.test(item.name || '')) return <WorkbookPreview workspaceId={workspaceId} item={item}/>;
+  if (item.downloadable === false || item.previewable === false) return <div className="pp-state pp-unavailable">{item.preview_reason || '此文件暂不支持在线预览。'}<small>{formatFileSize(item.size)} · SHA-256 {item.sha256 || '未知'}</small></div>;
+  if (/\.html?$/i.test(item.name || item.filename || '')) return <HtmlPreview workspaceId={workspaceId} item={item}/>;
+  if (/\.(xlsx|xlsm|xls)$/i.test(item.name || item.filename || '')) return <WorkbookPreview workspaceId={workspaceId} item={item}/>;
   return <div className="pp-state pp-unavailable">{item.previewable ? '暂不支持此文件类型的预览。' : '此文件暂不支持在线预览。'}<small>{formatFileSize(item.size)} · SHA-256 {item.sha256 || '未知'}</small></div>;
 }

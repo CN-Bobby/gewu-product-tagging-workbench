@@ -8,7 +8,7 @@
 // The run projection is driven by the event stream and never by a polling loop: the snapshot from
 // GET /runs/{id} is authoritative, and every streamed event is folded in by sequence.
 
-export const PAGE={HOME:'home',TAGGING:'tagging',KEYWORD:'keyword',AMAZON_SCRAPER:'amazon-scraper',AMAZON_VOC:'amazon-voc',XUNLONGJUE:'xunlongjue',SETTINGS:'settings'};
+export const PAGE={HOME:'home',TAGGING:'tagging',KEYWORD:'keyword',AMAZON_SCRAPER:'amazon-scraper',AMAZON_VOC:'amazon-voc',XUNLONGJUE:'xunlongjue',SETTINGS:'settings',USAGE:'usage'};
 export const PAGE_HOME=PAGE.HOME;
 
 const ASIN_PATTERN=/^B0[A-Z0-9]{8}$/;
@@ -310,6 +310,7 @@ export function applySnapshot(state,snapshot){
     lastSequence:Math.max(switched?0:state.lastSequence,Number(snapshot.latest_sequence??snapshot.last_sequence)||0),
     progress:snapshot.progress&&typeof snapshot.progress==='object'?{stage:String(snapshot.progress.stage||snapshot.stage||''),done:snapshot.progress.done==null?null:Number(snapshot.progress.done),total:snapshot.progress.total==null?null:Number(snapshot.progress.total),unit:String(snapshot.progress.unit||''),message:String(snapshot.progress.message||'')}:null,
     attempt:snapshot.attempt??null,
+    workspaceId:snapshot.workspace_id??null,
     queuePosition:snapshot.queue_position??null,
     plannedCalls:snapshot.planned_calls??state.plannedCalls,
     lastActivity:snapshot.last_activity||snapshot.recent_activity?.at(-1)||null,
