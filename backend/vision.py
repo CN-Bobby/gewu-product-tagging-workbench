@@ -4,10 +4,10 @@ import hashlib
 import io
 import json
 import os
+import time
 import tomllib
 from pathlib import Path
 import httpx
-from dotenv import dotenv_values
 from PIL import Image
 from sqlalchemy import select
 from .db import *
@@ -19,6 +19,7 @@ PROMPT='''你是商品图片事实提取工具。实际观察所提供的图片�
 
 def provider_config(model_ref,credential_id=None):
     from .runtime_isolation import provider_home
+    from .credential_vault import get_secret
     from .model_settings import local_model_name
     home=provider_home()
     config_path=home/'config.toml'
@@ -43,9 +44,8 @@ def provider_config(model_ref,credential_id=None):
     from .runtime_isolation import _effective_credential
     selected=_effective_credential(provider,credential_id)
     key_name=(selected or {}).get('api_key_env') or provider.get('api_key_env')
-    # Match Reasonix v1.25.1: provider secrets live in its global .env, never copy them.
-    key=(os.environ.get(key_name) or dotenv_values(home/'.env').get(key_name)) if key_name else None
-    if not key:raise ValueError('Reasonix 视觉 provider 尚未保存有效授权，请在 Reasonix 中配置')
+    key=get_secret('model',key_name) if key_name else None
+    if not key:raise ValueError('视觉模型所选 Key 未保存在当前环境的凭证库中')
     base=provider.get('base_url','').rstrip('/')
     endpoint=provider.get('request_url') or base+'/chat/completions'
     if not endpoint.startswith('https://'):raise ValueError('视觉服务需使用已配置的 HTTPS 端点')
@@ -56,19 +56,64 @@ def analyze(asset_id,model_ref):
     with Session() as s:
         a=require(s,Asset,asset_id)
         if not a.path:raise ValueError('图片尚未下载，无法调用视觉分析')
+        dataset=require(s,Dataset,require(s,Product,a.product_id).dataset_id)
+        dataset_id=dataset.id
         cached=s.scalar(select(Observation).where(Observation.asset_id==asset_id,Observation.model==model_ref,Observation.prompt_hash==prompt_hash))
-        if cached:return {**cached.content,'asset_id':asset_id,'model':model_ref,'observation_id':cached.id,'cached':True}
-        path=a.path;dataset_id=require(s,Product,a.product_id).dataset_id
+        path=a.path
+    try:
+        from .usage import record_local_cache
+        record_local_cache(module='vision',task_id=dataset_id,task_title=dataset.source_filename or '视觉分析任务',
+                           cache_name='vision_observation',hit=bool(cached))
+    except Exception:
+        pass
+    if cached:return {**cached.content,'asset_id':asset_id,'model':model_ref,'observation_id':cached.id,'cached':True}
     with Image.open(path) as im:
         im.thumbnail((1400,1400));buf=io.BytesIO();im.convert('RGB').save(buf,format='JPEG',quality=90)
     endpoint,key,model=provider_config(model_ref)
     body={'model':model,'messages':[{'role':'system','content':PROMPT},{'role':'user','content':[{'type':'text','text':'提取这张商品图的客观视觉特征。'},{'type':'image_url','image_url':{'url':'data:image/jpeg;base64,'+base64.b64encode(buf.getvalue()).decode()}}]}],'max_tokens':4096,'response_format':{'type':'json_object'}}
     if 'deepseek' in model:body['thinking']={'type':'disabled'}
-    with httpx.Client(timeout=180) as client:
-        response=client.post(endpoint,headers={'Authorization':'Bearer '+key},json=body)
+    from .external_effects import assert_allowed
+    assert_allowed('vision_model')
+    messages=body['messages'];event_id=None;started=None
+    try:
+        from .usage import start_usage_event,provider_name
+        event_id=start_usage_event(kind='model',module='vision',task_id=dataset_id,
+            task_title=dataset.source_filename or '视觉分析任务',model=model_ref,
+            provider=provider_name(model_ref,endpoint),attempt=1,request_text=messages)
+    except Exception:
+        pass
+    started=time.perf_counter()
+    try:
+        with httpx.Client(timeout=180) as client:
+            response=client.post(endpoint,headers={'Authorization':'Bearer '+key},json=body)
+    except Exception:
+        try:
+            from .usage import finish_usage_event
+            finish_usage_event(event_id,status='network_error',duration_ms=round((time.perf_counter()-started)*1000),request_text=messages)
+        except Exception:
+            pass
+        raise
     if response.status_code!=200:
+        try:
+            from .usage import finish_usage_event
+            finish_usage_event(event_id,status='http_error',duration_ms=round((time.perf_counter()-started)*1000),request_text=messages,response_text=response.text)
+        except Exception:
+            pass
         raise RuntimeError(f'视觉模型请求失败 HTTP {response.status_code}，请核对 Reasonix 模型授权和视觉能力')
-    response_data=response.json()
+    try:
+        response_data=response.json();usage=response_data.get('usage') or {}
+    except Exception:
+        try:
+            from .usage import finish_usage_event
+            finish_usage_event(event_id,status='invalid',duration_ms=round((time.perf_counter()-started)*1000),request_text=messages,response_text=response.text)
+        except Exception:
+            pass
+        raise
+    try:
+        from .usage import finish_usage_event
+        finish_usage_event(event_id,status='success',duration_ms=round((time.perf_counter()-started)*1000),usage=usage,request_text=messages,response_text=(response_data.get('choices') or [{}])[0].get('message',{}).get('content'))
+    except Exception:
+        pass
     choices=response_data.get('choices') or []
     if not choices:raise ValueError('视觉模型未返回结果')
     choice=choices[0]

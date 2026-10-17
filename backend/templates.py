@@ -6,13 +6,54 @@ from . import draft
 
 
 def projects():
-    with Session() as s:return [obj(w) for w in s.scalars(select(Workspace).order_by(Workspace.created_at))]
+    from . import project_files
+    with Session() as s:
+        removed=set(s.scalars(select(WorkspaceTrash.workspace_id)))
+        items=[obj(w) for w in s.scalars(select(Workspace).order_by(Workspace.created_at)) if w.id not in removed]
+    return [{**item, **project_files.public_project(item['id'])} for item in items]
+
+
+def trashed_projects():
+    with Session() as s:
+        markers={item.workspace_id:item.deleted_at for item in s.scalars(select(WorkspaceTrash))}
+        return [{**obj(w),'deleted_at':markers[w.id]} for w in
+                s.scalars(select(Workspace).order_by(Workspace.created_at)) if w.id in markers]
+
+
+def trash_project(workspace_id):
+    with Session.begin() as s:
+        require(s,Workspace,workspace_id)
+        marker=s.scalar(select(WorkspaceTrash).where(WorkspaceTrash.workspace_id==workspace_id))
+        if marker:return {'workspace_id':workspace_id,'deleted_at':marker.deleted_at,'recoverable':True}
+        marker=WorkspaceTrash(workspace_id=workspace_id)
+        s.add(marker);s.flush()
+        return {'workspace_id':workspace_id,'deleted_at':marker.deleted_at,'recoverable':True}
+
+
+def restore_project(workspace_id):
+    with Session.begin() as s:
+        workspace=require(s,Workspace,workspace_id)
+        marker=s.scalar(select(WorkspaceTrash).where(WorkspaceTrash.workspace_id==workspace_id))
+        if marker:s.delete(marker)
+        restored=obj(workspace)
+    from . import project_files
+    return {**restored, **project_files.public_project(workspace_id), 'restored':True}
 
 
 def create_project(name):
     if not isinstance(name,str) or not 1<=len(name.strip())<=100:raise ValueError('项目名称需为1–100字')
     with Session.begin() as s:
-        w=Workspace(name=name.strip());s.add(w);s.flush();return obj(w)
+        w=Workspace(name=name.strip());s.add(w);s.flush();project=obj(w)
+    from . import project_files
+    try:
+        project_files.ensure_project(project['id'])
+    except Exception:
+        with Session.begin() as s:
+            workspace=s.get(Workspace,project['id'])
+            if workspace is not None:s.delete(workspace)
+        project_files.remove_empty_project_directories(project['id'])
+        raise
+    return {**project, **project_files.public_project(project['id'])}
 
 
 def list_templates(workspace_id):

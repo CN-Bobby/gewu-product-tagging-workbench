@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
+from ..credential_vault import get_secret, set_secret, delete_secret
 
 
 def _root() -> Path:
@@ -19,13 +20,13 @@ def _path() -> Path:
 def _read() -> dict:
     path = _path()
     if not path.is_file():
-        return {'endpoint': '', 'api_key': ''}
+        return {'endpoint': '', 'api_key': get_secret('sorftime', 'api_key') or ''}
     try:
         value = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, ValueError):
-        return {'endpoint': '', 'api_key': ''}
+        return {'endpoint': '', 'api_key': get_secret('sorftime', 'api_key') or ''}
     return {'endpoint': str(value.get('endpoint') or ''),
-            'api_key': str(value.get('api_key') or '')}
+            'api_key': get_secret('sorftime', 'api_key') or ''}
 
 
 def public_endpoint(value: str) -> str:
@@ -63,7 +64,9 @@ def save(endpoint: str, api_key: str) -> dict:
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
     current = _read()
-    data = {'endpoint': sanitized, 'api_key': api_key or current['api_key']}
+    if api_key:
+        set_secret('sorftime', 'api_key', api_key)
+    data = {'endpoint': sanitized}
     tmp = path.with_suffix('.json.tmp')
     tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
     os.replace(tmp, path)
@@ -72,6 +75,7 @@ def save(endpoint: str, api_key: str) -> dict:
 
 def clear_key() -> None:
     value = _read()
+    delete_secret('sorftime', 'api_key')
     value['api_key'] = ''
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)

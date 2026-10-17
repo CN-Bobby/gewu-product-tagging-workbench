@@ -1,6 +1,28 @@
 # 格物工作台项目总进度
 
-快照时间：2026-10-02（Asia/Shanghai）
+快照时间：2026-10-09（Asia/Shanghai）
+
+> 当前运行治理状态更新于 2026-10-13：新功能日常人工测试统一在 DEV，独立 TEST 服务已停止并保留数据。此前的 TEST 候选流程记录为历史方案，详见 [DEV 唯一日常人工测试环境](DEV_ONLY_DAILY_TESTING.md)。
+
+> 当前发布规则：功能汇总到 DEV 并完成人工测试，经用户确认后冻结；将同一冻结版本提升到 PROD 并核验；再发布匹配 PROD 的 GitHub Release 和绿色便携包。下方较早日期的进度条目是历史快照，不作为当前分支、候选版本、仓库配置或发布状态的依据。权威规则见根目录 `AGENTS.md` 与 `docs/RELEASE_GOVERNANCE.md`。
+
+## 2026-10-12 便携分发与在线更新流程（历史实施快照，现行规则见上方）
+
+- **当前状态：** DEV → 便携候选 → TEST 人工验收 → PROD 提升与 GitHub Release 流程正在接入；没有新的候选 ZIP、人工验收或 PROD 提升记录，本节不代表已完成交付。
+- **真实 DEV：** Run Center 指向 `C:\Users\Administrator\.codex\worktrees\voc-project-file-link\数据打标项目`，分支 `codex/voc-project-file-link`，基线 HEAD `267a3dff360cfd67724f8e920ad8091a4ad076b6`；本次复核时有 68 个 tracked 文件修改和 13 个未跟踪文件，须分类保留后才能形成干净候选提交。聊天当前打开的 `1b41` worktree 是干净 detached 基线，不是 DEV。
+- **版本口径：** beta.8 清单实际标记 `build_mode=dev`、`release=false`、不可分发，且没有对应人工验收报告；现将其登记为被 beta.9 取代的开发构建。`VERSION.json` 与 RELEASE_LEDGER 已推进 beta.9 / `pending_acceptance`，候选 commit 尚未确定。
+- **已接入本地改动：** `build_windows.py --portable` 输出版本化候选目录、便携 ZIP 和 SHA-256 侧车；人工验收清单绑定候选报告、app manifest、ZIP 和侧车哈希；TEST/PROD Run Center 门槛与提升凭证脚本正在完善。PowerShell 静态解析及 `git diff --check` 通过；本轮尚未构建候选或执行完整测试。
+- **在线更新口径：** 客户端读取 GitHub Releases，不同步源码分支。接受提交进入源码仓库 `main` 后，将人工验收的同一 ZIP/侧车上传至二进制 Release 仓库，并在说明中记录源码 commit。默认配置 `CN-Bobby/gewu-workbench-releases` 当前不存在，需要在候选完成后确认/建立可公开下载的二进制仓库。
+- **尚需完成：** 对 68 项 dirty 变更分类及重复 Woot 补丁对照；完成分支本地提交和固定候选工作树同步；完善 TEST/PROD 提升脚本和按原 ZIP 发布脚本；离线测试、构建、浏览器回归；人工验收并产生可追溯报告；按授权提升 PROD；配置 Release 仓库并验证客户端检查更新与资产哈希。
+
+## 本地开发与测试环境治理
+
+- **状态：环境治理实现完成，人工业务验收仍待用户执行。** 日常开发入口、冻结 TEST 构建、数据重置、回退、离线自动门禁、项目文件树浏览器回归和独立人工清单已形成固定流程，说明见 [`LOCAL_RUN_CENTER.md`](LOCAL_RUN_CENTER.md) 与 [`LOCAL_TEST_ACCEPTANCE.md`](LOCAL_TEST_ACCEPTANCE.md)。DEV 与 TEST 每次桌面启动都显式选择 offline（默认）或单进程 `live_validation`，取消/关闭对话框会中止启动。两种模式都使用隔离业务数据，且不恢复旧任务；自动回归与候选 `StartAfter` 始终 offline。TEST 夹具位于 `K:\GeWuFixtures\project-library-v1`，TEST 报告位于 `K:\GeWuTest\Reports`。
+- 实现位于隔离 worktree `C:\Users\Administrator\.codex\worktrees\local-test-governance\数据打标项目`，分支 `codex/local-testing-governance`。主工作目录 `D:\数据打标项目` 的既有未提交修改不属于本任务，未覆盖、清理或纳入提交。
+- 实现工作树提交前的离线全量门禁报告：`K:\GeWuTest\Reports\offline-20261008-235316-2964ba1929ac.json`。后端 **822 passed / 8 skipped**，前端 **141 passed**，Vite 构建通过，外部请求数为 0。TEST 冻结脚本会从指定的干净提交重新运行这套门禁并另外记录候选身份。
+- 从 `K:\Bobbytagging\Data-Test` 一次性导入模型与 SellerSprite 凭证至当前 Windows 用户 DPAPI vault，来源文件保留且未做密钥验证；DEV/TEST 状态为模型已配置、SellerSprite 已配置、Sorftime 未配置。提供方非秘密设置分别保存于每个环境的 Run Center 目录。旧目录和历史备份中的凭证只盘点、不自动删除。
+- 正式数据快照 `K:\Bobbytagging\Backups\pre-run-center-20261008` 已核验，553 个文件、19 个 SQLite 数据库快照、8 个凭证/日志副本排除；manifest SHA-256 `f2ddae84a0ba2618b57c3b3a4f086012c1eef5c32baf98fbed0fcdc4bf09e4f6`。生产数据源未迁移或重置。
+- 正式数据入口继续识别现有 beta.8 候选，状态 `pending_acceptance`；`VERSION.json`、`RELEASE_LEDGER.json` 未改变。TEST 候选和自动化报告均不代表用户的人工验收或客户发布。
 
 仓库：`D:\数据打标项目`
 用途：项目内新对话的接力入口。无需用户转发旧对话；先读本文件，再按 `AGENTS.md` 对需要继续的部分做实时复核。
@@ -39,7 +61,7 @@
 
 - **状态：功能实现及记录内的自动化、美国站真实接口验证已完成；临时页面服务当前离线。** 评论模块已接入工作台主导航。代码、接口和数据契约见 [`docs/AMAZON_REVIEWS.md`](AMAZON_REVIEWS.md)；本记录与模块代码包含在本地检查点提交 `feat(amazon-reviews): add review collection workbench module` 中。当前分支 HEAD 已包含该提交及后续开发提交；不推送、不变更 `0.5.0-beta.7`。
 - 自动化既有结果：评论模块 9 项通过；全后端 782 项通过、2 项跳过；前端 128 项通过、构建通过。本次保存进度时没有重跑测试。
-- 美国站真实验证：Node `17269957011`，ASIN `B0D5TQJXRN`、`B0CRGV3D93`；4 次评论调用返回 256 条原始记录，去重后 128 条，标题和正文译文覆盖 128/128；工作簿含 3 张表、128 条评论行和 14 个源字段。恢复验证额外评论调用为 0。隔离报告位于 `builds/sorftime-reviews-live/20260929T115704Z-86ac57ef/`。
+- 美国站真实验证：Node 与商品标识已从公开文档中移除；4 次评论调用返回 256 条原始记录，去重后 128 条，标题和正文译文覆盖 128/128；工作簿含 3 张表、128 条评论行和 14 个源字段。恢复验证额外评论调用为 0。隔离报告位于 `builds/sorftime-reviews-live/20260929T115704Z-86ac57ef/`。
 - 临时试用页地址仍是 `http://127.0.0.1:8899/#/amazon-reviews`。**9 月 30 日本次探测该端口连接被拒绝，后端没有运行**；浏览器保留的 URL 不代表页面服务在线。隔离数据目录 `builds/amazon-reviews-temp/run-76416cb5/workbench_data` 仍存在，需要重新启动对应临时实例后才能继续试用。`builds` 下测试数据被忽略，不纳入 Git。源码与进度记录不包含 API 凭据。
 - 寻龙诀及其它并行工作区改动仍保留在本地，没有纳入评论模块提交。接手时重新检查 `git status -sb`，不要假定工作区干净。
 

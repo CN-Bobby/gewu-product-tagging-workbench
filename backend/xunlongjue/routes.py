@@ -34,6 +34,12 @@ def put_settings(body: dict):
                                             (body or {}).get('api_key')))
 
 
+@router.delete('/settings/key')
+def delete_settings_key():
+    settings.clear_key()
+    return settings.status()
+
+
 @router.get('/runs')
 def get_runs(search: str = '', status: str = '', sort: str = 'updated_at',
              direction: str = 'desc', archived: bool | None = None,
