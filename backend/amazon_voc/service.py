@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import json
 import hashlib
+import html
 import os
 import socket
 import threading
 import time
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any
 
@@ -17,13 +19,103 @@ from ..runtime_isolation import CredentialUnavailable
 from .runtime.voc_app.config import Settings
 from .runtime.voc_app.db import Database, utcnow
 from .runtime.voc_app.pipeline import Pipeline
-from .runtime.voc_app.provider import OpenAICompatibleProvider
+from .runtime.voc_app.provider import ModelError, OpenAICompatibleProvider
 from .runtime.voc_app.storage import Storage
+from ..usage_ledger import usage_summary
 
 
 MAX_REVIEW_BYTES = 50 * 1024 * 1024
 ALLOWED_INPUT_SUFFIXES = {".xlsx", ".xlsm"}
 TERMINAL = {"completed", "failed", "cancelled"}
+
+
+def _shared_model_protocol(base_url: str, model: str) -> str:
+    """Use strict Responses JSON Schema for DeepSeek; keep compatible defaults elsewhere."""
+    host = (urlsplit(str(base_url or "")).hostname or "").casefold()
+    model_name = str(model or "").casefold()
+    if host == "api.deepseek.com" and model_name.startswith("deepseek-"):
+        return "responses"
+    return "chat"
+
+
+def _review_source_context(source: dict[str, Any]) -> dict[str, Any]:
+    items = source.get("items") if isinstance(source.get("items"), list) else []
+    completed = [item for item in items if item.get("status") == "completed"]
+    exported = [item for item in items if int(item.get("review_count") or 0) > 0]
+    empty = [item for item in items if item.get("status") == "completed" and int(item.get("review_count") or 0) == 0]
+    failed = [item for item in items if item.get("status") != "completed"]
+    return {
+        "source_job_id": str(source.get("id") or ""),
+        "source_job_status": str(source.get("status") or ""),
+        "workspace_id": str(source.get("workspace_id") or ""),
+        "requested_asin_count": len(items), "completed_asin_count": len(completed),
+        "comment_asin_count": len(exported), "empty_comment_asin_count": len(empty),
+        "failed_asin_count": len(failed),
+        "failed_asins": [str(item.get("asin") or "") for item in failed if item.get("asin")],
+        "empty_comment_asins": [str(item.get("asin") or "") for item in empty if item.get("asin")],
+        "review_count": int(source.get("review_count") or 0),
+        "force_refresh": bool(source.get("force_refresh")),
+        "analysis_scope": ("只分析本次评论任务最终 Excel 内的评论；部分失败任务仅包含已导出的评论。"
+                           "Sorftime 每个 ASIN 最多两次 Both 调用，每次最多 100 条、覆盖最近一年；这不代表商品全历史评论。"),
+    }
+
+
+def _append_review_scope(html_path: Path | None, excel_path: Path | None,
+                         context: dict[str, Any]) -> None:
+    if html_path and html_path.is_file():
+        details = [("来源 Reviews 任务", context.get("source_job_id", "")),
+                   ("采集状态", context.get("source_job_status", "")),
+                   ("请求 ASIN 数", context.get("requested_asin_count", 0)),
+                   ("成功完成 ASIN 数", context.get("completed_asin_count", 0)),
+                   ("有评论的 ASIN 数", context.get("comment_asin_count", 0)),
+                   ("成功但无评论 ASIN 数", context.get("empty_comment_asin_count", 0)),
+                   ("失败或未完成 ASIN 数", context.get("failed_asin_count", 0)),
+                   ("导出评论数", context.get("review_count", 0))]
+        rows = "".join("<tr><th>%s</th><td>%s</td></tr>" %
+                       (html.escape(str(name)), html.escape(str(value))) for name, value in details)
+        failed = "、".join(html.escape(str(value)) for value in context.get("failed_asins", [])) or "无"
+        section = ('<section class="module"><h2>评论采集范围与 ASIN 覆盖</h2><p>%s</p>'
+                   '<table><tbody>%s</tbody></table><p><b>失败或未完成 ASIN：</b>%s</p></section>' %
+                   (html.escape(str(context.get("analysis_scope") or "")), rows, failed))
+        content = html_path.read_text(encoding="utf-8")
+        if "评论采集范围与 ASIN 覆盖" not in content:
+            anchor = "</main>" if "</main>" in content else "</body>"
+            if anchor in content:
+                html_path.write_text(content.replace(anchor, section + anchor, 1), encoding="utf-8")
+    if excel_path and excel_path.is_file():
+        from copy import copy
+        from openpyxl import load_workbook
+        workbook = load_workbook(excel_path)
+        if "任务与方法说明" not in workbook.sheetnames:
+            raise ValueError("VOC 证据库缺少“任务与方法说明”工作表，无法写入评论采集范围")
+        if "采集范围" in workbook.sheetnames:
+            del workbook["采集范围"]
+        sheet = workbook["任务与方法说明"]
+        existing_header = next((row[0].row for row in sheet.iter_rows(min_col=1, max_col=1)
+                                if row[0].value == "评论采集范围与 ASIN 覆盖"), None)
+        if existing_header:
+            sheet.delete_rows(existing_header, sheet.max_row - existing_header + 1)
+        sheet.append(["评论采集范围与 ASIN 覆盖", ""])
+        for name, value in (("来源 Reviews 任务", context.get("source_job_id", "")),
+                            ("采集状态", context.get("source_job_status", "")),
+                            ("请求 ASIN 数", context.get("requested_asin_count", 0)),
+                            ("成功完成 ASIN 数", context.get("completed_asin_count", 0)),
+                            ("有评论的 ASIN 数", context.get("comment_asin_count", 0)),
+                            ("成功但无评论 ASIN 数", context.get("empty_comment_asin_count", 0)),
+                            ("失败或未完成 ASIN 数", context.get("failed_asin_count", 0)),
+                            ("导出评论数", context.get("review_count", 0)),
+                            ("分析范围", context.get("analysis_scope", "")),
+                            ("失败或未完成 ASIN", "、".join(context.get("failed_asins", [])) or "无")):
+            sheet.append([name, value])
+        sheet.column_dimensions["A"].width = 32
+        sheet.column_dimensions["B"].width = 100
+        for row in sheet.iter_rows(min_row=1, max_col=2):
+            for cell in row:
+                alignment = copy(cell.alignment)
+                alignment.wrap_text = True
+                alignment.vertical = "top"
+                cell.alignment = alignment
+        workbook.save(excel_path)
 
 
 class SafeProvider:
@@ -39,7 +131,9 @@ class SafeProvider:
             detail = str(exc)
             if self.settings.model_api_key:
                 detail = detail.replace(self.settings.model_api_key, "[redacted]")
-            raise RuntimeError(detail[:1500] or type(exc).__name__) from None
+            raise ModelError(detail[:1500] or type(exc).__name__,
+                             retryable=bool(getattr(exc, "retryable", True)),
+                             status_code=getattr(exc, "status_code", None)) from None
 
 
 class AmazonVOCService:
@@ -59,6 +153,8 @@ class AmazonVOCService:
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._scheduled_run_ids: set[str] = set()
+        self._process_all_pending = False
 
     def public_model_settings(self) -> dict[str, Any]:
         settings = read_model_settings()
@@ -124,7 +220,9 @@ class AmazonVOCService:
         return self.db.create_project(name, marketplace, country, language, category, workspace_id)
 
     def create_run(self, project_id: str, filename: str, data: bytes,
-                   model_ref: str | None = None, credential_id: str | None = None) -> dict[str, Any]:
+                   model_ref: str | None = None, credential_id: str | None = None,
+                   source_context: dict[str, Any] | None = None, force_refresh: bool = False,
+                   analysis_mode: str = "multi_stage_v4") -> dict[str, Any]:
         suffix = Path(filename or "").suffix.lower()
         if suffix not in ALLOWED_INPUT_SUFFIXES:
             raise ValueError("仅支持 .xlsx 或 .xlsm 评论Excel文件")
@@ -137,10 +235,27 @@ class AmazonVOCService:
             raise KeyError("项目不存在")
         selected = self.resolve_shared_model(model_ref, credential_id)
         review_path, review_hash = self.storage.save_raw(project_id, filename, data)
-        run = self.db.create_run(project_id, {"reviews": str(review_path), "reviews_sha256": review_hash})
+        if analysis_mode not in {"multi_stage_v4", "full_voc_v2"}:
+            raise ValueError("不支持的 VOC 分析模式")
+        sources = {"reviews": str(review_path), "reviews_sha256": review_hash,
+                   "analysis_mode": analysis_mode}
+        if force_refresh:
+            sources["force_refresh"] = True
+        if source_context:
+            sources["review_source_context"] = dict(source_context)
+        run = self.db.create_run(project_id, sources)
         self.db.execute("INSERT INTO workbench_model_snapshots(run_id,model_ref,credential_id) VALUES(?,?,?)",
                         (run["id"], selected["model_ref"], selected["credential_id"]))
         self.storage.revision_dir(project_id, run["id"], 1)
+        if project.get("workspace_id"):
+            from .. import project_files
+            try:
+                project_files.register_file(project["workspace_id"], "voc", review_path,
+                    source_type="amazon_voc_input", source_id=run["id"], name=Path(filename).name,
+                    metadata={"voc_project_id": project_id, "run_id": run["id"], "reviews_sha256": review_hash})
+            except Exception:
+                pass  # VOC processing remains available if optional library indexing fails.
+        self.start_worker(run_id=run["id"])
         self._wake.set()
         return self.public_run(run)
 
@@ -154,6 +269,7 @@ class AmazonVOCService:
         from ..amazon_reviews import service as amazon_reviews_service
 
         source = amazon_reviews_service.get(source_job_id)
+        workspace_id = str(source.get("workspace_id") or "").strip() or None
         allowed_statuses = {"completed", "completed_with_errors", "partial"}
         if source.get("status") not in allowed_statuses or not source.get("can_download"):
             raise ValueError("评论任务尚无可导入的最终 Excel")
@@ -192,8 +308,10 @@ class AmazonVOCService:
                 project = self.create_project({
                     "name": f"Amazon VOC · {site} · 评论任务 {source_job_id[:8]}",
                     "marketplace": site, "country": site, "language": "auto", "category": "",
+                    "workspace_id": workspace_id,
                 })
-                run = self.create_run(project["id"], path.name, data, model_ref, credential_id)
+                run = self.create_run(project["id"], path.name, data, model_ref, credential_id,
+                                      source_context=_review_source_context(source), analysis_mode="full_voc_v2")
                 created_at = utcnow()
                 self.db.execute("INSERT INTO workbench_reviews_handoffs "
                                 "(source_job_id,workbook_sha256,project_id,run_id,created_at) VALUES(?,?,?,?,?)",
@@ -204,6 +322,10 @@ class AmazonVOCService:
                        "project_id": project["id"], "run_id": run["id"],
                        "created_at": created_at, "status": "started"}
             source_summary = amazon_reviews_service.record_voc_handoff(source_job_id, handoff)
+            # A duplicate handoff can be the user's explicit retry for a run that
+            # was created before a worker became available. Schedule only this run.
+            self.start_worker(run_id=run["id"])
+            self.register_completed_run_artifacts(run["id"])
             return {"run": run, "project": project,
                     "source_job": {key: source_summary.get(key) for key in
                                    ("id", "status", "site", "review_count", "voc_handoff")},
@@ -227,11 +349,14 @@ class AmazonVOCService:
         digest_prefix = str(sources.get("reviews_sha256") or "")[:12] + "_"
         if digest_prefix != "_" and filename.startswith(digest_prefix):
             filename = filename[len(digest_prefix):]
-        public.update({"sources": {"reviews": filename,
-                                    "reviews_sha256": sources.get("reviews_sha256", "")},
+        public_sources = {"reviews": filename, "reviews_sha256": sources.get("reviews_sha256", ""),
+                          "analysis_mode": sources.get("analysis_mode", "multi_stage_v4"),
+                          "review_source_context": sources.get("review_source_context")}
+        public.update({"sources": public_sources,
                        "model_ref": snapshot.get("model_ref", ""),
                        "credential_id": snapshot.get("credential_id", ""),
-                       "artifacts": artifacts, "storage_scope": "amazon-voc"})
+                       "artifacts": artifacts, "storage_scope": "amazon-voc",
+                       "usage_ledger": usage_summary("voc", run_id, run.get("workspace_id"))})
         return public
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
@@ -240,7 +365,8 @@ class AmazonVOCService:
             return None
         public = self.public_run(run)
         public["model_calls"] = self.db.all(
-            "SELECT stage,batch_id,model,prompt_version,protocol,latency_ms,input_tokens,output_tokens,retries,status,created_at "
+            "SELECT stage,batch_id,model,prompt_version,protocol,latency_ms,input_tokens,output_tokens,"
+            "cache_hit_input_tokens,cache_miss_input_tokens,retries,status,created_at "
             "FROM model_calls WHERE run_id=? AND revision=? ORDER BY id DESC LIMIT 100", (run_id, public["current_revision"]))
         return public
 
@@ -263,8 +389,10 @@ class AmazonVOCService:
                                              self.model_snapshot(run_id).get("credential_id"))
         settings = Settings(data_dir=self.root, database_path=self.db.path,
                             model_base_url=selected["base_url"], model_api_key=selected["api_key"],
-                            model_protocol="chat", extractor_model=selected["model"],
-                            reviewer_model=selected["model"])
+                            model_protocol=_shared_model_protocol(selected["base_url"], selected["model"]),
+                            extractor_model=selected["model"],
+                            reviewer_model=selected["model"],
+                            **Settings.runtime_tuning_from_env())
         settings.ensure()
         try:
             Pipeline(settings, self.db, self.storage, provider or SafeProvider(settings)).process(run_id)
@@ -275,17 +403,53 @@ class AmazonVOCService:
             self.db.update_run(run_id, status="failed", error=message[:1500], completed_at=utcnow())
             raise
         result = self.get_run(run_id)
+        source_context = (result.get("sources") or {}).get("review_source_context") if result else None
+        if source_context:
+            revision = int(result.get("current_revision") or 1)
+            _append_review_scope(self.storage.artifact(result["project_id"], run_id, revision, "html"),
+                                 self.storage.artifact(result["project_id"], run_id, revision, "excel"),
+                                 source_context)
+            result = self.get_run(run_id)
+        self.register_completed_run_artifacts(run_id, result)
         workspace_id = result.get("workspace_id") if result else None
         if workspace_id and result and result.get("status") == "completed":
             from .. import project_files
             revision = int(result.get("current_revision") or 1)
-            path = self.storage.artifact(result["project_id"], run_id, revision, "html")
-            if path and path.is_file():
-                project_files.register_file(workspace_id, "voc", path,
-                    source_type="amazon_voc_output", source_id=f"{run_id}:rev{revision}:html",
-                    name="VOC-report.html", metadata={"voc_project_id": result["project_id"],
-                        "run_id": run_id, "revision": revision})
+            for kind, filename in (("html", "VOC-report.html"), ("excel", "VOC-report.xlsx"),
+                                   ("quality", "VOC-quality.json")):
+                path = self.storage.artifact(result["project_id"], run_id, revision, kind)
+                if path and path.is_file():
+                    project_files.register_file(workspace_id, "voc", path,
+                        source_type="amazon_voc_output", source_id=f"{run_id}:rev{revision}:{kind}",
+                        name=filename, metadata={"voc_project_id": result["project_id"],
+                                                "run_id": run_id, "revision": revision})
+        if result and result.get("status") == "completed":
+            try:
+                from ..product_archive.sync import sync_voc_run
+                result["archive_sync"] = sync_voc_run(self, run_id)
+            except Exception as exc:  # Archive enrichment must not change VOC completion.
+                result["archive_sync"] = {"status": "sync_failed", "error_type": type(exc).__name__}
         return result
+
+    def register_completed_run_artifacts(self, run_id: str,
+                                         result: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """Idempotently add completed VOC HTML reports to their owning project library."""
+        result = result or self.get_run(run_id)
+        if (not result or result.get("status") != "completed"
+                or not result.get("workspace_id")):
+            return []
+        from .. import project_files
+        workspace_id = str(result["workspace_id"])
+        revision = int(result.get("current_revision") or 1)
+        path = self.storage.artifact(result["project_id"], run_id, revision, "html")
+        if not path or not path.is_file():
+            return []
+        return [project_files.register_file(
+            workspace_id, "voc", path,
+            source_type="amazon_voc_output", source_id=f"{run_id}:rev{revision}:html",
+            name="VOC-report.html", metadata={"voc_project_id": result["project_id"],
+                "run_id": run_id, "revision": revision},
+        )]
 
     def recover(self) -> None:
         now = utcnow()
@@ -294,14 +458,23 @@ class AmazonVOCService:
         self.db.execute("UPDATE runs SET worker_id='',updated_at=? WHERE status NOT IN ('completed','failed','cancelled')",
                         (now,))
 
-    def start_worker(self) -> None:
+    def start_worker(self, run_id: str | None = None, recover_pending: bool = False) -> None:
         with self._lock:
+            if recover_pending:
+                self.recover()
+                self._process_all_pending = True
+            elif run_id and not self._process_all_pending:
+                run = self.db.get_run(run_id)
+                if not run or run["status"] in TERMINAL:
+                    return
+                self._scheduled_run_ids.add(run_id)
             if self._thread and self._thread.is_alive():
+                self._wake.set()
                 return
-            self.recover()
             self._stop.clear()
             self._thread = threading.Thread(target=self._worker_loop, name="amazon-voc-worker", daemon=True)
             self._thread.start()
+            self._wake.set()
 
     def stop_worker(self) -> None:
         self._stop.set()
@@ -317,7 +490,10 @@ class AmazonVOCService:
             # keeps the worker from starting model calls before a retry can find the
             # idempotency record.
             with self._lock:
-                run_id = self.db.pending_run(worker_id)
+                allowed_run_ids = None if self._process_all_pending else tuple(self._scheduled_run_ids)
+                run_id = self.db.pending_run(worker_id, allowed_run_ids)
+                if run_id and allowed_run_ids is not None:
+                    self._scheduled_run_ids.discard(run_id)
             if not run_id:
                 self._wake.wait(1.0)
                 self._wake.clear()
@@ -327,6 +503,9 @@ class AmazonVOCService:
             except Exception:
                 # The durable run status carries the safe, user-visible failure.
                 pass
+            finally:
+                with self._lock:
+                    self._scheduled_run_ids.discard(run_id)
 
     def cancel(self, run_id: str) -> dict[str, Any]:
         run = self.db.get_run(run_id)
@@ -349,7 +528,7 @@ class AmazonVOCService:
             raise RuntimeError("只有失败或已取消的任务可以重试")
         self.db.update_run(run_id, status="uploaded", error="", cancel_requested=0,
                            completed_at=None, worker_id="")
-        self._wake.set()
+        self.start_worker(run_id=run_id)
         return self.get_run(run_id)
 
     def artifact_path(self, run_id: str, kind: str) -> Path:
@@ -399,6 +578,12 @@ class AmazonVOCService:
         for path in (target / "output").glob("*"):
             if path.is_file():
                 path.unlink()
+        sources = dict(run.get("sources") or {})
+        forced_revisions = list(sources.get("force_refresh_revisions") or [])
+        if new_revision not in forced_revisions:
+            forced_revisions.append(new_revision)
+        sources["force_refresh_revisions"] = forced_revisions
+        self.db.update_run(run_id, source_json=json.dumps(sources, ensure_ascii=False))
         self.db.execute("INSERT INTO corrections(run_id,from_revision,to_revision,event_id,before_json,after_json,note,created_at) "
                         "VALUES(?,?,?,?,?,?,?,?)", (run_id, old_revision, new_revision, event_id,
                         json.dumps(before, ensure_ascii=False), json.dumps(after, ensure_ascii=False),

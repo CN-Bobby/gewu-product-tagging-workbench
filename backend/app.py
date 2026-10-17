@@ -13,12 +13,13 @@ from . import importer, service, jobs, harness
 from .exporter import export_run
 from . import draft,batch,draft_export,text_facts
 from . import field_catalog,worksheet_query,task_control,project_files,project_library
-from . import knowledge,templates,storage_management,model_settings,capabilities
+from . import knowledge,templates,storage_management,model_settings,capabilities,update_service,usage
 from .keyword_research import routes as keyword_research_routes
 from .keyword_research import registry as keyword_registry, runner as keyword_runner
 from . import amazon_scraper
 from .amazon_reviews import service as amazon_reviews
-from .amazon_voc import router as amazon_voc
+from .amazon_voc.router import router as amazon_voc_router, recover as amazon_voc_recover, stop_all as amazon_voc_stop_all
+from .product_archive import router as product_archive_router
 from .amazon_scraper_http import (AmazonRequestBodyTooLarge, InvalidAmazonContentLength,
                                   buffer_amazon_request_body)
 from .xunlongjue import router as xunlongjue_router, home_summary as xunlongjue_home_summary
@@ -28,14 +29,22 @@ from .agent_http import router as agent_router
 from . import agent_application
 from .model_settings import SettingsInUse
 from .runtime_isolation import CredentialUnavailable
+from . import external_effects
 
 AMAZON_REQUEST_BODY_LIMIT = 256 * 1024
 
 @asynccontextmanager
 async def lifespan(app):
     app.state.stopping=False
-    agent_application.start()
-    init_db();jobs.recover();batch.recover();keyword_registry.recover();amazon_scraper.recover();amazon_reviews.recover();amazon_voc.recover();xunlongjue_start();xunlongjue_recover()
+    init_db()
+    # DEV and TEST permit external calls by default. Persisted queued/interrupted tasks must still
+    # never resume merely because one of these environments restarted.
+    # Persisted work is recovered only by the real production profile. Test harnesses may
+    # explicitly exercise mocked provider paths, but that must never trigger queued-job recovery.
+    if external_effects.profile() == 'prod':
+        agent_application.start()
+        jobs.recover();batch.recover();keyword_registry.recover();amazon_scraper.recover()
+        amazon_reviews.recover();amazon_voc_recover();xunlongjue_start();xunlongjue_recover()
     with Session() as s:ids=list(s.scalars(select(Dataset.id)))
     for did in ids:draft.migrate(did)
     yield
@@ -48,11 +57,67 @@ async def lifespan(app):
     keyword_runner.stop_all()
     amazon_scraper.stop_all()
     amazon_reviews.stop_all()
-    amazon_voc.stop_all()
+    amazon_voc_stop_all()
     xunlongjue_stop_all()
+    from .runtime_isolation import clear_ephemeral_credentials
+    clear_ephemeral_credentials()
 
 app=FastAPI(title='商品特征工程工作台',version=VERSION,lifespan=lifespan)
-app.include_router(amazon_voc.router)
+app.include_router(amazon_voc_router)
+app.include_router(product_archive_router)
+
+def _external_service_for_request(method: str, path: str, body: bytes = b'') -> str | None:
+    """Classify writes that may start a paid or external task; previews and cancellation stay local."""
+    if method not in {'POST', 'PUT', 'PATCH'}:
+        return None
+    path = path.rstrip('/') or '/'
+    if path.startswith('/api/agent/sessions'):
+        if path.endswith(('/cancel', '/stop')):
+            return None
+        return 'model_api'
+    if path.startswith('/api/amazon-scraper/jobs'):
+        return None if path.endswith('/cancel') else 'amazon_collection'
+    if path.startswith('/api/amazon-reviews/jobs'):
+        return None if path.endswith('/cancel') else 'amazon_reviews_or_translation'
+    if path.startswith('/api/amazon-reviews/from-product-archive/'):
+        return 'amazon_reviews_or_translation'
+    if path.startswith('/api/amazon-voc/'):
+        if path.endswith('/cancel') or (method == 'PATCH' and '/events/' in path):
+            return None
+        if path.endswith('/projects') and method == 'POST':
+            return None
+        return 'amazon_voc_model'
+    if path.startswith('/api/keyword-research/'):
+        if path.endswith(('/plan', '/runs', '/queue/continue')) or (method == 'POST' and path.endswith('/queue')):
+            return 'keyword_mcp_and_model'
+    if path.startswith('/api/xunlongjue/'):
+        if path.endswith(('/runs', '/runs/bulk')) or path.endswith('/resume'):
+            return 'sorftime_mcp_and_model'
+    if path.startswith('/api/drafts/'):
+        if path.endswith('/knowledge'):
+            return 'external_research'
+        if any(path.endswith(suffix) for suffix in ('/fields/suggest', '/profile/observe', '/text-records/extract')):
+            return 'model_api_or_mcp'
+        if '/source-label-drafts/' in path and path.endswith(('/analyze', '/expand')):
+            return 'model_api'
+        if '/jobs/' in path and path.endswith('/repair'):
+            return 'model_api'
+        if '/repair-scopes/' in path and path.endswith('/propose'):
+            return 'model_api'
+        if path.endswith('/templates/copy'):
+            try:
+                payload = json.loads(body or b'{}')
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                payload = {}
+            if payload.get('execute'):
+                return 'model_api'
+    if path.startswith('/api/jobs/') and path.endswith('/resume'):
+        return 'model_api'
+    if path.startswith('/api/datasets/') and path.endswith('/images'):
+        return 'amazon_collection'
+    if path.startswith('/api/runs/') and path.endswith('/resume'):
+        return 'model_api'
+    return None
 
 @app.middleware('http')
 async def localhost(request:Request,call_next):
@@ -60,6 +125,13 @@ async def localhost(request:Request,call_next):
     if host not in ('127.0.0.1','localhost','testserver'):return JSONResponse({'detail':'本工具仅用于本机'},status_code=403)
     origin=request.headers.get('origin')
     if origin and urlparse(origin).netloc!=request.headers.get('host'):return JSONResponse({'detail':'不接受跨站请求'},status_code=403)
+    request_body = await request.body() if request.url.path.endswith('/templates/copy') else b''
+    service_name = _external_service_for_request(request.method, request.url.path, request_body)
+    if service_name:
+        try:
+            external_effects.assert_allowed(service_name)
+        except external_effects.ExternalEffectsDisabled as exc:
+            return JSONResponse({'detail':{'code':exc.code,'message':str(exc)}},status_code=403)
     if request.method=='POST' and request.url.path.startswith('/api/amazon-scraper/'):
         try:
             await buffer_amazon_request_body(request,AMAZON_REQUEST_BODY_LIMIT)
@@ -83,11 +155,60 @@ async def settings_in_use(request,e):
 async def credential_unavailable(request,e):
     return JSONResponse({'detail':{'code':'credential_unavailable','message':str(e)}},status_code=400)
 
+@app.exception_handler(external_effects.ExternalEffectsDisabled)
+async def external_effects_disabled(request,e):
+    return JSONResponse({'detail':{'code':e.code,'message':str(e)}},status_code=403)
+
 @app.exception_handler(ValidationError)
 async def validation_error(request,e):return JSONResponse({'detail':str(e)},status_code=422)
 
 @app.get('/api/health')
 def health():return {'status':'ok','application':'product-tagging-workbench','storage':str(STORAGE),'capabilities':capabilities.public(),**build_info()}
+
+@app.get('/api/updates/check')
+def check_for_updates():
+    external_effects.assert_allowed('other_external_tasks')
+    try:
+        return update_service.check_for_update()
+    except update_service.UpdateCheckError as exc:
+        raise HTTPException(status_code=502, detail={'code':exc.code,'message':str(exc)}) from exc
+
+@app.get('/api/runtime/status')
+def runtime_status(request:Request):
+    """Read-only runtime identity and policy; secret values are never returned."""
+    import hashlib
+    info=build_info()
+    try:
+        from .credential_vault import credential_status
+        credentials=credential_status(profile=external_effects.profile())
+    except (ImportError,OSError,ValueError,RuntimeError):
+        credentials={'vault':'unavailable','model':False,'sellersprite':False,'sorftime':False}
+    reports_dir=Path(os.environ.get('GEWU_REPORTS_DIR',str(STORAGE/'reports'))).resolve()
+    report=None
+    if reports_dir.is_dir():
+        candidates=sorted(reports_dir.glob('*.json'),key=lambda item:item.stat().st_mtime,reverse=True)
+        for candidate in candidates:
+            try:
+                raw=candidate.read_bytes();data=json.loads(raw.decode('utf-8-sig'))
+                report={'name':candidate.name,'sha256':hashlib.sha256(raw).hexdigest(),
+                    'status':data.get('status') or data.get('result') or 'recorded',
+                    'build_id':data.get('build_id'),'commit':data.get('commit'),
+                    'created_at':data.get('created_at') or data.get('finished_at'),
+                    'fixture_version':data.get('fixture_version')}
+                break
+            except (OSError,json.JSONDecodeError):
+                continue
+    backend_url=os.environ.get('GEWU_API_URL') or str(request.base_url).rstrip('/')
+    frontend_url=os.environ.get('GEWU_FRONTEND_URL') or request.headers.get('origin')
+    return {'profile':external_effects.profile(),'instance_id':os.environ.get('GEWU_INSTANCE_ID',''),
+        'addresses':{'frontend':frontend_url,'backend':backend_url},
+        'source':{'version':info.get('version',VERSION),'build_id':info.get('build_id'),
+            'commit':info.get('commit'),'branch':info.get('branch'),'dirty':info.get('dirty'),
+            'source_sha256':info.get('source_sha256'),'manifest_sha256':info.get('manifest_sha256'),
+            'release_status':info.get('release_status'),'build_mode':info.get('build_mode')},
+        'data':{'path':str(STORAGE),'identity':hashlib.sha256(os.path.normcase(str(STORAGE)).encode('utf-8')).hexdigest()[:12]},
+        'credentials':credentials,'external_effects':external_effects.public_status(),
+        'latest_test_report':report}
 
 @app.get('/api/amazon-scraper/runtime')
 def amazon_scraper_runtime():return amazon_scraper.runtime_status()
@@ -118,6 +239,25 @@ def amazon_reviews_settings():return amazon_reviews.model_settings_public()
 
 @app.post('/api/amazon-reviews/jobs')
 def amazon_reviews_start(body:dict):return amazon_reviews.create(body)
+
+@app.post('/api/amazon-reviews/from-product-archive/{archive_id}')
+def amazon_reviews_from_archive(archive_id:str,body:dict):
+    from .product_archive import service as archive_service
+    body=body or {}
+    targets=archive_service.dispatch_targets(archive_id,body.get('product_ids') or [],
+                                              child_only=bool(body.get('child_only',False)))
+    requested_workspace=str(body.get('workspace_id') or targets.get('workspace_id') or '')
+    if requested_workspace!=str(targets.get('workspace_id') or ''):
+        raise ValueError('档案和选中行不属于同一项目')
+    archive=archive_service._read(archive_id)
+    auto_voc_policy=body.get('auto_voc_policy','none')
+    site=archive.get('marketplace') or 'US'
+    collection_source=body.get('collection_source') or ('woot' if str(site).upper()=='US' else 'sorftime')
+    return amazon_reviews.create({'mode':'asins','site':site,'collection_source':collection_source,
+        'asins':targets['asins'],'model':body.get('model'),'credential_id':body.get('credential_id'),
+        'workspace_id':targets.get('workspace_id'),'source_dataset_id':targets.get('dataset_id'),
+        'source_archive_id':archive_id,'auto_voc_policy':auto_voc_policy,
+        'workflow_mode':'combined' if auto_voc_policy not in (None,'','none') else 'reviews_only'})
 
 @app.get('/api/amazon-reviews/jobs')
 def amazon_reviews_jobs():return amazon_reviews.list_jobs()
@@ -200,12 +340,21 @@ def settings_sorftime_clear():
     sorftime_settings.clear_key()
     return sorftime_settings.status()
 
-
 @app.post('/api/settings/models/{provider}/credentials/{credential_id}/{action}')
 def settings_credential_action(provider:str,credential_id:str,action:str):return model_settings.credential_action(provider,credential_id,action)
 
 @app.get('/api/storage')
 def storage_usage():return storage_management.usage()
+
+@app.get('/api/usage/summary')
+def usage_summary(request:Request):return usage.summary(dict(request.query_params))
+
+@app.get('/api/usage/events')
+def usage_events(request:Request):return usage.events(dict(request.query_params))
+
+@app.put('/api/usage/tasks/{module}/{task_id}/project')
+def usage_task_project(module:str,task_id:str,body:dict):
+    return usage.set_task_project(module,task_id,(body or {}).get('workspace_id'))
 
 @app.post('/api/storage/clear-cache')
 def cache_clear():return storage_management.clear()
@@ -334,6 +483,55 @@ async def stop_server():
     asyncio.get_running_loop().call_later(.2,lambda:signal.raise_signal(signal.SIGINT))
     return {'stopping':True}
 
+@app.post('/api/runtime/exit')
+async def exit_workbench():
+    """Ask the owning Run Center to stop both DEV listeners; otherwise stop this app."""
+    if (os.name == 'nt' and os.environ.get('GEWU_PROFILE', '').lower() == 'dev'
+            and os.environ.get('GEWU_INSTANCE_ID', '').upper() == 'DEV'):
+        local_app_data = os.environ.get('LOCALAPPDATA')
+        if local_app_data:
+            run_center = Path(local_app_data) / 'GeWuWorkbench' / 'RunCenter' / 'run-center.ps1'
+            if run_center.is_file():
+                import subprocess
+                powershell = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'System32' / 'WindowsPowerShell' / 'v1.0' / 'powershell.exe'
+                log_path = run_center.parent / 'logs' / 'DEV' / 'ui-exit.log'
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                run_center_arg = str(run_center).replace("'", "''")
+                powershell_arg = str(powershell).replace("'", "''")
+                launch_command = (
+                    "$stopArgs = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',"
+                    f"'{run_center_arg}','-Profile','DEV','-Action','Stop','-NoOpen'); "
+                    f"Start-Process -FilePath '{powershell_arg}' -ArgumentList $stopArgs -WindowStyle Hidden"
+                )
+                with log_path.open('ab') as log:
+                    log.write(b'Exit request: launching Run Center Stop.\n')
+                    process = subprocess.Popen(
+                        [str(powershell), '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', launch_command],
+                        cwd=str(run_center.parent), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                        creationflags=(subprocess.CREATE_NO_WINDOW |
+                                       getattr(subprocess, 'CREATE_BREAKAWAY_FROM_JOB', 0)),
+                    )
+                    log.write(f'Run Center Stop process started: pid={process.pid}.\n'.encode('ascii'))
+                    log.flush()
+                def record_stop_launcher_status():
+                    try:
+                        exit_code = process.wait(timeout=20)
+                        status = f'Run Center Stop process exited: pid={process.pid}, exit_code={exit_code}.\n'
+                    except subprocess.TimeoutExpired:
+                        status = f'Run Center Stop process still running after 20 seconds: pid={process.pid}.\n'
+                    try:
+                        with log_path.open('ab') as status_log:
+                            status_log.write(status.encode('ascii'))
+                    except OSError:
+                        pass
+                import threading
+                threading.Thread(target=record_stop_launcher_status, daemon=True).start()
+                return {'stopping': True, 'managed_by': 'Run Center'}
+    import asyncio,signal
+    app.state.stopping=True
+    asyncio.get_running_loop().call_later(.2,lambda:signal.raise_signal(signal.SIGINT))
+    return {'stopping':True}
+
 @app.get('/api/harness')
 def harness_status():return harness.status()
 
@@ -343,8 +541,17 @@ def datasets():return service.list_datasets()
 @app.get('/api/projects')
 def project_list():return templates.projects()
 
+@app.get('/api/projects/trash')
+def project_trash_list():return templates.trashed_projects()
+
 @app.post('/api/projects')
 def project_create(body:dict):return templates.create_project(body.get('name'))
+
+@app.delete('/api/projects/{wid}')
+def project_trash(wid:str):return templates.trash_project(wid)
+
+@app.post('/api/projects/{wid}/restore')
+def project_restore(wid:str):return templates.restore_project(wid)
 
 @app.get('/api/projects/{wid}/artifacts')
 def project_artifacts(wid:str,kind:str|None=None):return project_files.list_artifacts(wid,kind)
@@ -365,6 +572,46 @@ def project_files_index(wid:str):
 
 @app.get('/api/projects/{wid}/library')
 def project_library_index(wid:str):return project_library.list_library(wid)
+
+@app.post('/api/projects/{wid}/library/upload')
+async def project_library_upload(wid: str, file: UploadFile = File(...), kind: str = Form('other')):
+    try:
+        data = await file.read(100 * 1024 * 1024 + 1)
+        if len(data) > 100 * 1024 * 1024:
+            raise ValueError('文件超过 100 MB')
+        return project_files.upload(wid, file.filename or '', data, kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@app.patch('/api/projects/{wid}/library/{artifact_id}')
+def project_library_update(wid: str, artifact_id: str, body: dict):
+    value = body or {}
+    try:
+        return project_files.update(wid, artifact_id, name=value.get('name'), kind=value.get('kind'),
+                                    target_workspace_id=value.get('workspace_id'))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@app.delete('/api/projects/{wid}/library/{artifact_id}')
+def project_library_recycle(wid: str, artifact_id: str):
+    try:
+        return project_files.recycle(wid, artifact_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@app.get('/api/projects/{wid}/trash')
+def project_trash(wid: str):
+    try:
+        return {'items': project_files.list_trash(wid)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@app.post('/api/projects/{wid}/trash/{artifact_id}/restore')
+def project_trash_restore(wid: str, artifact_id: str):
+    try:
+        return project_files.restore(wid, artifact_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @app.get('/api/projects/{wid}/library/{artifact_id}/workbook')
 def project_library_workbook(wid:str,artifact_id:str,sheet:str='',offset:int=0,
@@ -403,9 +650,9 @@ async def inspect(file:UploadFile=File(...),sheet:str=Form('')):return importer.
 @app.post('/api/import')
 async def import_data(file:UploadFile=File(...),sheet:str=Form(''),workspace_id:str=Form(''),mapping:str=Form('{}')):
     dataset=importer.import_file(await upload_bytes(file),file.filename,sheet or None,workspace_id or None,json.loads(mapping))
-    task=text_facts.prepare(dataset['id'])
-    if task['status']=='queued':batch.launch(task['id'])
-    return {**dataset,'text_job_id':task['id'],'profile':worksheet_query.profile(dataset['id'])}
+    task=text_facts.prepare(dataset['id']) if external_effects.effects_allowed('model_api') else None
+    if task and task['status']=='queued':batch.launch(task['id'])
+    return {**dataset,'text_job_id':task['id'] if task else None,'profile':worksheet_query.profile(dataset['id'])}
 
 @app.get('/api/drafts/{did}/text-records')
 def text_records(did:str,offset:int=0,limit:int=50):return text_facts.records(did,offset,limit)
@@ -530,6 +777,13 @@ def draft_propose(did:str,body:dict):return draft.propose(did,body.get('title','
 
 @app.post('/api/drafts/{did}/proposals/{pid}/confirm')
 def draft_confirm(did:str,pid:str,body:dict):
+    # Confirming a local schema/field change is safe offline. Proposal changes marked as
+    # ``execute`` create model-backed batch work and must pass the same explicit policy gate.
+    with Session() as s:
+        proposal=require(s,Proposal,pid)
+        if proposal.dataset_id!=did:raise ValueError('提案不属于当前数据集')
+        if any(isinstance(change,dict) and change.get('kind')=='execute' for change in (proposal.changes or [])):
+            external_effects.assert_allowed('model_api')
     result=draft.confirm(did,pid,body.get('product_ids'),body.get('sample',False),body.get('text_model'),body.get('vision_model'),body.get('confirmation_key'),body.get('text_credential_id'),body.get('vision_credential_id'))
     for j in result:batch.launch(j['id'])
     return result
@@ -550,6 +804,8 @@ def draft_version(did:str):
     data=draft.sheet(did,item['id'])
     workspace_id=(data.get('dataset') or {}).get('workspace_id')
     if workspace_id:
+        # Data X is the project's reusable tagged dataset. Unknown/unjudged values
+        # must remain genuinely blank instead of becoming a literal tag value.
         export_path=draft_export.export(did,[column['id'] for column in data.get('columns',[])],
                                         item['id'],unknown_as_blank=True)
         item['project_artifact']=project_files.register_file(workspace_id,'data_x',export_path,

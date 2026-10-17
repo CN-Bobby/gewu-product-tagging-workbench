@@ -70,12 +70,21 @@ def evaluate(workdir: Path, include_outputs=False):
         {"name": "generation metadata", "pass": all((events_doc.get("metadata") or {}).get(k) for k in ("model", "prompt_version", "generated_at"))},
     ]
     processing_by_id = {row.get("review_id"): row for row in processing}
+    processing_ids = [row.get("review_id") for row in processing]
+    duplicate_processing_count = len(processing_ids) - len(set(processing_ids))
+    unknown_processing_count = len(set(processing_by_id) - set(review_by_id))
+    event_count_by_review = Counter(event.get("review_id") for event in events)
     coverage_checks = [
         {"name": "one workbook is the only source", "pass": set((master.get("source_files") or {}).keys()) == {"reviews"},
          "detail": sorted((master.get("source_files") or {}).keys())},
         {"name": "every cleaned review accounted", "pass": set(review_by_id) == set(processing_by_id),
          "detail": {"cleaned": len(review_by_id), "processed": len(processing_by_id)}},
         {"name": "valid processing status", "pass": all(row.get("status") in ("已生成事件", "无可用需求信号", "失败") for row in processing)},
+        {"name": "one processing row per cleaned review", "pass": duplicate_processing_count == 0 and unknown_processing_count == 0,
+         "detail": {"duplicates": duplicate_processing_count, "unknown": unknown_processing_count}},
+        {"name": "processing event counts match retained events", "pass": all(
+            int(row.get("event_count") or 0) == event_count_by_review.get(row.get("review_id"), 0)
+            for row in processing if row.get("review_id") in review_by_id)},
         {"name": "failed reviews absent", "pass": not any(row.get("status") == "失败" for row in processing)},
     ]
     bad_evidence = []
@@ -108,14 +117,29 @@ def evaluate(workdir: Path, include_outputs=False):
     ]
 
     tag_ids = [t.get("tag_id") for t in tags]
+    normalized_tags = [t for t in tags if t.get("normalization_status") != "raw_unmerged"]
     mapping_counter = Counter((m.get("event_id"), m.get("field_path"), _norm(m.get("raw_value"))) for m in mappings)
     mapping_keys = set(mapping_counter)
     expected = {(e.get("event_id"), path, _norm(raw)) for e in events for path, raw, _ in iter_values(e)}
     supported = {eid for tag in tags for eid in tag.get("support_event_ids") or []}
     tag_by_id = {t.get("tag_id"): t for t in tags}
+    raw_mappings = [m for m in mappings if m.get("mapping_method") == "raw_passthrough"]
+    raw_tags = [t for t in tags if t.get("normalization_status") == "raw_unmerged"]
+    bad_raw_mappings = [m for m in raw_mappings
+                        if ((tag_by_id.get(m.get("tag_id")) or {}).get("normalization_status") != "raw_unmerged" or
+                            _norm((tag_by_id.get(m.get("tag_id")) or {}).get("canonical_name")) != _norm(m.get("raw_value")) or
+                            (tag_by_id.get(m.get("tag_id")) or {}).get("namespace") != FIELD_NAMESPACES.get(m.get("field_path")))]
+    raw_tag_ids = {tag.get("tag_id") for tag in raw_tags}
+    mapped_raw_tag_ids = {mapping.get("tag_id") for mapping in raw_mappings}
     dictionary_checks = [
         {"name": "tag ids unique", "pass": bool(tag_ids) and len(tag_ids) == len(set(tag_ids)) and all(tag_ids)},
-        {"name": "tag fields complete", "pass": all(t.get("namespace") in NAMESPACES and t.get("canonical_name") and t.get("definition") and t.get("support_event_ids") for t in tags)},
+        {"name": "at least one normalized tag when values exist", "pass": not expected or bool(normalized_tags),
+         "detail": {"expected_values": len(expected), "normalized_tags": len(normalized_tags)}},
+        {"name": "tag fields complete", "pass": all(
+            t.get("namespace") in NAMESPACES and t.get("canonical_name") and t.get("definition") and
+            t.get("support_event_ids") and
+            (t.get("normalization_status") == "raw_unmerged" or
+             (t.get("canonical_name_en") and t.get("definition_en"))) for t in tags)},
         {"name": "all values mapped", "pass": expected <= mapping_keys, "missing_count": len(expected - mapping_keys)},
         {"name": "one mapping per value", "pass": all(mapping_counter[key] == 1 for key in expected),
          "duplicate_count": sum(max(0, mapping_counter[key] - 1) for key in expected)},
@@ -123,15 +147,47 @@ def evaluate(workdir: Path, include_outputs=False):
         {"name": "mapping namespace matches field", "pass": all(
             (tag_by_id.get(m.get("tag_id")) or {}).get("namespace") == FIELD_NAMESPACES.get(m.get("field_path"))
             for m in mappings)},
+        {"name": "raw passthrough mappings are exact and labeled", "pass": not bad_raw_mappings,
+         "detail": {"raw_mapping_count": len(raw_mappings), "invalid_count": len(bad_raw_mappings)}},
+        {"name": "raw passthrough tags are mapped", "pass": raw_tag_ids <= mapped_raw_tag_ids,
+         "detail": {"raw_tag_count": len(raw_tags), "unmapped_count": len(raw_tag_ids - mapped_raw_tag_ids)}},
         {"name": "no orphan tags", "pass": set(event_ids) >= supported and all(t.get("support_event_ids") for t in tags)},
     ]
 
     segment_members = [eid for s in segments for eid in s.get("member_event_ids") or []]
     stage_members = [a.get("event_id") for a in journey.get("event_assignments") or []]
+    stage_member_counts = Counter(stage_members)
+    expected_event_counts = Counter({eid: 1 for eid in event_ids})
+    stage_assignment_details = {
+        "missing": len(set(event_ids) - set(stage_member_counts)),
+        "unknown": len(set(stage_member_counts) - set(event_ids)),
+        "duplicate_event_ids": sum(count > 1 for count in stage_member_counts.values()),
+        "duplicate_excess": sum(count - 1 for count in stage_member_counts.values() if count > 1),
+    }
     assignment_checks = [
         {"name": "one segment per event", "pass": Counter(segment_members) == Counter({eid: 1 for eid in event_ids})},
-        {"name": "one journey stage per event", "pass": Counter(stage_members) == Counter({eid: 1 for eid in event_ids})},
+        {"name": "one journey stage per event", "pass": stage_member_counts == expected_event_counts,
+         "detail": stage_assignment_details},
         {"name": "segment key is four-dimensional", "pass": all(set(s.get("segment_key") or {}) == {"audience", "scenario", "motivation", "task"} for s in segments)},
+        {"name": "segment names and dimensions are bilingual", "pass": all(
+            bool(s.get("name")) and bool(s.get("name_en")) and
+            all(bool(s.get(cn)) == bool(s.get(en)) for cn, en in (
+                ("persona_summary", "persona_summary_en"), ("jtbd_statement", "jtbd_statement_en"),
+                ("merge_reason", "merge_reason_en"), ("split_reason", "split_reason_en"))) and
+            set(s.get("segment_key_en") or {}) == {"audience", "scenario", "motivation", "task"} and
+            all(bool((s.get("segment_key") or {}).get(key)) == bool((s.get("segment_key_en") or {}).get(key))
+                for key in ("audience", "scenario", "motivation", "task")) for s in segments)},
+        {"name": "segment profile is synthesized bilingually", "pass": all(
+            set(s.get("profile_synthesis") or {}) == {
+                "users", "buyers", "relationships", "physical_constraints", "skill_levels", "role_needs",
+                "scenario", "motivation", "task", "pains", "itches", "desired_outcomes",
+                "product_experience", "workarounds"} and
+            all(isinstance(value, dict) and set(value) == {"zh", "en"} and
+                bool(value.get("zh")) == bool(value.get("en"))
+                for value in (s.get("profile_synthesis") or {}).values()) for s in segments)},
+        {"name": "journey stages are bilingual", "pass": all(
+            stage.get("name") and stage.get("name_en") and stage.get("definition") and stage.get("definition_en")
+            for stage in journey.get("stages") or [])},
     ]
 
     output_checks = [{"name": "output consistency deferred", "pass": True, "detail": "编译完成后复核"}]
@@ -174,6 +230,11 @@ def evaluate(workdir: Path, include_outputs=False):
             {"name": "twelve Excel sheets", "pass": excel_sheets == expected_sheets, "detail": excel_sheets},
             {"name": "no external/advice output", "pass": not forbidden and not present_legacy_files,
              "detail": {"html_terms": forbidden, "legacy_cache_files": present_legacy_files}},
+            {"name": "HTML non-overview modules use content cards", "pass": all(
+                token in html_text for token in ('class="overview-grid"', 'class="comparison-grid"',
+                                                 'class="journey-stage-grid"'))},
+            {"name": "HTML displays bilingual synthesis contract", "pass": all(
+                token in html_text for token in ("lang=\"en\"", "用户综合洞察", "User synthesis"))},
         ]
 
     gates = [
@@ -187,7 +248,13 @@ def evaluate(workdir: Path, include_outputs=False):
     ]
     report = {"schema": "amazon-voc-quality/v4", "all_green": all(g["pass"] for g in gates),
               "precompile_green": all(g["pass"] for g in gates[:6]),
-              "counts": {"reviews": len(cleaned), "events": len(events), "segments": len(segments), "tags": len(tags)},
+              "counts": {"reviews": len(cleaned), "events": len(events), "segments": len(segments), "tags": len(tags),
+                         "normalized_tags": len(tags) - len(raw_tags), "raw_unmerged_tags": len(raw_tags),
+                         "raw_passthrough_mappings": len(raw_mappings),
+                         "unbounded_inferences_withheld": len(
+                             semantic_review.get("unbounded_inference_withheld_event_ids") or []),
+                         "events_excluded_for_unverifiable_evidence": len(
+                             semantic_review.get("dropped_unverifiable_event_ids") or [])},
               "gates": gates}
     (cache / "quality_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report

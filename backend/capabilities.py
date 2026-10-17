@@ -22,5 +22,5 @@ def public():
     return {
         'visual_tagging': visual_tagging_enabled(),
         'visual_tagging_status': 'available' if visual_tagging_enabled() else 'disabled_by_deployment',
-        'online_updates': False,
+        'online_updates': True,
     }

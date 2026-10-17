@@ -29,6 +29,12 @@ class Workspace(Record, Base):
     __tablename__ = 'workspace'
     name = Column(String, nullable=False)
 
+class WorkspaceTrash(Record, Base):
+    """Recoverable project removal marker; project data and files stay intact."""
+    __tablename__ = 'workspace_trash'
+    workspace_id = Column(String, ForeignKey('workspace.id'), nullable=False, unique=True, index=True)
+    deleted_at = Column(String, nullable=False, default=now)
+
 class ProjectArtifact(Record, Base):
     """Immutable, project-scoped copy/reference to a workflow artifact."""
     __tablename__ = 'project_artifact'
@@ -357,6 +363,47 @@ class AgentSession(Base):
     started_at = Column(String)
     stopped_at = Column(String)
 
+class UsageEvent(Base):
+    """Append-only per-attempt usage ledger. Payloads and credentials are never stored."""
+    __tablename__ = 'usage_event'
+    id = Column(String(32), primary_key=True, default=uid)
+    occurred_at = Column(String, nullable=False, index=True, default=now)
+    instance_id = Column(String(64), nullable=False, index=True)
+    environment = Column(String(32), nullable=False, default='local', index=True)
+    kind = Column(String(24), nullable=False, index=True)  # model, mcp, local_cache, agent_turn
+    module = Column(String(64), nullable=False, index=True)
+    task_id = Column(String(160), index=True)
+    task_title = Column(String(240))
+    provider = Column(String(120), index=True)
+    model = Column(String(240), index=True)
+    function_name = Column(String(160), index=True)
+    server_name = Column(String(120))
+    status = Column(String(32), nullable=False, default='in_progress', index=True)
+    attempt = Column(Integer, nullable=False, default=1)
+    duration_ms = Column(Integer)
+    input_tokens = Column(Integer)
+    output_tokens = Column(Integer)
+    cache_hit_tokens = Column(Integer)
+    cache_miss_tokens = Column(Integer)
+    cache_creation_tokens = Column(Integer)
+    estimated_input_tokens = Column(Integer)
+    estimated_output_tokens = Column(Integer)
+    usage_quality = Column(String(24), nullable=False, default='unknown', index=True)
+    usage_source = Column(String(48))
+    metadata_json = Column(JSON, nullable=False, default=dict)
+
+class UsageTaskLink(Base):
+    """Mutable task-to-project attribution; changing it never rewrites call events."""
+    __tablename__ = 'usage_task_link'
+    id = Column(String(32), primary_key=True, default=uid)
+    module = Column(String(64), nullable=False)
+    task_id = Column(String(160), nullable=False)
+    title = Column(String(240))
+    workspace_id = Column(String, ForeignKey('workspace.id'), index=True)
+    created_at = Column(String, nullable=False, default=now)
+    updated_at = Column(String, nullable=False, default=now)
+    __table_args__ = (UniqueConstraint('module', 'task_id', name='uq_usage_task_link'),)
+
 cache_engine=None
 if os.environ.get('TAG_CACHE'):
     cache_path=Path(os.environ['TAG_CACHE']).resolve();cache_path.mkdir(parents=True,exist_ok=True)
@@ -382,9 +429,10 @@ def init_db():
             question_table=bool(src.execute("select 1 from sqlite_master where type='table' and name='chat_question'").fetchone())
             v7=question_table and {'turn_id','presentation','error_code','technical'}<=message_columns and {'group_id','group_revision','fingerprint','origin_turn_id','superseded_by','confirmation_key'}<=proposal_columns
             v8=bool(src.execute("select 1 from sqlite_master where type='table' and name='agent_runtime_session'").fetchone()) and bool(src.execute("select 1 from sqlite_master where type='table' and name='source_label_standard_draft'").fetchone())
-            if (legacy and not migrated) or (migrated and not skill_migrated) or (skill_migrated and not v4) or (v4 and not v5) or (v5 and not v6) or (v6 and not v7) or (v7 and not v8):
+            v9=bool(src.execute("select 1 from sqlite_master where type='table' and name='usage_event'").fetchone()) and bool(src.execute("select 1 from sqlite_master where type='table' and name='usage_task_link'").fetchone())
+            if (legacy and not migrated) or (migrated and not skill_migrated) or (skill_migrated and not v4) or (v4 and not v5) or (v5 and not v6) or (v6 and not v7) or (v7 and not v8) or (v8 and not v9):
                 folder=path.parent/'backups';folder.mkdir(exist_ok=True)
-                with sqlite3.connect(folder/('before-'+('v8-' if v7 else 'v7-' if v6 else 'v6-' if v5 else 'v5-' if v4 else 'v4-' if skill_migrated else 'skill-v3-' if migrated else 'draft-')+uid()+'.db')) as dst:src.backup(dst)
+                with sqlite3.connect(folder/('before-'+('v9-' if v8 else 'v8-' if v7 else 'v7-' if v6 else 'v6-' if v5 else 'v5-' if v4 else 'v4-' if skill_migrated else 'skill-v3-' if migrated else 'draft-')+uid()+'.db')) as dst:src.backup(dst)
     Base.metadata.create_all(engine)
     if engine.url.get_backend_name()=='sqlite':
         with engine.begin() as conn:
@@ -438,6 +486,7 @@ def init_db():
                         status='invalid',invalid_reason='legacy_profile_or_cwd'))
                 data=dict(item.data or {});data.pop('session_id',None);data['active_runtime_id']=None;item.data=data
             s.add(Migration(version=8))
+        if not s.get(Migration,9):s.add(Migration(version=9))
 def obj(record): return {c.name: getattr(record, c.name) for c in record.__table__.columns}
 def require(s, cls, ident):
     result = s.get(cls, ident)

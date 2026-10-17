@@ -28,10 +28,11 @@ def build_info():
         digest.update(b'\0' + p.read_bytes() + b'\0')
     try:
         commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True, stderr=subprocess.DEVNULL).strip()
+        branch = subprocess.check_output(['git', 'branch', '--show-current'], cwd=ROOT, text=True, stderr=subprocess.DEVNULL).strip()
         dirty = bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True))
     except (OSError, subprocess.CalledProcessError):
-        commit, dirty = None, True
+        commit, branch, dirty = None, None, True
     short_commit = commit[:12] if commit else 'untracked'
-    return {'version': VERSION, 'build_id': f'{VERSION}+{short_commit}',
+    return {'version': VERSION, 'build_id': f'{VERSION}+{short_commit}', 'branch': branch,
             'release_status': VERSION_DATA.get('release_status', 'unknown'),
             'commit': commit, 'dirty': dirty, 'source_sha256': digest.hexdigest(), 'release': False}

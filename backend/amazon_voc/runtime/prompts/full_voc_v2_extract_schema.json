@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gewu.local/schemas/amazon-voc-v2-extract-v1.json",
+  "title": "Amazon VOC V2 batch event extraction result",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "review_processing": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sample_id": {"type": "string", "minLength": 1},
+          "status": {"type": "string", "enum": ["processed_with_events", "no_need_signal"]},
+          "reason": {"type": "string", "minLength": 1},
+          "event_count": {"type": "integer", "minimum": 0}
+        },
+        "required": ["sample_id", "status", "reason", "event_count"]
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sample_id": {"type": "string", "minLength": 1},
+          "primary_for_review": {"type": "boolean"},
+          "audience": {
+            "type": "object", "additionalProperties": false,
+            "properties": {"user": {"type": "string"}},
+            "required": ["user"]
+          },
+          "scenario": {
+            "type": "object", "additionalProperties": false,
+            "properties": {"context": {"type": "string"}},
+            "required": ["context"]
+          },
+          "motivation": {
+            "type": "object", "additionalProperties": false,
+            "properties": {
+              "explicit": {"type": "string"},
+              "inferred": {"type": "string"},
+              "inference_basis": {"type": "string"}
+            },
+            "required": ["explicit", "inferred", "inference_basis"]
+          },
+          "task": {
+            "type": "object", "additionalProperties": false,
+            "properties": {"core_job": {"type": "string"}, "desired_outcome": {"type": "string"}},
+            "required": ["core_job", "desired_outcome"]
+          },
+          "experience": {
+            "type": "object", "additionalProperties": false,
+            "properties": {
+              "object": {"type": "string"}, "result": {"type": "string"},
+              "pain": {"type": "string"}, "itch": {"type": "string"}
+            },
+            "required": ["object", "result", "pain", "itch"]
+          },
+          "workaround": {
+            "type": "object", "additionalProperties": false,
+            "properties": {"action": {"type": "string"}},
+            "required": ["action"]
+          },
+          "evidence_quote": {"type": "string", "minLength": 1},
+          "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+          "fact_inference_boundary": {"type": "string"}
+        },
+        "required": [
+          "sample_id", "primary_for_review", "audience", "scenario", "motivation", "task",
+          "experience", "workaround", "evidence_quote", "confidence", "fact_inference_boundary"
+        ]
+      }
+    }
+  },
+  "required": ["review_processing", "events"]
+}
