@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Commit,
     [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),

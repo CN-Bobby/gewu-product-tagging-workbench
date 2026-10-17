@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Checklist,
     [ValidateSet('passed', 'failed')][string]$Status = 'passed',

@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ProjectRoot = 'D:\数据打标项目',
     [string]$CandidateProjectRoot = $ProjectRoot,
