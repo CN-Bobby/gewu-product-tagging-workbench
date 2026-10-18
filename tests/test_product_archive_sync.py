@@ -65,7 +65,8 @@ def test_legacy_voc_links_only_to_unique_archive_in_project_workspace(monkeypatc
     assert insight["source_linkage"] == "unique_project_workspace"
     assert insight["review_count"] == 17
     assert insight["requested_asin_count"] is None
-    assert saved[0]["overview"]["product_function"] == "Helps with play"
+    assert saved[0]["overview"].get("product_function", "") == ""
+    assert saved[0]["overview_suggestions"]["product_function"][0]["text"] == "Helps with play"
 
 
 def test_legacy_voc_does_not_guess_when_project_workspace_has_multiple_archives(monkeypatch, tmp_path):

@@ -322,6 +322,7 @@ def _check_snapshot(record: dict, dataset: dict, rows: list[dict]) -> None:
 
 def get(archive_id: str, filters: dict | None = None) -> dict:
     record = _read(archive_id)
+    record.setdefault("overview_suggestions", {})
     dataset, source_rows = _source(record["dataset_id"])
     if record.get("mapping_confirmed"):
         _check_snapshot(record, dataset, source_rows)
@@ -375,8 +376,33 @@ def list_archives() -> list[dict]:
 
 def update_overview(archive_id: str, body: dict) -> dict:
     record = _read(archive_id)
+    expected = body.get("expected_updated_at")
+    if expected is not None and str(expected) != str(record.get("updated_at") or ""):
+        raise ValueError("档案内容已被其他操作更新，请刷新后重试")
     overview = record.setdefault("overview", {})
     sources = record.setdefault("overview_sources", {})
+    suggestions = record.setdefault("overview_suggestions", {})
+    accepted_ids = body.get("accepted_suggestion_ids") or []
+    if not isinstance(accepted_ids, list) or any(not isinstance(item, str) for item in accepted_ids):
+        raise ValueError("accepted_suggestion_ids 必须是字符串数组")
+    ignored_ids = body.get("ignored_suggestion_ids") or []
+    if not isinstance(ignored_ids, list) or any(not isinstance(item, str) for item in ignored_ids):
+        raise ValueError("ignored_suggestion_ids 必须是字符串数组")
+    if set(accepted_ids) & set(ignored_ids):
+        raise ValueError("建议不能同时采纳和忽略")
+    found = {}
+    for field, items in suggestions.items():
+        if field not in OVERVIEW_FIELDS or not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict) and item.get("id") in set(accepted_ids) | set(ignored_ids):
+                found[item["id"]] = (field, item)
+    if (set(accepted_ids) | set(ignored_ids)) - set(found):
+        raise ValueError("待确认建议已不存在，请刷新后重试")
+    for ident in accepted_ids:
+        field, item = found[ident]
+        if field not in body:
+            body[field] = item.get("text", "")
     for key in OVERVIEW_FIELDS:
         if key not in body:
             continue
@@ -385,9 +411,21 @@ def update_overview(archive_id: str, body: dict) -> dict:
             raise ValueError(f"{OVERVIEW_FIELDS[key]}最多 4000 个字符")
         normalized = value.strip()
         if normalized != str(overview.get(key) or "").strip():
-            sources[key] = {"source_type": "manual", "source_ids": [],
+            accepted = next((item for item in accepted_ids if found[item][0] == key), None)
+            item = found.get(accepted, (None, {}))[1]
+            sources[key] = {"source_type": "manual" if not accepted or normalized != str(item.get("text") or "").strip()
+                            else item.get("source_type", "manual"),
+                            "source_ids": [] if not accepted or normalized != str(item.get("text") or "").strip()
+                            else item.get("source_ids", []),
                             "updated_at": datetime.now(timezone.utc).isoformat()}
         overview[key] = normalized
+    retired_ids = set(accepted_ids) | set(ignored_ids)
+    for field, items in list(suggestions.items()):
+        kept = [item for item in items if not isinstance(item, dict) or item.get("id") not in retired_ids]
+        if kept:
+            suggestions[field] = kept
+        else:
+            suggestions.pop(field, None)
     for key, label in (("marketplace", "站点"), ("category", "品类"), ("data_month", "数据月份")):
         if key not in body:
             continue

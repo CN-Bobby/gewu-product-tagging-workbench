@@ -60,3 +60,69 @@ test('Product Archive keeps chart, image preview, slicer and project artifact ac
   assert.match(archivePage, /artifacts\/\$\{item\.id\}\/download/);
   assert.match(archivePage, /历史文件，仅登记/);
 });
+
+test('overview suggestions are explicitly generated, polled and only use local evidence after user choice', () => {
+  assert.match(archivePage, /\/overview-drafts/);
+  assert.match(archivePage, /local_only:localOnly/);
+  assert.match(archivePage, /仅本地资料继续/);
+  assert.match(archivePage, /web_unavailable/);
+  assert.match(archivePage, /正在生成档案建议/);
+  assert.match(archivePage, /setTimeout/);
+});
+
+test('overview suggestion evidence and per-field accept or ignore controls are visible', () => {
+  assert.match(archivePage, /overview_suggestions/);
+  assert.match(archivePage, /source_ids/);
+  assert.match(archivePage, /待验证/);
+  assert.match(archivePage, /采纳建议/);
+  assert.match(archivePage, /忽略建议/);
+  assert.match(archivePage, /source_type/);
+});
+
+test('overview save protects manual edits and sends accepted suggestion identities with an update precondition', () => {
+  assert.match(archivePage, /accepted_suggestion_ids/);
+  assert.match(archivePage, /expected_updated_at/);
+  const helperSource = archivePage.match(/function getAcceptedSuggestionIds[^\n]+/);
+  assert.ok(helperSource, 'accepted suggestion identity filtering helper exists');
+  const getAcceptedSuggestionIds = new Function(`${helperSource[0]}; return getAcceptedSuggestionIds`)();
+  const suggestions = { product_name: [{ id: 's-1', text: 'market opportunity' }] };
+  assert.deepEqual(getAcceptedSuggestionIds({ product_name: 's-1' }, suggestions, { product_name: 'market opportunity' }), ['s-1']);
+  assert.deepEqual(getAcceptedSuggestionIds({ product_name: 's-1' }, suggestions, { product_name: 'manual rewrite' }), []);
+  assert.match(archivePage, /冲突/);
+});
+
+test('structured suggestion scope is formatted instead of rendered as a React object', () => {
+  assert.match(archivePage, /function formatSuggestionScope/);
+  assert.match(archivePage, /scope\.category/);
+  assert.match(archivePage, /scope\.category_context/);
+  assert.match(archivePage, /scope\.data_month_context/);
+  assert.match(archivePage, /scope\.coverage/);
+  assert.doesNotMatch(archivePage, /\$\{suggestion\.scope\}/);
+});
+
+test('ignored suggestion identities are sent as an array and include only locally ignored items', () => {
+  assert.match(archivePage, /ignored_suggestion_ids/);
+  const helperSource = archivePage.match(/function getIgnoredSuggestionIds[^\n]+/);
+  assert.ok(helperSource, 'ignored suggestion identity filtering helper exists');
+  const getIgnoredSuggestionIds = new Function(`${helperSource[0]}; return getIgnoredSuggestionIds`)();
+  assert.deepEqual(getIgnoredSuggestionIds({ 's-1': true, 's-2': false, 's-3': true }), ['s-1', 's-3']);
+});
+
+test('optional public source URLs are separate from overview fields and sent as a trimmed list', () => {
+  assert.match(archivePage, /pa-source-url-input/);
+  assert.match(archivePage, /source_urls:localOnly\?\[\]:parseSourceUrls\(sourceUrls\)/);
+  assert.match(archivePage, /可选网页来源/);
+  const helperSource = archivePage.match(/function parseSourceUrls[^\n]+/);
+  assert.ok(helperSource, 'source URL parsing helper exists');
+  const parseSourceUrls = new Function(`${helperSource[0]}; return parseSourceUrls`)();
+  assert.deepEqual(parseSourceUrls(' https://one.example/a \n\nhttps://two.example/b '), ['https://one.example/a', 'https://two.example/b']);
+  assert.throws(() => parseSourceUrls('https://1.example\nhttps://2.example\nhttps://3.example\nhttps://4.example'), /最多填写 3 个/);
+});
+
+test('overview generation asks for missing category and month instead of inferring a filename', () => {
+  assert.match(archivePage, /category_context/);
+  assert.match(archivePage, /data_month_context/);
+  assert.match(archivePage, /填写测试主题/);
+  assert.match(archivePage, /输入月份/);
+  assert.doesNotMatch(archivePage, /source_filename.*split/);
+});

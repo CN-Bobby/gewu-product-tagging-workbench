@@ -59,16 +59,15 @@ def test_keyword_filter_sort_dedupe_medians_and_non_additive_signals():
     }
     # Duplicate Alpha searches are retained once, never summed into 200.
     assert insight["summary"]["searches_median"] != 200
-    assert result["overview"]["representative_keywords"] == "Alpha\nZulu\ndelta\nbeta"
-    assert result["overview_sources"]["representative_keywords"] == {
-        "source_type": "keyword_research",
-        "source_ids": ["run-a", "run-b"],
-        "updated_at": "2026-10-03T00:00:00Z",
-    }
+    assert result["overview"]["representative_keywords"] == ""
+    suggestion = result["overview_suggestions"]["representative_keywords"][0]
+    assert suggestion["text"] == "Alpha\nZulu\ndelta\nbeta"
+    assert suggestion["source_type"] == "keyword_research"
+    assert suggestion["source_ids"] == ["run-a", "run-b"]
     assert "integrations" not in archive
 
 
-def test_keyword_limit_and_manual_overview_protection_then_generated_refresh():
+def test_keyword_limit_and_manual_overview_protection():
     rows = [_term(f"term-{index:02}", searches=100 - index) for index in range(12)]
     archive = {
         "overview": {"representative_keywords": "my own words"},
@@ -79,7 +78,7 @@ def test_keyword_limit_and_manual_overview_protection_then_generated_refresh():
     ])
     assert len(first["integrations"]["keyword_research"]["representative_terms"]) == 10
     assert first["overview"]["representative_keywords"] == "my own words"
-    assert "representative_keywords" not in first["overview_sources"]
+    assert first["overview_suggestions"]["representative_keywords"]
 
     generated_base = {"overview": {"representative_keywords": "old generated"},
                       "overview_sources": {"representative_keywords": {
@@ -89,8 +88,8 @@ def test_keyword_limit_and_manual_overview_protection_then_generated_refresh():
         {"run_id": "kw-2", "updated_at": "2026-10-02T00:00:00Z",
          "keywords": [_term("new generated", searches=3)]},
     ])
-    assert refreshed["overview"]["representative_keywords"] == "new generated"
-    assert refreshed["overview_sources"]["representative_keywords"]["source_ids"] == ["kw-2"]
+    assert refreshed["overview"]["representative_keywords"] == "old generated"
+    assert refreshed["overview_suggestions"]["representative_keywords"][0]["text"] == "new generated"
 
 
 def test_voc_uses_top_formal_segments_and_keeps_scope_provenance_without_raw_data():
@@ -151,12 +150,9 @@ def test_voc_uses_top_formal_segments_and_keeps_scope_provenance_without_raw_dat
             "empty_comment_asin_count": 1,
         },
     }
-    assert result["overview"]["product_function"] == integration["product_function_suggestion"]
-    assert result["overview"]["target_audience"] == integration["target_audience_suggestion"]
-    assert result["overview_sources"]["product_function"] == {
-        "source_type": "amazon_voc", "source_ids": ["voc-7"],
-        "updated_at": "2026-10-02T12:00:00Z",
-    }
+    assert result["overview"]["product_function"] == ""
+    assert result["overview_suggestions"]["product_function"][0]["text"] == integration["product_function_suggestion"]
+    assert result["overview_suggestions"]["target_audience"][0]["text"] == integration["target_audience_suggestion"]
     serialized = json.dumps(result, ensure_ascii=False)
     assert private_review not in serialized
     assert private_asin not in serialized
@@ -198,9 +194,10 @@ def test_voc_preserves_manual_values_refreshes_owned_fields_and_bounds_deduplica
             "jtbd_statement": "Fresh function", "persona_summary": "Fresh audience",
         }]}, {},
     )
-    assert refreshed["overview"]["product_function"] == "Fresh function"
-    assert refreshed["overview"]["target_audience"] == "Fresh audience"
-    assert refreshed["overview_sources"]["target_audience"]["source_ids"] == ["voc-new"]
+    assert refreshed["overview"]["product_function"] == "Old function"
+    assert refreshed["overview"]["target_audience"] == "Old audience"
+    assert refreshed["overview_suggestions"]["product_function"][0]["text"] == "Fresh function"
+    assert refreshed["overview_suggestions"]["target_audience"][0]["text"] == "Fresh audience"
 
 
 def test_voc_missing_legacy_review_scope_is_unknown_not_zero():

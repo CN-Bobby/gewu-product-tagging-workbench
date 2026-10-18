@@ -1,6 +1,6 @@
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from . import linked, service
+from . import linked, service, overview_drafts
 
 router = APIRouter(prefix="/api/product-archive", tags=["Product Archive"])
 
@@ -63,6 +63,16 @@ def archive_filter(archive_id: str, body: dict):
 @router.patch("/archives/{archive_id}")
 def update_archive(archive_id: str, body: dict):
     return _run(service.update_overview, archive_id, body or {})
+
+
+@router.post("/archives/{archive_id}/overview-drafts")
+def create_overview_draft(archive_id: str, body: dict):
+    return _run(overview_drafts.create, archive_id, body or {})
+
+
+@router.get("/archives/{archive_id}/overview-drafts/{run_id}")
+def get_overview_draft(archive_id: str, run_id: str):
+    return _run(overview_drafts.get, archive_id, run_id)
 
 
 @router.post("/archives/{archive_id}/dataset")

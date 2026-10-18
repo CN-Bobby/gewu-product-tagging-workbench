@@ -8,6 +8,8 @@ ASINs into an archive.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import math
 import re
 import unicodedata
@@ -66,6 +68,7 @@ def _ensure_archive(archive: dict) -> dict:
     result = copy.deepcopy(archive) if isinstance(archive, dict) else {}
     result.setdefault("overview", {})
     result.setdefault("overview_sources", {})
+    result.setdefault("overview_suggestions", {})
     result.setdefault("integrations", {})
     return result
 
@@ -91,6 +94,22 @@ def _write_overview(archive: dict, field: str, value: str, source_type: str,
         "source_ids": list(dict.fromkeys(item for item in source_ids if item)),
         "updated_at": updated_at,
     }
+
+
+def _suggest_overview(archive: dict, field: str, value: str, source_type: str,
+                      source_ids: list[str], updated_at: str, scope: dict | None = None,
+                      links: list[dict] | None = None) -> None:
+    if not value:
+        return
+    payload = {"field": field, "text": value[:_OVERVIEW_LIMIT], "source_type": source_type,
+               "source_ids": list(dict.fromkeys(item for item in source_ids if item)),
+               "scope": scope or {}, "links": links or [], "updated_at": updated_at}
+    ident = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:24]
+    item = {"id": ident, **payload}
+    items = archive["overview_suggestions"].setdefault(field, [])
+    if not any(existing.get("id") == ident for existing in items if isinstance(existing, dict)):
+        items.append(item)
+    return item
 
 
 def _median(rows: list[dict], field: str) -> float | None:
@@ -178,9 +197,10 @@ def merge_keyword_insights(archive: dict, runs: list[dict]) -> dict:
     }
     source_ids = [row["source_run_id"] for row in selected if row.get("source_run_id")]
     if selected:
-        _write_overview(result, "representative_keywords",
-                        "\n".join(row["keyword"] for row in selected),
-                        "keyword_research", source_ids, updated_at)
+        _suggest_overview(result, "representative_keywords",
+                          "\n".join(row["keyword"] for row in selected),
+                          "keyword_research", source_ids, updated_at,
+                          {"data_months": sorted({row["data_month"] for row in selected if row.get("data_month")})})
     return result
 
 
@@ -256,9 +276,9 @@ def merge_voc_insights(archive: dict, run: dict, analysis: dict,
     }
     result["integrations"]["amazon_voc"] = integration
     if product_suggestion:
-        _write_overview(result, "product_function", product_suggestion,
+        _suggest_overview(result, "product_function", product_suggestion,
                         "amazon_voc", [run_id] if run_id else [], updated_at)
     if audience_suggestion:
-        _write_overview(result, "target_audience", audience_suggestion,
+        _suggest_overview(result, "target_audience", audience_suggestion,
                         "amazon_voc", [run_id] if run_id else [], updated_at)
     return result

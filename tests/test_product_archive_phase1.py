@@ -1,4 +1,5 @@
 import io
+import json
 
 import openpyxl
 from fastapi.testclient import TestClient
@@ -120,6 +121,225 @@ def test_archive_overview_is_saved_separately_from_source_dataset(tmp_path, monk
         overview = response.json()["overview"]
         assert overview["product_name"] == "Sample product"
         assert overview["representative_keywords"] == "word one\nword two"
+
+
+def test_archive_accepts_suggestion_and_rejects_stale_write(tmp_path, monkeypatch):
+    monkeypatch.setattr(archive_service, "ARCHIVES", tmp_path / "archives")
+    with TestClient(app) as client:
+        archive = _upload(client)
+        record = archive_service._read(archive["id"])
+        record["overview_suggestions"] = {"product_function": [{
+            "id": "suggestion-1", "text": "Keeps items dry", "source_type": "amazon_voc",
+            "source_ids": ["voc-1"], "scope": {"analysis_scope": "VOC"}, "links": [],
+            "updated_at": "2026-10-18T00:00:00Z"}], "target_audience": [{
+            "id": "suggestion-2", "text": "Outdoor families", "source_type": "amazon_voc",
+            "source_ids": ["voc-2"], "scope": {}, "links": [], "updated_at": "2026-10-18T00:00:00Z"}]}
+        archive_service._save(record)
+        current = archive_service._read(archive["id"])["updated_at"]
+        accepted = client.patch(f"/api/product-archive/archives/{archive['id']}", json={
+            "accepted_suggestion_ids": ["suggestion-1"], "ignored_suggestion_ids": ["suggestion-2"],
+            "expected_updated_at": current,
+        })
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()["overview"]["product_function"] == "Keeps items dry"
+        assert accepted.json()["overview_sources"]["product_function"]["source_type"] == "amazon_voc"
+        assert accepted.json()["overview_sources"]["product_function"]["source_ids"] == ["voc-1"]
+        refreshed = client.get(f"/api/product-archive/archives/{archive['id']}").json()
+        assert "product_function" not in refreshed["overview_suggestions"]
+        assert "target_audience" not in refreshed["overview_suggestions"]
+        stale = client.patch(f"/api/product-archive/archives/{archive['id']}", json={
+            "product_function": "Edited", "expected_updated_at": current,
+        })
+        assert stale.status_code == 400
+
+
+def test_overview_draft_endpoints_return_persistent_status(tmp_path, monkeypatch):
+    monkeypatch.setattr(archive_service, "ARCHIVES", tmp_path / "archives")
+    from backend.product_archive import overview_drafts
+    monkeypatch.setattr(overview_drafts, "_launch", lambda _archive_id, _run_id: None)
+    with TestClient(app) as client:
+        archive = _upload(client)
+        body = {"category_context": "女童防晒服", "data_month_context": "2026-06", "local_only": False}
+        first = client.post(f"/api/product-archive/archives/{archive['id']}/overview-drafts", json=body)
+        second = client.post(f"/api/product-archive/archives/{archive['id']}/overview-drafts", json=body)
+        assert first.status_code == 200 and second.status_code == 200
+        assert first.json() == second.json()
+        current = client.get(f"/api/product-archive/archives/{archive['id']}/overview-drafts/{first.json()['id']}")
+        assert current.status_code == 200
+        assert current.json()["status"] == "running"
+        assert "request_key" not in current.json()
+
+
+def test_overview_draft_source_urls_are_validated_and_part_of_idempotency(tmp_path, monkeypatch):
+    monkeypatch.setattr(archive_service, "ARCHIVES", tmp_path / "archives")
+    from backend.product_archive import overview_drafts
+    monkeypatch.setattr(overview_drafts, "_launch", lambda _archive_id, _run_id: None)
+    with TestClient(app) as client:
+        archive = _upload(client)
+        path = f"/api/product-archive/archives/{archive['id']}/overview-drafts"
+        base = {"category_context": "女童防晒服", "data_month_context": "2026-06", "local_only": False}
+        first = client.post(path, json={**base, "source_urls": ["https://www.cdc.gov/skin-cancer/sun-safety/index.html"]})
+        repeated = client.post(path, json={**base, "source_urls": ["https://www.cdc.gov/skin-cancer/sun-safety/index.html"]})
+        distinct = client.post(path, json={**base, "source_urls": ["https://www.fda.gov/"]})
+        invalid = client.post(path, json={**base, "source_urls": ["http://example.org/page"]})
+        too_many = client.post(path, json={**base, "source_urls": [
+            "https://a.example/", "https://b.example/", "https://c.example/", "https://d.example/"]})
+        assert first.status_code == 200
+        assert repeated.json() == first.json()
+        assert distinct.json()["id"] != first.json()["id"]
+        assert invalid.status_code == 400
+        assert too_many.status_code == 400
+
+
+def test_explicit_source_url_requires_fetched_relevant_page_body(monkeypatch):
+    from backend import external_effects, knowledge
+    from backend.product_archive import overview_drafts
+    fetched = []
+    pages = {
+        "https://html.duckduckgo.com/html/": "search",
+        "https://www.cdc.gov/skin-cancer/sun-safety/index.html": "CDC guidance explains skin cancer prevention and sun safety for outdoor activity.",
+    }
+    monkeypatch.setattr(external_effects, "assert_allowed", lambda _kind: None)
+    def fake_fetch(url, params=None):
+        if not params:
+            fetched.append(url)
+        return pages[url]
+    monkeypatch.setattr(knowledge, "fetch", fake_fetch)
+    monkeypatch.setattr(knowledge, "plain", lambda value: value)
+    monkeypatch.setattr(knowledge, "check_url", lambda url: url)
+    monkeypatch.setattr(knowledge, "search_results", lambda *_args: [])
+
+    result = overview_drafts._research_sources(
+        "女童防晒服", "US", [], ["https://www.cdc.gov/skin-cancer/sun-safety/index.html"])
+
+    assert fetched == ["https://www.cdc.gov/skin-cancer/sun-safety/index.html"]
+    assert len(result) == 1
+    assert result[0]["explicit_reference"] is True
+    assert "sun safety" in result[0]["excerpt"]
+
+
+def test_web_failure_stops_before_model_request(tmp_path, monkeypatch):
+    from backend.product_archive import overview_drafts
+    from backend import model_settings
+    monkeypatch.setattr(archive_service, "ARCHIVES", tmp_path / "archives")
+    archive_id = "a" * 32
+    archive_service.ARCHIVES.mkdir(parents=True)
+    archive_service._save({"id": archive_id, "dataset_id": "dataset-unused", "marketplace": "US",
+                           "overview": {}, "overview_sources": {}, "integrations": {}})
+    monkeypatch.setattr(overview_drafts, "_research_sources", lambda *args, **kwargs: [])
+    model_called = []
+    monkeypatch.setattr(model_settings, "defaults", lambda: model_called.append(True))
+    run_id = "b" * 32
+    overview_drafts._save(archive_id, run_id, {"id": run_id, "archive_id": archive_id,
+        "status": "running", "local_only": False, "category_context": "女童防晒服",
+        "data_month_context": "2026-06", "suggestions": {}, "error": None})
+    overview_drafts._worker(archive_id, run_id)
+    result = overview_drafts.get(archive_id, run_id)
+    assert result["status"] == "web_unavailable"
+    assert not model_called
+
+
+def test_ready_draft_is_visible_and_can_be_accepted(tmp_path, monkeypatch):
+    from backend.product_archive import overview_drafts
+    monkeypatch.setattr(archive_service, "ARCHIVES", tmp_path / "archives")
+    with TestClient(app) as client:
+        archive = _upload(client)
+        run_id = "c" * 32
+        item = {"id": "draft-suggestion", "text": "Sun protection clothing", "source_type": "overview_draft",
+                "source_ids": [run_id], "scope": {"category_context": "女童防晒服"},
+                "links": [{"url": "https://example.org/source", "excerpt": "Source excerpt"}],
+                "updated_at": "2026-10-18T00:00:00Z"}
+        overview_drafts._finish(archive["id"], run_id, {"id": run_id, "archive_id": archive["id"],
+            "status": "ready", "suggestions": {"product_function": [item]}, "error": None,
+            "usage": {"total_tokens": 12}})
+        current = archive_service.get(archive["id"])
+        suggestion = current["overview_suggestions"]["product_function"][0]
+        assert suggestion["links"][0]["excerpt"] == "Source excerpt"
+        response = client.patch(f"/api/product-archive/archives/{archive['id']}", json={
+            "accepted_suggestion_ids": [suggestion["id"]], "expected_updated_at": current["updated_at"],
+        })
+        assert response.status_code == 200, response.text
+        assert response.json()["overview"]["product_function"] == item["text"]
+        assert response.json()["overview_sources"]["product_function"]["source_type"] == "overview_draft"
+
+
+def test_draft_model_sample_contains_aggregates_not_identifiers(monkeypatch):
+    from backend.product_archive import overview_drafts
+    monkeypatch.setattr(archive_service, "_source", lambda _dataset_id: ({}, [
+        {"raw": {"ASIN": "B000000001", "Brand": "Brand A", "Name": "Product title", "Price": 10}},
+        {"raw": {"ASIN": "B000000002", "Brand": "Brand B", "Name": "Second title", "Price": 20}},
+    ]))
+    result = overview_drafts._compact_sample({"dataset_id": "d", "marketplace": "US", "mapping": {
+        "asin": "ASIN", "brand": "Brand", "product_name": "Name", "price": "Price"}})
+    serialized = json.dumps(result)
+    assert "B000000001" not in serialized
+    assert "Brand A" not in serialized
+    assert "Product title" not in serialized
+    assert result["category_level_distributions"]["price"]["top_values"] == [
+        {"value": "10", "rows": 1}, {"value": "20", "rows": 1}]
+
+
+def test_public_research_falls_back_to_archive_keywords_after_empty_js_page(monkeypatch):
+    from backend import knowledge
+    from backend.product_archive import overview_drafts
+    from backend import external_effects
+    queries = []
+    fetches = []
+    pages = {
+        "https://html.duckduckgo.com/html/": "search",
+        "https://shop.example/js-page": "",
+        "https://brand.example/sun-protection": "Girls sun protection clothing for swimming and outdoor play.",
+    }
+    monkeypatch.setattr(external_effects, "assert_allowed", lambda _kind: None)
+    def fake_fetch(url, params=None):
+        if params:
+            queries.append(params["q"])
+        else:
+            fetches.append(url)
+        return pages[url]
+    monkeypatch.setattr(knowledge, "fetch", fake_fetch)
+    monkeypatch.setattr(knowledge, "plain", lambda value: value)
+    monkeypatch.setattr(knowledge, "check_url", lambda url: url)
+    def fake_search(_html, query):
+        return ([{"url": "https://shop.example/js-page", "title": "Taobao", "publisher": "shop.example"}]
+                if query.startswith("女童") else
+                [{"url": "https://brand.example/sun-protection", "title": "Sun protection clothing", "publisher": "brand.example"}])
+    monkeypatch.setattr(knowledge, "search_results", fake_search)
+
+    sources = overview_drafts._research_sources(
+        "女童防晒服", "US", ["girls sun protection clothing", "swim cover up"])
+
+    assert len(queries) == 2
+    assert queries[0] == "女童防晒服 US"
+    assert "girls sun protection clothing" in queries[1]
+    assert len(fetches) == 2
+    assert sources[0]["url"] == "https://brand.example/sun-protection"
+    assert "Girls sun protection clothing" in sources[0]["excerpt"]
+
+
+def test_draft_suggestions_require_valid_field_specific_evidence():
+    from backend.product_archive import overview_drafts
+    sources = [{"evidence_id": "web:source-a", "url": "https://example.org/a", "title": "A",
+                "excerpt": "Evidence A"},
+               {"evidence_id": "web:source-b", "url": "https://example.org/b", "title": "B",
+                "excerpt": "Evidence B"}]
+    evidence = {"local_sample:aggregate": {"source_type": "local_sample", "source_id": "sample"},
+                "keyword:term-a": {"source_type": "keyword_research", "source_id": "term-a"},
+                **{item["evidence_id"]: {"source_type": "web", "source_id": item["evidence_id"]}
+                   for item in sources}}
+    generated = {
+        "product_function": {"text": "Keeps items dry", "evidence_refs": ["web:source-a"]},
+        "target_audience": {"text": "Families", "evidence_refs": ["not-real"]},
+        "seasonality": {"text": "Summer", "evidence_refs": []},
+        "representative_keywords": {"text": "sun protection", "evidence_refs": ["keyword:term-a"]},
+    }
+
+    result = overview_drafts._build_suggestions("run-1", generated, evidence, sources, "Category", "2026-06")
+
+    assert list(result) == ["product_function", "representative_keywords"]
+    assert result["product_function"][0]["links"] == [sources[0]]
+    assert result["product_function"][0]["source_ids"] == ["web:source-a"]
+    assert result["representative_keywords"][0]["links"] == []
 
 
 def test_archive_metrics_fixed_boundaries_cr3_links_and_exact_prices():
