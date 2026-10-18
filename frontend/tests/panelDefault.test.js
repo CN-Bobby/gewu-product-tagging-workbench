@@ -11,6 +11,20 @@ import {readFileSync} from 'node:fs';
 const source=name=>readFileSync(new URL(`../src/${name}`,import.meta.url),'utf8');
 const main=source('main.jsx');
 const panel=source('agentPanel.jsx');
+const navigation=source('workbenchNavigation.jsx');
+
+test('main navigation follows the approved workflow without duplicate project or usage buttons',()=>{
+  const itemList=navigation.split('export const MAIN_NAV_ITEMS = [')[1].split('];')[0];
+  const labels=[...itemList.matchAll(/label: '([^']+)'/g)].map(match=>match[1]);
+  assert.deepEqual(labels,['总览','商品打标','选品档案','关键词调研','Amazon 评论 + VOC','Amazon 图片采集','寻龙诀','总设置']);
+  assert.ok(!itemList.includes('项目资料')&&!itemList.includes('用量统计'));
+  assert.ok(navigation.includes('{MAIN_NAV_ITEMS.map(navButton)}'));
+  assert.ok(!navigation.includes('navButton(PROJECT_ITEM)'),'project library stays in the project sidebar');
+  assert.ok(navigation.includes("window.matchMedia('(max-width: 900px)')"));
+  assert.ok(navigation.includes('if (!event.matches) setOpen(false)'));
+  assert.ok(main.includes('<div className="topbar-context">'));
+  assert.ok(main.includes('<div className="topbar-actions">'));
+});
 
 test('the tagging page renders only the Agent conversation panel',()=>{
   assert.ok(main.includes('<strong>Agent 会话</strong>'));
@@ -50,8 +64,8 @@ test('the workbench has home, tagging, keyword, Xunlongjue, and settings routes'
 });
 
 test('the topbar carries the entry to the keyword page',()=>{
-  assert.ok(main.includes('关键词调研'),'the entry label is in the topbar');
-  assert.match(main,/<button className=\{page===PAGE\.KEYWORD\?'active':''\} onClick=\{\(\)=>navigate\('keyword'\)\}>关键词调研<\/button>/,'the entry switches the page');
+  assert.ok(main.includes('<WorkbenchNavigation page={page}'),'the navigation is rendered in the topbar');
+  assert.ok(navigation.includes("{id: PAGE.KEYWORD, label: '关键词调研', path: 'keyword'}"));
 });
 
 test('Product Archive has a separate dossier route and read-only sample page',()=>{
@@ -59,7 +73,7 @@ test('Product Archive has a separate dossier route and read-only sample page',()
   assert.ok(main.includes("import {ProductArchive} from './productArchive'"));
   assert.ok(main.includes("parts[0]==='product-archive'"));
   assert.ok(main.includes("page==='product-archive'?<ProductArchive"));
-  assert.ok(main.includes("navigate('product-archive')"));
+  assert.ok(navigation.includes("{id: 'product-archive', label: '选品档案', path: 'product-archive'}"));
   assert.ok(page.includes('PRODUCT / MARKET OVERVIEW'));
   assert.ok(page.includes('MARKET SIZE'));
   assert.ok(page.includes('COMPETITIVE STRUCTURE'));
@@ -68,13 +82,13 @@ test('Product Archive has a separate dossier route and read-only sample page',()
 });
 
 test('the topbar carries the entry to the Xunlongjue module',()=>{
-  assert.ok(main.includes('寻龙诀'),'the entry label is in the topbar');
-  assert.match(main,/<button className=\{page===PAGE\.XUNLONGJUE\?'active':''\} onClick=\{\(\)=>navigate\('xunlongjue'\)\}>寻龙诀<\/button>/,'the entry switches to the module');
+  assert.ok(navigation.includes("{id: PAGE.XUNLONGJUE, label: '寻龙诀', path: 'xunlongjue'}"));
 });
 
 test('the topbar opens one Amazon Reviews and VOC workspace',()=>{
   assert.ok(main.includes("import {AmazonReviewsVoc} from './amazonReviewsVoc'"));
-  assert.match(main,/<button className=\{\['amazon-reviews','amazon-reviews-voc',PAGE\.AMAZON_VOC\]\.includes\(page\)\?'active':''\} onClick=\{\(\)=>navigate\('amazon-reviews-voc'\)\}>Amazon 评论 \+ VOC<\/button>/);
+  assert.ok(navigation.includes("{id: 'amazon-reviews-voc', label: 'Amazon 评论 + VOC', path: 'amazon-reviews-voc'}"));
+  assert.ok(navigation.includes("['amazon-reviews', 'amazon-reviews-voc', PAGE.AMAZON_VOC]"));
   assert.ok(main.includes("['amazon-reviews','amazon-reviews-voc',PAGE.AMAZON_VOC].includes(page)?<AmazonReviewsVoc"));
 });
 

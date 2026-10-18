@@ -1,0 +1,126 @@
+.workbench > header.topbar {
+  position: relative;
+  z-index: 30;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  grid-template-areas: "brand nav actions" "context context context";
+  align-items: center;
+  gap: 8px 12px;
+  height: auto;
+  min-height: 66px;
+  padding: 9px 20px;
+}
+
+.workbench > .app-body {
+  height: auto;
+  min-height: 0;
+  flex: 1;
+}
+.workbench > .app-body > .app-content > .workspace {height: 100%; min-height: 0}
+
+.topbar > .brand {grid-area: brand; min-width: 0; cursor: pointer}
+.topbar > .brand:focus-visible,
+.topbar button:focus-visible {outline: 2px solid #2d765d; outline-offset: 2px}
+.topbar > .global-nav {
+  grid-area: nav;
+  display: flex;
+  flex-wrap: nowrap;
+  width: max-content;
+  min-width: 0;
+  max-width: 100%;
+  overflow: visible;
+}
+.topbar > .global-nav button {flex: none}
+.topbar > .topbar-context {
+  grid-area: context;
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.topbar > .topbar-context:empty {display: none}
+.topbar-current-page {
+  color: #395b4c;
+  font-size: 12px;
+  font-weight: 650;
+}
+.topbar > .topbar-actions {
+  grid-area: actions;
+  display: flex;
+  justify-self: end;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.topbar-actions .runtime-badge {max-width: 100%}
+
+.topbar > .compact-navigation {display: none; grid-area: nav; min-width: 0}
+.compact-navigation-trigger {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  background: #edf2f0;
+  color: #16453a;
+  font-weight: 650;
+}
+.compact-navigation-trigger > span:last-child {display: inline-flex; align-items: center; gap: 4px; color: #52615f; font-weight: 500}
+.compact-navigation-menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% - 2px);
+  left: 20px;
+  width: min(380px, calc(100% - 40px));
+  max-height: min(65vh, 440px);
+  overflow: auto;
+  display: grid;
+  gap: 3px;
+  padding: 7px;
+  border: 1px solid #cbd8ce;
+  border-radius: 10px;
+  background: #fcfdf9;
+  box-shadow: 0 12px 32px #24393330;
+}
+.compact-navigation-menu[hidden] {display: none}
+.compact-navigation-menu button {
+  justify-content: flex-start;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.compact-navigation-menu button.active {background: #e7f0e8; color: #174735; font-weight: 700}
+
+@media (max-width: 1600px) {
+  .workbench > header.topbar {
+    grid-template-columns: minmax(0, 1fr) max-content;
+    grid-template-areas: "brand actions" "nav nav" "context context";
+  }
+  .topbar > .global-nav {justify-self: start}
+}
+
+@media (max-width: 900px) {
+  .topbar > .global-nav {display: none}
+  .topbar > .compact-navigation {display: block}
+}
+
+@media (max-width: 720px) {
+  .workbench > header.topbar {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "brand" "actions" "nav" "context";
+    padding: 8px 12px;
+  }
+  .topbar > .topbar-actions {justify-self: stretch; flex-wrap: wrap; gap: 6px}
+  .topbar-actions > button {padding: 6px 8px; font-size: 11px}
+  .compact-navigation-menu {left: 12px; width: min(380px, calc(100% - 24px))}
+  .topbar-context > select {max-width: 100%}
+}

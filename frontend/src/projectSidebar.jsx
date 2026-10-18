@@ -191,6 +191,7 @@ export function ProjectSidebar({ api, route, navigate, currentWorkspaceId = '' }
 
   return <aside className={`project-sidebar ${open ? '' : 'is-collapsed'}`} aria-label="项目树">
     <div className="ps-heading"><b>项目</b><button type="button" aria-label={open ? '折叠项目树' : '展开项目树'} onClick={toggleOpen}>{open ? <PanelLeftClose size={16}/> : <PanelLeftOpen size={16}/>}</button></div>
+    {!open && <button type="button" className={`ps-collapsed-library ${route?.page === 'projects' ? 'active' : ''}`} aria-label="项目资料" aria-current={route?.page === 'projects' ? 'page' : undefined} title="项目资料" onClick={() => navigate('projects')}><FolderOpen size={17}/><span>项目资料</span></button>}
     {open && <>
       <button type="button" className={`ps-all ${route?.page === 'projects' && !route?.workspaceId ? 'active' : ''}`} onClick={() => navigate('projects')}><FolderOpen size={15}/>项目资料</button>
       {error && <div className="ps-feedback ps-error" role="alert">{error}<button type="button" aria-label="关闭错误" onClick={() => setError('')}><X size={13}/></button></div>}
