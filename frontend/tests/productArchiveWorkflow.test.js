@@ -119,6 +119,22 @@ test('optional public source URLs are separate from overview fields and sent as 
   assert.throws(() => parseSourceUrls('https://1.example\nhttps://2.example\nhttps://3.example\nhttps://4.example'), /最多填写 3 个/);
 });
 
+test('empty unsupported overview fields remain marked for validation without replacing saved text', () => {
+  assert.match(archivePage, /pa-validation-marker/);
+  const helperSource = archivePage.match(/function needsOverviewValidation[^\n]+/);
+  assert.ok(helperSource, 'overview evidence validation helper exists');
+  const needsOverviewValidation = new Function(`${helperSource[0]}; return needsOverviewValidation`)();
+  assert.equal(needsOverviewValidation('', [], [], 'seasonality'), true);
+  assert.equal(needsOverviewValidation('', [{ text: 'May to July', needs_validation: false }], [], 'seasonality'), false);
+  assert.equal(needsOverviewValidation('', [{ text: '', needs_validation: true }], { seasonality: true }, 'seasonality'), true);
+  assert.equal(needsOverviewValidation('historical seasonality text', [], { seasonality: true }, 'seasonality'), false);
+});
+
+test('successful overview save retires local task suggestions without clearing saved field text', () => {
+  assert.match(archivePage, /setOverviewRun\(null\);setOverviewRunId\(''\);sessionStorage\.removeItem/);
+  assert.doesNotMatch(archivePage, /setArchive\(value\);setOverviewRun\(null\);setOverviewRunId\(''\);sessionStorage\.removeItem\([^;]+\);setOverview\(/);
+});
+
 test('overview generation asks for missing category and month instead of inferring a filename', () => {
   assert.match(archivePage, /category_context/);
   assert.match(archivePage, /data_month_context/);

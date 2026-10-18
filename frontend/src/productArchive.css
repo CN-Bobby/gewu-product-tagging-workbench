@@ -21,3 +21,5 @@
 .pa-save-note{align-self:center;color:#8a7c5d;font-size:9px;line-height:1.5}.pa-overview-actions{flex-wrap:wrap}
 
 .pa-source-url-input{grid-column:1/-1;min-width:0;margin:0;padding:9px 10px 10px;border:1px solid #dce5da;border-radius:6px;background:#fffefa}.pa-source-url-input legend{padding:0 4px;color:#586b59;font-size:10px}.pa-source-url-input label{display:grid;gap:5px;color:#788477;font-size:9px}.pa-source-url-input textarea{width:100%;min-height:54px;resize:vertical;padding:7px;border:1px solid #d7e0d6;border-radius:5px;background:#fff;color:#3b5240;font:inherit;font-size:10px}
+
+.pa-validation-marker{display:block;padding:7px 9px;border:1px dashed #d8cda9;border-radius:5px;background:#fffaf0;color:#87764b;font-size:9px;line-height:1.5}

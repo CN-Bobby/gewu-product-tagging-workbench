@@ -133,13 +133,15 @@ def _parse_response_content(content):
 
 
 def _build_suggestions(run_id: str, generated: dict, evidence: dict, sources: list[dict],
-                       category: str, month: str):
+                       category: str, month: str, comparable_months: list[str] | None = None):
     allowed_fields = {"product_name", "product_function", "target_audience", "cultural_context",
                       "seasonality", "representative_keywords"}
     links_by_id = {item.get("evidence_id"): item for item in sources if item.get("evidence_id")}
     suggestions = {}
     for field, value in generated.items():
         if field not in allowed_fields or not isinstance(value, dict):
+            continue
+        if field == "seasonality" and len(set(comparable_months or [])) < 3:
             continue
         text = str(value.get("text") or "").strip()[:4000]
         refs = value.get("evidence_refs")
@@ -156,6 +158,34 @@ def _build_suggestions(run_id: str, generated: dict, evidence: dict, sources: li
             "source_ids": valid_refs, "scope": {"category_context": category, "data_month_context": month},
             "links": citations, "updated_at": datetime.now(timezone.utc).isoformat()}]
     return suggestions
+
+
+def _comparable_demand_months(archive: dict) -> list[str]:
+    """Months with archived keyword demand measurements; a single sample month is not seasonal evidence."""
+    integration = ((archive.get("integrations") or {}).get("keyword_research") or {})
+    months = set()
+    for source in integration.get("sources") or []:
+        if not isinstance(source, dict) or not source.get("keyword_count"):
+            continue
+        month = str(source.get("data_month") or "")
+        if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
+            months.add(month)
+    for term in integration.get("representative_terms") or []:
+        if not isinstance(term, dict) or term.get("searches") is None:
+            continue
+        month = str(term.get("data_month") or "")
+        if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
+            months.add(month)
+    return sorted(months)
+
+
+def _seasonality_validation(comparable_months: list[str]):
+    months = sorted(set(comparable_months))
+    if len(months) >= 3:
+        return None
+    return {"status": "pending_validation",
+            "reason": "至少需要3个不同月份的可比销量或搜索需求证据",
+            "observed_months": months}
 
 
 def _research_sources(category: str, marketplace: str, keyword_terms: list[str] | None = None,
@@ -272,6 +302,7 @@ def _worker(archive_id: str, run_id: str):
         endpoint, key, model = provider_config(model_ref, credential_id)
         assert_allowed("model_api")
         sample = _compact_sample(archive)
+        comparable_months = _comparable_demand_months(archive)
         prompt = {"category_context": row["category_context"], "marketplace": archive.get("marketplace"),
                   "data_month_context": row["data_month_context"], "sample_summary": sample,
                   "sources": citations,
@@ -279,7 +310,8 @@ def _worker(archive_id: str, run_id: str):
                     *sample.get("keyword_evidence", []),
                     *[{"id": item["evidence_id"], "type": "public_web",
                        "url": item["url"], "excerpt": item["excerpt"]} for item in citations]],
-                  "instruction": "只输出 JSON 对象。每个字段值必须是 {text: 字符串, evidence_refs: [上方证据ID]}。字段为 product_name, product_function, target_audience, cultural_context, seasonality, representative_keywords。每个非空建议必须引用至少一个实际支持该字段的证据ID；不得复用不相关证据。无充分证据时 text 为空且 evidence_refs 为空。"}
+                  "comparable_demand_months": comparable_months,
+                  "instruction": "只输出 JSON 对象。每个字段值必须是 {text: 字符串, evidence_refs: [上方证据ID]}。字段为 product_name, product_function, target_audience, cultural_context, seasonality, representative_keywords。每个非空建议必须引用至少一个实际支持该字段的证据ID；不得复用不相关证据。无充分证据时 text 为空且 evidence_refs 为空。季节性只有在 comparable_demand_months 至少有3个不同月份时才能提出；样本单月或一般性网页资料不能证明销量旺季。"}
         from ..usage import start_usage_event, finish_usage_event, provider_name
         event_id = start_usage_event(kind="model", module="product_archive", task_id=run_id,
                                      task_title="选品档案概览建议", model=model_ref,
@@ -306,8 +338,13 @@ def _worker(archive_id: str, run_id: str):
         for item in citations:
             evidence[item["evidence_id"]] = {"source_type": "web"}
         suggestions = _build_suggestions(run_id, generated, evidence, citations,
-                                         row["category_context"], row["data_month_context"])
-        row.update(status="ready", suggestions=suggestions, error=None, citations=citations)
+                                         row["category_context"], row["data_month_context"], comparable_months)
+        needs_validation = {}
+        seasonality_validation = _seasonality_validation(comparable_months)
+        if seasonality_validation:
+            needs_validation["seasonality"] = seasonality_validation
+        row.update(status="ready", suggestions=suggestions, error=None, citations=citations,
+                   needs_validation=needs_validation)
     except Exception as exc:
         row.update(status="failed", error=_safe_error(exc), suggestions={})
     _finish(archive_id, run_id, row)

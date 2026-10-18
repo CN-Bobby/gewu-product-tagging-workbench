@@ -330,16 +330,45 @@ def test_draft_suggestions_require_valid_field_specific_evidence():
     generated = {
         "product_function": {"text": "Keeps items dry", "evidence_refs": ["web:source-a"]},
         "target_audience": {"text": "Families", "evidence_refs": ["not-real"]},
-        "seasonality": {"text": "Summer", "evidence_refs": []},
+        "seasonality": {"text": "Summer", "evidence_refs": ["local_sample:aggregate"]},
         "representative_keywords": {"text": "sun protection", "evidence_refs": ["keyword:term-a"]},
     }
 
-    result = overview_drafts._build_suggestions("run-1", generated, evidence, sources, "Category", "2026-06")
+    result = overview_drafts._build_suggestions("run-1", generated, evidence, sources, "Category", "2026-06",
+                                                comparable_months=["2026-06"])
 
     assert list(result) == ["product_function", "representative_keywords"]
     assert result["product_function"][0]["links"] == [sources[0]]
     assert result["product_function"][0]["source_ids"] == ["web:source-a"]
     assert result["representative_keywords"][0]["links"] == []
+
+
+def test_seasonality_needs_three_distinct_comparable_demand_months():
+    from backend.product_archive import overview_drafts
+    archive = {"data_month": "2026-06", "integrations": {"keyword_research": {
+        "sources": [{"data_month": "2026-04", "keyword_count": 10},
+                    {"data_month": "2026-05", "keyword_count": 12},
+                    {"data_month": "2026-06", "keyword_count": 8}],
+        "representative_terms": []}}}
+    assert overview_drafts._comparable_demand_months(archive) == ["2026-04", "2026-05", "2026-06"]
+    assert overview_drafts._seasonality_validation(["2026-06"]) == {
+        "status": "pending_validation", "reason": "至少需要3个不同月份的可比销量或搜索需求证据",
+        "observed_months": ["2026-06"]}
+    assert overview_drafts._seasonality_validation(["2026-04", "2026-05", "2026-06"]) is None
+
+
+def test_draft_response_exposes_pending_seasonality_validation(tmp_path, monkeypatch):
+    from backend.product_archive import overview_drafts
+    monkeypatch.setattr(archive_service, "ARCHIVES", tmp_path / "archives")
+    archive_id, run_id = "d" * 32, "e" * 32
+    validation = {"seasonality": {"status": "pending_validation",
+        "reason": "至少需要3个不同月份的可比销量或搜索需求证据", "observed_months": ["2026-06"]}}
+    overview_drafts._save(archive_id, run_id, {"id": run_id, "archive_id": archive_id, "status": "ready",
+        "suggestions": {}, "needs_validation": validation, "error": None, "usage": None})
+
+    response = overview_drafts.get(archive_id, run_id)
+
+    assert response["needs_validation"] == validation
 
 
 def test_archive_metrics_fixed_boundaries_cr3_links_and_exact_prices():
