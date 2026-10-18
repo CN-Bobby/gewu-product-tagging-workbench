@@ -149,8 +149,17 @@
       "artifact_kind": "portable_candidate",
       "commit": null,
       "tag": null,
-      "superseded_by": null,
+      "superseded_by": "0.5.0-beta.14",
       "note": "DEV 人工验收已由用户确认；新增项目左树文件管理、六类目录迁移及关键词任务产物归档修复。待完成外机安装门禁评估、PROD 身份核验和 GitHub 便携包发布。"
+    },
+    {
+      "version": "0.5.0-beta.14",
+      "status": "pending_acceptance",
+      "artifact_kind": "portable_candidate",
+      "commit": null,
+      "tag": null,
+      "superseded_by": null,
+      "note": "DEV 人工验收由用户确认。包含响应式工作台导航及选品档案证据建议/季节性验证改进。自动化回归存在已记录的失败项；外机安装验收仍待评估，PROD 部署和 GitHub 便携包发布待本候选冻结后完成。"
     }
   ]
 }
