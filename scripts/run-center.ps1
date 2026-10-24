@@ -382,6 +382,38 @@ if ($Action -eq 'Stop') {
     $serviceOwner = Get-PortOwner $servicePort
     if ($serviceOwner) {
         $ownerRecord = $record.processes | Where-Object { [int]$_.pid -eq [int]$serviceOwner } | Select-Object -First 1
+        if (-not $ownerRecord -and $Profile -eq 'DEV' -and $record.dev_candidate_report) {
+            # A candidate may have started its embedded runtime before a failed policy check
+            # wrote the final process record. Recover only this exact recorded app's child.
+            $gateModule = Join-Path $runCenterRoot 'dev-release-gates.psm1'
+            Import-Module $gateModule -Force -ErrorAction Stop
+            $bundle = Test-DgCandidateBundle ([string]$record.dev_candidate_report) ([string]$config.profiles.DEV.reports) (Join-Path ([string]$config.projectRoot) 'builds')
+            $recordedApp = $record.processes | Where-Object role -eq 'app' | Select-Object -First 1
+            $appProcess = Test-RecordedProcess $record 'app'
+            $child = Get-ProcessIdentity ([int]$serviceOwner)
+            $runtimeProcess = Get-Process -Id ([int]$serviceOwner) -ErrorAction Stop
+            $childCreated = $runtimeProcess.StartTime.ToUniversalTime().Ticks
+            $expectedBootstrap = Join-Path $bundle.candidate_app 'scripts\desktop_bootstrap.py'
+            if (-not $recordedApp -or -not $child -or [int]$child.ParentProcessId -ne [int]$recordedApp.pid -or
+                (Get-CanonicalPath ([string]$recordedApp.executable)) -ne (Join-Path $bundle.candidate_app 'Workbench.exe') -or
+                ($appProcess -and [int]$appProcess.ProcessId -ne [int]$recordedApp.pid) -or
+                -not $recordedApp.creation_utc_ticks -or
+                $childCreated -lt [long]$recordedApp.creation_utc_ticks -or
+                $childCreated -gt ([long]$recordedApp.creation_utc_ticks + [TimeSpan]::FromMinutes(5).Ticks) -or
+                [string]$record.dev_candidate_report_sha256 -ne $bundle.report_sha256 -or
+                (Get-CanonicalPath ([string]$record.candidate_app)) -ne $bundle.candidate_app -or
+                -not (Test-FrozenListenerIdentity ([int]$serviceOwner) $bundle.manifest)) {
+                throw 'DEV candidate listener is not the exact recorded app child and frozen bundle. Nothing was stopped.'
+            }
+            $runtimeRecord = [pscustomobject]@{
+                role = 'app-runtime'; pid = [int]$serviceOwner
+                executable = (Join-Path $bundle.candidate_app 'runtime\pythonw.exe')
+                identity_token = $expectedBootstrap; creation_utc_ticks = $childCreated
+            }
+            $record.processes = @($record.processes) + @($runtimeRecord)
+            Save-Record $record $recordPath
+            $ownerRecord = $runtimeRecord
+        }
         if (-not $ownerRecord) { throw "Port $servicePort is owned by PID $serviceOwner, which is not recorded for this $Profile instance. Nothing was stopped." }
         $null = Test-RecordedProcess $record $ownerRecord.role
         $owner = Get-ProcessIdentity ([int]$serviceOwner)
@@ -698,6 +730,7 @@ if ($Profile -eq 'DEV' -and -not $DevCandidateReport) {
     try {
         $env:GEWU_INSTANCE_ID = if ($Profile -eq 'TEST') { $testRuntimeInstanceId } else { $Profile }
         Remove-Item Env:GEWU_DEV_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue
+        if ($devCandidateBundle) { $env:GEWU_DEV_EXTERNAL_EFFECTS = 'offline' }
         if ($Profile -eq 'TEST' -and $testRuntimePolicy -eq 'live_validation') {
             $env:GEWU_TEST_EXTERNAL_EFFECTS = 'live_validation'
         } elseif ($Profile -eq 'TEST') {

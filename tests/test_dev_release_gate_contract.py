@@ -452,3 +452,7 @@ def test_packaged_dev_candidate_stop_never_uses_source_api_kill_fallback() -> No
     assert "if ($Profile -ne 'DEV' -or $record.dev_candidate_report)" in source
     candidate_guard = "if ($record.dev_candidate_report) {\n            throw 'The packaged DEV candidate did not stop gracefully."
     assert candidate_guard in source
+    assert "if ($devCandidateBundle) { $env:GEWU_DEV_EXTERNAL_EFFECTS = 'offline' }" in source
+    assert "[int]$child.ParentProcessId -ne [int]$recordedApp.pid" in source
+    assert "$childCreated -gt ([long]$recordedApp.creation_utc_ticks + [TimeSpan]::FromMinutes(5).Ticks)" in source
+    assert "Test-FrozenListenerIdentity ([int]$serviceOwner) $bundle.manifest" in source
