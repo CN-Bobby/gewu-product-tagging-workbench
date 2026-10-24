@@ -6,6 +6,10 @@ import httpx
 from sqlalchemy import select
 from .db import *
 
+
+class RequestBudgetExceeded(RuntimeError):
+    """Raised before an outbound GET would exceed the caller's shared budget."""
+
 class Text(HTMLParser):
     def __init__(self):super().__init__();self.parts=[];self.hidden=0
     def handle_starttag(self,tag,attrs):
@@ -23,7 +27,7 @@ class SearchResults(HTMLParser):
     def handle_starttag(self,tag,attrs):
         if tag!='a':return
         values=dict(attrs);classes=values.get('class','').split()
-        kind='title' if 'result__a' in classes else 'snippet' if 'result__snippet' in classes else None
+        kind='title' if 'result__a' in classes or 'result-link' in classes else 'snippet' if 'result__snippet' in classes else None
         if kind:self.kind=kind;self.href=values.get('href','');self.parts=[]
     def handle_data(self,data):
         if self.kind:self.parts.append(data)
@@ -34,7 +38,7 @@ class SearchResults(HTMLParser):
         elif self.items and not self.items[-1]['excerpt']:self.items[-1]['excerpt']=text
         self.kind=None;self.href='';self.parts=[]
 
-def search_results(body,query):
+def search_results(body,query,limit=3):
     parser=SearchResults();parser.feed(body);tokens=[x.casefold() for x in query.split() if len(x)>=2] or [query.casefold()]
     results=[]
     for item in parser.items:
@@ -45,7 +49,7 @@ def search_results(body,query):
         if urlparse(target).scheme!='https':continue
         results.append({'title':item['title'],'url':target,'excerpt':item['excerpt'][:1000],
             'publisher':urlparse(target).hostname,'kind':'DuckDuckGo索引摘要，未读取来源正文，不作为产品事实','retrieved_at':now()})
-    return results[:3]
+    return results[:max(0,int(limit))]
 
 def check_url(url):
     p=urlparse(url)
@@ -54,9 +58,15 @@ def check_url(url):
     if not addresses or any(not ipaddress.ip_address(a[4][0]).is_global for a in addresses):raise ValueError('不能读取本机或内网资料地址')
     return url
 
-def fetch(url,params=None):
+def fetch(url,params=None,request_budget=None):
     for _ in range(4):
         check_url(url)
+        if request_budget is not None:
+            limit = int(request_budget.get('limit', 0))
+            used = int(request_budget.get('used', 0))
+            if used >= limit:
+                raise RequestBudgetExceeded('HTTP request budget exhausted')
+            request_budget['used'] = used + 1
         with httpx.Client(timeout=20,follow_redirects=False) as client:
             with client.stream('GET',url,params=params,headers={'User-Agent':'ProductTaggingWorkbench/0.4 (local research tool)'}) as r:
                 if r.is_redirect:url=urljoin(url,r.headers['location']);params=None;continue

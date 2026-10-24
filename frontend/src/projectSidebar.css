@@ -20,3 +20,5 @@
 .ps-collapsed-library:hover,.ps-collapsed-library.active{background:#edf4e9;color:#285943}
 .ps-collapsed-library:focus-visible{outline:2px solid #517b59;outline-offset:1px}
 .ps-collapsed-library>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+
+@media(max-width:520px){.app-content>.workspace.has-agent-approval{grid-template-rows:minmax(320px,70%) minmax(200px,1fr);overflow:auto}.app-content>.workspace.has-agent-approval>.conversation{display:flex}}

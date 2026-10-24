@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 
 const taggingPage = readFileSync(new URL('../src/main.jsx', import.meta.url), 'utf8');
 const archivePage = readFileSync(new URL('../src/productArchive.jsx', import.meta.url), 'utf8');
+const marketEditor = readFileSync(new URL('../src/MarketAnalysisEditor.jsx', import.meta.url), 'utf8');
+const overviewHelpers = readFileSync(new URL('../src/productArchiveOverview.js', import.meta.url), 'utf8');
 const projectPage = readFileSync(new URL('../src/projectManager.jsx', import.meta.url), 'utf8');
 const projectTree = readFileSync(new URL('../src/projectSidebar.jsx', import.meta.url), 'utf8');
 const projectPreview = readFileSync(new URL('../src/projectPreview.jsx', import.meta.url), 'utf8');
@@ -53,92 +55,163 @@ test('Product Archive confirms a mapping with the backend PUT contract', () => {
   assert.match(archivePage, /\/api\/product-archive\/archives\/\$\{archiveId\}\/mapping`,\{mapping\},'PUT'\)/);
 });
 
-test('Product Archive keeps chart, image preview, slicer and project artifact access visible', () => {
+test('Product Archive keeps chart, image preview and slicer without the full project file list', () => {
   assert.match(archivePage, /role="dialog" aria-modal="true"/);
   assert.match(archivePage, /价格 &amp; 销量 \/ 链接数/);
   assert.match(archivePage, /档案指标已按 Data X 标签重新计算/);
-  assert.match(archivePage, /artifacts\/\$\{item\.id\}\/download/);
-  assert.match(archivePage, /历史文件，仅登记/);
+  assert.match(archivePage, /本次使用资料/);
+  assert.doesNotMatch(archivePage, /历史文件，仅登记/);
 });
 
-test('overview suggestions are explicitly generated, polled and only use local evidence after user choice', () => {
+test('overview suggestions use the four linked business outputs and poll their result', () => {
   assert.match(archivePage, /\/overview-drafts/);
-  assert.match(archivePage, /local_only:localOnly/);
-  assert.match(archivePage, /仅本地资料继续/);
-  assert.match(archivePage, /web_unavailable/);
-  assert.match(archivePage, /正在生成档案建议/);
+  assert.match(archivePage, /overview-sources/);
+  assert.match(archivePage, /本次分析的业务产物/);
+  assert.match(archivePage, /selected_source_ids:selectedOverviewSources/);
+  assert.match(archivePage, /档案关联打标表（含图片）/);
+  assert.match(archivePage, /关键词任务产出表格/);
+  assert.match(archivePage, /评论任务产出表格/);
+  assert.match(archivePage, /VOC HTML 报告/);
+  assert.match(archivePage, /public_research:true/);
+  assert.doesNotMatch(archivePage, /请先选择至少一份当前档案关联的业务产物/);
+  assert.doesNotMatch(archivePage, /pa-source-url-input|parseSourceUrls|source_urls:/);
+  assert.match(archivePage, /分析阶段/);
   assert.match(archivePage, /setTimeout/);
+  assert.match(archivePage, /public_research_diagnostics\?\.message/);
+  assert.match(archivePage, /public_research_status==='partial'/);
+  assert.match(archivePage, /input_routing\.text_chars/);
 });
 
-test('overview suggestion evidence and per-field accept or ignore controls are visible', () => {
-  assert.match(archivePage, /overview_suggestions/);
-  assert.match(archivePage, /source_ids/);
-  assert.match(archivePage, /待验证/);
-  assert.match(archivePage, /采纳建议/);
-  assert.match(archivePage, /忽略建议/);
-  assert.match(archivePage, /source_type/);
+test('switching archive routes remounts the page to isolate draft state', () => {
+  assert.match(taggingPage, /<ProductArchive key=\{route\.archiveId\|\|'archive-list'\}/);
 });
 
-test('overview save protects manual edits and sends accepted suggestion identities with an update precondition', () => {
+test('overview uses one whole-analysis decision and persists editable dynamic modules', () => {
+  assert.match(archivePage, /保留整份分析/);
+  assert.match(archivePage, /忽略整份分析/);
+  assert.doesNotMatch(archivePage, /采纳建议|忽略建议/);
+  assert.match(archivePage, /analysisSuggestions/);
+  assert.match(archivePage, /overview_modules:editableModules/);
+  assert.match(archivePage, /market_analysis:market/);
+  assert.match(archivePage, /draftMarketAnalysis/);
+  assert.match(marketEditor, /添加形态/);
+  assert.match(marketEditor, /添加情境/);
+  assert.match(marketEditor, /添加待验证/);
+  assert.match(marketEditor, /product_form_ids/);
+  assert.match(marketEditor, /context_ids/);
+  assert.match(marketEditor, /删除商品形态/);
+  assert.match(marketEditor, /删除需求情境/);
+  assert.match(marketEditor, /按原有信息保留/);
   assert.match(archivePage, /accepted_suggestion_ids/);
+  assert.match(archivePage, /ignored_suggestion_ids/);
   assert.match(archivePage, /expected_updated_at/);
-  const helperSource = archivePage.match(/function getAcceptedSuggestionIds[^\n]+/);
-  assert.ok(helperSource, 'accepted suggestion identity filtering helper exists');
-  const getAcceptedSuggestionIds = new Function(`${helperSource[0]}; return getAcceptedSuggestionIds`)();
-  const suggestions = { product_name: [{ id: 's-1', text: 'market opportunity' }] };
-  assert.deepEqual(getAcceptedSuggestionIds({ product_name: 's-1' }, suggestions, { product_name: 'market opportunity' }), ['s-1']);
-  assert.deepEqual(getAcceptedSuggestionIds({ product_name: 's-1' }, suggestions, { product_name: 'manual rewrite' }), []);
   assert.match(archivePage, /冲突/);
 });
 
-test('structured suggestion scope is formatted instead of rendered as a React object', () => {
-  assert.match(archivePage, /function formatSuggestionScope/);
-  assert.match(archivePage, /scope\.category/);
-  assert.match(archivePage, /scope\.category_context/);
-  assert.match(archivePage, /scope\.data_month_context/);
-  assert.match(archivePage, /scope\.coverage/);
-  assert.doesNotMatch(archivePage, /\$\{suggestion\.scope\}/);
-});
-
-test('ignored suggestion identities are sent as an array and include only locally ignored items', () => {
-  assert.match(archivePage, /ignored_suggestion_ids/);
-  const helperSource = archivePage.match(/function getIgnoredSuggestionIds[^\n]+/);
-  assert.ok(helperSource, 'ignored suggestion identity filtering helper exists');
-  const getIgnoredSuggestionIds = new Function(`${helperSource[0]}; return getIgnoredSuggestionIds`)();
-  assert.deepEqual(getIgnoredSuggestionIds({ 's-1': true, 's-2': false, 's-3': true }), ['s-1', 's-3']);
-});
-
-test('optional public source URLs are separate from overview fields and sent as a trimmed list', () => {
-  assert.match(archivePage, /pa-source-url-input/);
-  assert.match(archivePage, /source_urls:localOnly\?\[\]:parseSourceUrls\(sourceUrls\)/);
-  assert.match(archivePage, /可选网页来源/);
-  const helperSource = archivePage.match(/function parseSourceUrls[^\n]+/);
-  assert.ok(helperSource, 'source URL parsing helper exists');
-  const parseSourceUrls = new Function(`${helperSource[0]}; return parseSourceUrls`)();
-  assert.deepEqual(parseSourceUrls(' https://one.example/a \n\nhttps://two.example/b '), ['https://one.example/a', 'https://two.example/b']);
-  assert.throws(() => parseSourceUrls('https://1.example\nhttps://2.example\nhttps://3.example\nhttps://4.example'), /最多填写 3 个/);
-});
-
-test('empty unsupported overview fields remain marked for validation without replacing saved text', () => {
-  assert.match(archivePage, /pa-validation-marker/);
-  const helperSource = archivePage.match(/function needsOverviewValidation[^\n]+/);
-  assert.ok(helperSource, 'overview evidence validation helper exists');
-  const needsOverviewValidation = new Function(`${helperSource[0]}; return needsOverviewValidation`)();
-  assert.equal(needsOverviewValidation('', [], [], 'seasonality'), true);
-  assert.equal(needsOverviewValidation('', [{ text: 'May to July', needs_validation: false }], [], 'seasonality'), false);
-  assert.equal(needsOverviewValidation('', [{ text: '', needs_validation: true }], { seasonality: true }, 'seasonality'), true);
-  assert.equal(needsOverviewValidation('historical seasonality text', [], { seasonality: true }, 'seasonality'), false);
-});
-
-test('successful overview save retires local task suggestions without clearing saved field text', () => {
+test('v2 overall review records ignore without patching saved archive content', () => {
+  assert.match(archivePage, /overview-drafts\/\$\{overviewRunId\}\/review/);
+  assert.match(archivePage, /\{decision,expected_updated_at:archive\?\.updated_at/);
+  assert.match(archivePage, /decision==='accepted'\?\{market_analysis:draftMarketAnalysis\}:\{\}/);
+  assert.match(archivePage, /const saved=response\.archive\|\|await api/);
+  assert.match(readFileSync(new URL('../src/productArchive.css', import.meta.url), 'utf8'), /details\.ma-old-draft-disclosure:not\(\[open\]\)>.overview-suggestion-preview\{display:none/);
   assert.match(archivePage, /setOverviewRun\(null\);setOverviewRunId\(''\);sessionStorage\.removeItem/);
-  assert.doesNotMatch(archivePage, /setArchive\(value\);setOverviewRun\(null\);setOverviewRunId\(''\);sessionStorage\.removeItem\([^;]+\);setOverview\(/);
 });
 
-test('overview generation asks for missing category and month instead of inferring a filename', () => {
-  assert.match(archivePage, /category_context/);
-  assert.match(archivePage, /data_month_context/);
-  assert.match(archivePage, /填写测试主题/);
-  assert.match(archivePage, /输入月份/);
+test('archive list render tolerates the archive being unset before route data loads', () => {
+  assert.doesNotMatch(archivePage, /overviewRun\?\.suggestions\?\?archive\.overview_suggestions/);
+  assert.match(archivePage, /overviewRun\?\.suggestions\?\?archive\?\.overview_suggestions/);
+});
+
+test('overview keywords are read only from archived keyword workflow results', () => {
+  assert.match(overviewHelpers, /createDefaultOverviewModules/);
+  assert.match(overviewHelpers, /title: '业务关键词', read_only: true/);
+  assert.match(overviewHelpers, /read_only/);
+});
+
+test('analysis evidence metadata and product narrative have distinct presentation', () => {
+  assert.match(marketEditor, /证据来源/);
+  assert.match(marketEditor, /商品完整描述/);
+  assert.match(marketEditor, /商品形态：旧档案未记录/);
+  assert.match(marketEditor, /segment_id/);
+  assert.match(marketEditor, /sourceManifest = \[\]/);
+  assert.match(marketEditor, /sourceManifest=\{sourceManifest\}/);
+  assert.doesNotMatch(marketEditor, /\['classification', 'limits'\]\.map/);
+  assert.match(marketEditor, /readOnly \? <ContextReadingSummary context=\{context\} \/>/);
+  assert.match(marketEditor, /collections\.demand_contexts\.fields\.map/);
+  assert.match(marketEditor, /function Basis\(/);
+  assert.match(marketEditor, /<Basis readOnly=\{readOnly\} value=\{item\.basis\}/);
+  assert.match(marketEditor, /<Basis readOnly=\{readOnly\} value=\{form\.basis\}/);
+  assert.match(marketEditor, /readOnly \? <AssociationSummary title="关联商品形态"/);
+  assert.match(marketEditor, /emptyLabel="未归类"/);
+  assert.match(marketEditor, /readOnly \? <AssociationSummary title="关联商品形态与情境"/);
+  assert.match(marketEditor, /emptyLabel="未关联形态或情境"/);
+  assert.match(marketEditor, /: <fieldset className="ma-associations"><legend>关联商品形态/);
+  assert.match(marketEditor, /!readOnly && <button type="button" onClick=\{\(\) => onChange\(removeMarketItem\(analysis, 'cross_cutting'/);
+  assert.match(archivePage, /查看分析覆盖与过滤说明/);
+  assert.match(archivePage, /applyGeneratedAnalysis/);
+});
+
+test('legacy editor restores custom module and item add/remove actions with read-only protection', () => {
+  assert.match(marketEditor, /新增自定义模块/);
+  assert.match(marketEditor, /createOverviewModule\(title\)/);
+  assert.match(marketEditor, /addOverviewItem\(items, module\.id\)/);
+  assert.match(marketEditor, /removeOverviewItem\(items, module\.id, item\.id\)/);
+  assert.match(marketEditor, /removeOverviewModule\(items, module\.id\)/);
+  assert.match(marketEditor, /!module\.read_only && !module\.field_key/);
+  assert.match(marketEditor, /window\.confirm\(`删除自定义模块/);
+  assert.match(marketEditor, /window\.confirm\('删除这条历史内容？'/);
+  assert.match(marketEditor, /!editing \|\| module\.read_only/);
+});
+
+test('saved analysis reloads its source manifest and conflict handling covers backend HTTP 400 copy', () => {
+  assert.match(archivePage, /archive\.market_analysis_run_id/);
+  assert.match(archivePage, /savedAnalysisRun/);
+  assert.match(archivePage, /<AnalysisSourceSummary manifest=\{savedAnalysisRun\.source_manifest\}/);
+  assert.doesNotMatch(archivePage, /<ProjectFiles/);
+  assert.doesNotMatch(archivePage, /\/api\/projects\/\$\{workspaceId\}\/files/);
+  assert.match(archivePage, /已被其他操作更新/);
+});
+
+test('successful whole-analysis decision retires the draft while later manual save remains available', () => {
+  assert.match(archivePage, /setOverviewRun\(null\);setOverviewRunId\(''\);sessionStorage\.removeItem/);
+  assert.match(archivePage, /setOverviewModules\(createDefaultOverviewModules\(value\)\)/);
+  assert.match(archivePage, /const saveOverview=/);
+});
+
+test('overview generation defaults to archive category and no longer asks for a research month', () => {
+  assert.match(archivePage, /categoryContext\|\|archive\?\.category/);
+  assert.match(archivePage, /pa-research-setup/);
+  assert.match(archivePage, /开始调研/);
+  assert.match(archivePage, /pa-research-date-coverage/);
+  assert.doesNotMatch(archivePage, /data_month_context/);
+  assert.doesNotMatch(archivePage, /monthContext/);
   assert.doesNotMatch(archivePage, /source_filename.*split/);
+});
+
+test('failed overview drafts expose the failed phase, actual usage and offline recovery affordance', () => {
+  assert.match(archivePage, /overviewRun\?\.status==='failed'/);
+  assert.match(archivePage, /失败阶段：\{overviewPhaseLabel\(overviewRun\.phase\)\}/);
+  assert.match(archivePage, /overviewRun\.recovery\?\.available/);
+  assert.match(archivePage, /离线恢复分析结果/);
+  assert.match(archivePage, /\/overview-drafts\/\$\{overviewRunId\}\/recover/);
+  assert.match(archivePage, /\{\},'POST'/);
+  assert.doesNotMatch(archivePage, /overviewRun\.raw_output|overviewRun\.raw_result/);
+  assert.match(archivePage, /usage\?\.cost_status==='measured'/);
+  assert.match(archivePage, /usage\?\.input_tokens/);
+  assert.match(archivePage, /usage\?\.output_tokens/);
+});
+
+test('direct archive visit loads the latest open analysis without requiring old session storage', () => {
+  assert.match(archivePage, /overview-drafts\/latest-open/);
+  assert.match(archivePage, /if\(latest\?\.id\)\{setOverviewRunId\(latest\.id\)/);
+});
+
+test('overview recovery diagnostics explain missing fields and quality warnings without blocking whole-analysis review', () => {
+  assert.match(archivePage, /diagnostics\.missing_fields/);
+  assert.match(archivePage, /diagnostics\.module_gaps/);
+  assert.match(archivePage, /diagnostics\?\.quality_warnings/);
+  assert.match(archivePage, /recovery\?\.reason/);
+  assert.match(archivePage, /超过 5 个细分/);
+  assert.match(archivePage, /保留整份分析/);
+  assert.match(archivePage, /忽略整份分析/);
 });

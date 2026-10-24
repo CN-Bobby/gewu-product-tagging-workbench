@@ -34,7 +34,7 @@ export function AmazonReviewsVoc({
   useEffect(() => {
     let alive = true;
     // This legacy route returns backend Workspace records (id/name), not Amazon VOC projects.
-    api('/api/projects', undefined, 'GET').then(value => {
+    const refreshWorkspaces = () => api('/api/projects', undefined, 'GET').then(value => {
       if (!alive) return;
       const list = Array.isArray(value) ? value : [];
       setWorkspaces(list);
@@ -42,7 +42,9 @@ export function AmazonReviewsVoc({
     }).catch(() => {
       if (alive) setWorkspaces([]);
     });
-    return () => { alive = false; };
+    refreshWorkspaces();
+    window.addEventListener('gewu-projects-changed', refreshWorkspaces);
+    return () => { alive = false; window.removeEventListener('gewu-projects-changed', refreshWorkspaces); };
   }, [api]);
   const selectedGoal = normalizeAmazonReviewsVocGoal(goal);
   const reviewsMode = selectedGoal === AMAZON_REVIEWS_VOC_GOALS.COMBINED

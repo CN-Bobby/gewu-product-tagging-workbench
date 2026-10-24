@@ -1,0 +1,91 @@
+/* Reading hierarchy for the sample-based competitive structure. */
+.pa-section-competition .pa-competition-group-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px 20px;flex-wrap:wrap;margin:27px 0 12px;padding-bottom:8px;border-bottom:1px solid #dce5db}
+.pa-section-competition .pa-competition-group-head h3{margin:0;color:#284a37;font-size:16px;line-height:1.4}
+.pa-section-competition .pa-competition-group-head p{margin:0;color:#687b6d;font-size:12px;line-height:1.5}
+.pa-section-competition .pa-top-tables{grid-template-columns:minmax(0,1fr);gap:16px;margin-top:16px}
+.pa-section-competition .pa-dist-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,470px),1fr));align-items:start;gap:16px}
+.pa-section-competition .pa-dist,.pa-section-competition .pa-concentration{padding:16px 18px}
+.pa-section-competition .pa-dist-head h4,.pa-section-competition .pa-concentration h4{font-size:15px;line-height:1.4}
+.pa-section-competition .pa-dist-head>span,.pa-section-competition .pa-concentration header>span{color:#66796a;font-size:11px}
+.pa-section-competition .pa-concentration-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;margin:0}
+.pa-section-competition .pa-concentration-metrics>div{display:grid;gap:6px;min-width:0;padding:2px 12px;border-left:1px solid #e2e9df}
+.pa-section-competition .pa-concentration-metrics>div:first-child{padding-left:0;border-left:0}
+.pa-section-competition .pa-concentration-metrics dt{color:#647a69;font-size:12px;line-height:1.4}
+.pa-section-competition .pa-concentration-metrics dd{margin:0;color:#27573b;font-size:21px;font-weight:650;font-variant-numeric:tabular-nums}
+.pa-section-competition .pa-competition-table{max-width:100%;margin-top:12px;scrollbar-width:thin;scrollbar-color:#829d84 #ecf1e9}
+.pa-section-competition .pa-competition-table:focus-visible{outline:3px solid #a86d32;outline-offset:2px}
+.pa-section-competition .pa-competition-table table{min-width:720px;font-size:12px}
+.pa-section-competition .pa-competition-table th,.pa-section-competition .pa-competition-table td{padding:10px 12px}
+.pa-section-competition .pa-competition-table th{color:#536d59;font-size:11px;font-weight:700}
+.pa-section-competition .pa-competition-table td{color:#344b3c;font-variant-numeric:tabular-nums}
+.pa-section-competition .pa-competition-table tbody tr:hover{background:#eef4ea}
+.pa-section-competition .pa-competition-table th:not(:first-child),.pa-section-competition .pa-competition-table td:not(:first-child){text-align:right}
+.pa-section-competition .pa-competition-table th:first-child,.pa-section-competition .pa-competition-table td:first-child{text-align:left}
+.pa-section-competition .pa-top-asin .pa-competition-table th:nth-child(-n+3),.pa-section-competition .pa-top-asin .pa-competition-table td:nth-child(-n+3){text-align:left}
+.pa-section-competition .pa-top-asin .pa-competition-table table{min-width:680px}
+.pa-section-competition .pa-top-asin .pa-rank{color:#738575;font-weight:700}
+.pa-section-competition .pa-top-asin .pa-asin-id{font-weight:650;letter-spacing:.01em}
+.pa-section-competition .pa-top-asin .pa-thumb{width:42px;height:42px}
+.pa-section-competition .pa-brand-list{gap:0}
+.pa-section-competition .pa-brand-columns,.pa-section-competition .pa-brand-summary{display:grid;grid-template-columns:minmax(150px,2fr) repeat(3,minmax(90px,1fr)) minmax(64px,.6fr);align-items:center;gap:10px}
+.pa-section-competition .pa-brand-columns{padding:9px 12px;background:#f3f7f0;color:#58705d;font-size:11px;font-weight:700}
+.pa-section-competition .pa-brand-columns span:nth-child(n+2){text-align:right}
+.pa-section-competition .pa-brand-card{margin:0;padding:0;border-top:0;border-bottom:1px solid #e7ede5}
+.pa-section-competition .pa-brand-summary{padding:11px 12px;list-style:none;cursor:pointer;color:#355240;font-size:12px;font-variant-numeric:tabular-nums}
+.pa-section-competition .pa-brand-summary::-webkit-details-marker{display:none}
+.pa-section-competition .pa-brand-summary:hover{background:#f2f7ef}
+.pa-section-competition .pa-brand-summary:focus-visible{outline:3px solid #a86d32;outline-offset:-3px}
+.pa-section-competition .pa-brand-summary>span:nth-child(n+2){text-align:right}
+.pa-section-competition .pa-brand-name{display:flex;align-items:center;gap:12px;min-width:0}
+.pa-section-competition .pa-brand-name i{flex:none;color:#7d8d7c;font-size:11px;font-style:normal;font-weight:700}
+.pa-section-competition .pa-brand-name b{overflow-wrap:anywhere;color:#2e4938;font-size:13px}
+.pa-section-competition .pa-brand-image-count{color:#516f56}
+.pa-section-competition .pa-brand-image-count:after{content:'  ▾';display:inline-block;transition:transform .15s}
+.pa-section-competition .pa-brand-card[open] .pa-brand-image-count:after{transform:rotate(180deg)}
+.pa-section-competition .pa-brand-images{padding:12px 14px;background:#f7faf4}
+.pa-section-competition .pa-brand-image>small{font-size:10px}
+.pa-section-competition .pa-dist-legend{font-size:11px}
+.pa-section-competition .pa-bar-row{min-height:28px;font-size:12px}
+.pa-section-competition .pa-bar-row>b,.pa-section-competition .pa-bar-row>small{font-size:12px}
+.pa-section-competition .pa-missing{font-size:12px;line-height:1.5}
+.pa-section-competition .pa-method-note{font-size:12px}
+.pa-section-competition .pa-dist-table-wrap{max-width:100%;overflow-x:auto;scrollbar-width:thin;scrollbar-color:#829d84 #ecf1e9}
+.pa-section-competition .pa-dist-table-wrap:focus-visible{outline:3px solid #a86d32;outline-offset:2px}
+.pa-section-competition .pa-dist-table{width:100%;min-width:450px;table-layout:fixed;border-collapse:collapse;font-size:14px;font-variant-numeric:tabular-nums}
+.pa-section-competition .pa-dist-table tr>*:first-child{width:24%;text-align:left}
+.pa-section-competition .pa-dist-table tr>*:nth-child(2){width:44%;text-align:right}
+.pa-section-competition .pa-dist-table tr>*:nth-child(3),.pa-section-competition .pa-dist-table tr>*:nth-child(4){width:16%;text-align:right}
+.pa-section-competition .pa-dist-table th,.pa-section-competition .pa-dist-table td{padding:10px 8px;border-bottom:1px solid #edf0e9;white-space:normal;line-height:1.4}
+.pa-section-competition .pa-dist-table thead th{color:#536d59;background:#f3f7f0;font-size:13px;font-weight:700}
+.pa-section-competition .pa-dist-table tbody th{color:#405a49;font-size:14px;font-weight:500;overflow-wrap:anywhere}
+.pa-section-competition .pa-dist-table tbody td{color:#3d5944;font-size:14px}
+.pa-section-competition .pa-dist-table tbody tr:last-child>*{border-bottom:0}
+.pa-section-competition .pa-dist-table tbody tr:hover{background:#f5f8f2}
+.pa-section-competition .pa-share-cell{display:grid;grid-template-columns:minmax(40px,1fr) 62px;align-items:center;gap:12px}
+.pa-section-competition .pa-share-cell .pa-bar-track{display:block;min-width:0;width:100%;height:8px}
+.pa-section-competition .pa-share-cell strong{text-align:right;color:#245a3c;font-size:14px;font-weight:700}
+.pa-section-competition .pa-price-dist>.pa-dist{padding:0;border:0;background:transparent}
+.pa-section-competition .pa-price-dist>.pa-dist>.pa-dist-head{display:none}
+.pa-section-competition .pa-price-dist>.pa-dist .pa-dist-table-wrap{margin-top:0}
+@media(max-width:1100px){.pa-section-competition .pa-concentration-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:720px){
+ .pa-section-competition .pa-dist,.pa-section-competition .pa-concentration{padding:14px}
+ .pa-section-competition .pa-concentration-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 0}
+ .pa-section-competition .pa-concentration-metrics>div:nth-child(odd){padding-left:0;border-left:0}
+ .pa-section-competition .pa-brand-columns{display:none}
+ .pa-section-competition .pa-brand-summary{grid-template-columns:repeat(3,minmax(0,1fr));grid-template-areas:'name name images' 'units unitshare revenue';gap:7px 10px;padding:12px 6px}
+ .pa-section-competition .pa-brand-summary>span:first-child{grid-area:name}
+ .pa-section-competition .pa-brand-summary>span:nth-child(2){grid-area:units}
+ .pa-section-competition .pa-brand-summary>span:nth-child(3){grid-area:unitshare}
+ .pa-section-competition .pa-brand-summary>span:nth-child(4){grid-area:revenue}
+ .pa-section-competition .pa-brand-summary>span:nth-child(5){grid-area:images;text-align:right}
+ .pa-section-competition .pa-brand-summary>span:nth-child(2),.pa-section-competition .pa-brand-summary>span:nth-child(3),.pa-section-competition .pa-brand-summary>span:nth-child(4){text-align:left}
+ .pa-section-competition .pa-brand-summary>span:nth-child(2):before,.pa-section-competition .pa-brand-summary>span:nth-child(3):before,.pa-section-competition .pa-brand-summary>span:nth-child(4):before{display:block;margin-bottom:2px;color:#718473;font-size:10px}
+ .pa-section-competition .pa-brand-summary>span:nth-child(2):before{content:'销量（件）'}
+ .pa-section-competition .pa-brand-summary>span:nth-child(3):before{content:'销量占比'}
+ .pa-section-competition .pa-brand-summary>span:nth-child(4):before{content:'销售额占比'}
+ .pa-section-competition .pa-brand-name{gap:5px}
+ .pa-section-competition .pa-brand-name b{font-size:12px}
+ .pa-section-competition .pa-dist-table{min-width:450px}
+ .pa-section-competition .pa-top-asin:after{content:'表格可横向滚动 →';display:block;margin-top:8px;color:#687d6d;font-size:11px}
+}

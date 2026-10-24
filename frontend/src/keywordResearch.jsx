@@ -142,6 +142,8 @@ export function KeywordResearch({api,selectedRunId='',onSelectRun=()=>{},onSetti
     return()=>{cancelled=true};
   },[]);
 
+  useEffect(()=>{let cancelled=false;const refreshProjects=()=>api('/api/projects',undefined,'GET').then(value=>{if(!cancelled)setProjects(Array.isArray(value)?value:[])}).catch(()=>{});window.addEventListener('gewu-projects-changed',refreshProjects);return()=>{cancelled=true;window.removeEventListener('gewu-projects-changed',refreshProjects)}},[api]);
+
   const refreshRecent=(next='',append=false)=>api(`${ENDPOINTS.runs()}?limit=50${next?'&cursor='+encodeURIComponent(next):''}${showHidden?'&hidden=true':''}`,undefined,'GET')
     .then(data=>{const runs=data.runs||[];setRecent(current=>append?[...new Map([...current,...runs].map(item=>[item.run_id||item.id,item])).values()]:runs);setNextCursor(data.next_cursor||null);return runs})
     .catch(error=>{setErrors([error.message]);return null});

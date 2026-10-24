@@ -21,7 +21,7 @@ def build_info():
         return result
     digest = hashlib.sha256()
     files = [ROOT / 'VERSION.json', ROOT / 'requirements.txt']
-    for folder in ('backend', 'frontend/src', 'skills/product-tagging'):
+    for folder in ('backend', 'frontend/src', 'skills/product-tagging', 'skills/product-archive-research'):
         files.extend(p for p in (ROOT / folder).rglob('*') if p.is_file() and '__pycache__' not in p.parts)
     for p in sorted(files):
         digest.update(p.relative_to(ROOT).as_posix().encode())

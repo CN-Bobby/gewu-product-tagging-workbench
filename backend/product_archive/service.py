@@ -18,6 +18,7 @@ from .fields import FIELD_ROLES, OVERVIEW_FIELDS, default_mapping
 
 ROOT = STORAGE / "product-archive"
 ARCHIVES = ROOT / "archives"
+OVERVIEW_MODULE_FIELDS = set(OVERVIEW_FIELDS) | {"usage_scenarios"}
 MARKET_RE = re.compile(r"^[A-Z]{2,3}$")
 MONTH_RE = re.compile(r"^\d{4}[-/]?(0[1-9]|1[0-2])$")
 ASIN_VALUE_RE = re.compile(r"^B[0-9A-Z]{9}$", re.IGNORECASE)
@@ -244,6 +245,7 @@ def create(dataset_id: str, marketplace: str, category: str = "", data_month: st
         "workspace_id": dataset.get("workspace_id"),
         "overview": {"product_name": "", "representative_keywords": "", "product_function": "",
                      "target_audience": "", "cultural_context": "", "seasonality": ""},
+        "overview_modules": [],
         "mapping": default_mapping(dataset.get("headers"), dataset.get("mapping")),
         "mapping_confirmed": False,
         "source_snapshot": {"dataset_sha256": dataset.get("sha256"), "rows_sha256": _source_digest(dataset, rows),
@@ -323,6 +325,7 @@ def _check_snapshot(record: dict, dataset: dict, rows: list[dict]) -> None:
 def get(archive_id: str, filters: dict | None = None) -> dict:
     record = _read(archive_id)
     record.setdefault("overview_suggestions", {})
+    record.setdefault("overview_modules", [])
     dataset, source_rows = _source(record["dataset_id"])
     if record.get("mapping_confirmed"):
         _check_snapshot(record, dataset, source_rows)
@@ -374,11 +377,123 @@ def list_archives() -> list[dict]:
     return result
 
 
+def _validate_market_analysis(value: object) -> dict:
+    if isinstance(value, dict) and value.get("schema_version") == 3:
+        from .market_analysis_v3 import validate
+        return validate(value)
+    if not isinstance(value, dict) or value.get("schema_version") != 2:
+        raise ValueError("market_analysis 必须使用 schema_version 2 或 3")
+    overview = value.get("overview")
+    forms = value.get("product_forms")
+    contexts = value.get("demand_contexts")
+    cross = value.get("cross_cutting")
+    needs = value.get("needs_validation")
+    if not isinstance(overview, dict) or not isinstance(forms, list) or not isinstance(contexts, list) or not isinstance(cross, list) or not isinstance(needs, list):
+        raise ValueError("market_analysis 缺少必需结构")
+    if len(forms)>30 or len(contexts)>50 or len(cross)>50 or len(needs)>50 or len(json.dumps(value,ensure_ascii=False))>1_000_000:
+        raise ValueError("market_analysis 超过内容限制")
+    def ids(items, label):
+        result=set()
+        for item in items:
+            if not isinstance(item,dict) or not isinstance(item.get("id"),str) or not item["id"].strip() or item["id"] in result:
+                raise ValueError(f"{label} 编号无效或重复")
+            result.add(item["id"])
+        return result
+    form_ids=ids(forms,"商品形态"); context_ids=ids(contexts,"需求情境")
+    if not isinstance(overview.get("text"),str) or not overview["text"].strip(): raise ValueError("market_analysis 品类总述不能为空")
+    def evidence_refs(item, label):
+        refs=item.get("evidence_refs")
+        if not isinstance(refs,list) or any(not isinstance(ref,str) or not ref.strip() for ref in refs):
+            raise ValueError(f"{label} evidence_refs 必须是资料编号字符串数组")
+        if item.get("classification") not in {"supported","hypothesis"}:
+            raise ValueError(f"{label} classification 必须是 supported 或 hypothesis")
+        if item.get("basis") not in {"observation","synthesis","inference"}:
+            raise ValueError(f"{label} basis 无效")
+    evidence_refs(overview,"品类总述")
+    for form in forms:
+        if not isinstance(form.get("name"),str) or not isinstance(form.get("description"),str): raise ValueError("商品形态必须包含名称和说明")
+        evidence_refs(form,"商品形态")
+    for context in contexts:
+        links=context.get("product_form_ids")
+        if not isinstance(links,list) or any(x not in form_ids for x in links):
+            raise ValueError("需求情境只能关联存在的商品形态；空关联表示尚未归类")
+        evidence_refs(context,"需求情境")
+    cross_ids=set()
+    for item in cross:
+        if not isinstance(item,dict): raise ValueError("横向发现格式无效")
+        if not isinstance(item.get("id"),str) or not item["id"].strip() or item["id"] in cross_ids:
+            raise ValueError("横向发现编号无效或重复")
+        cross_ids.add(item["id"])
+        form_links=item.get("product_form_ids",[]); context_links=item.get("context_ids",[])
+        if not isinstance(form_links,list) or not isinstance(context_links,list) or any(x not in form_ids for x in form_links) or any(x not in context_ids for x in context_links):
+            raise ValueError("横向发现引用了不存在的商品形态或需求情境")
+        evidence_refs(item,"横向发现")
+    need_ids=set()
+    for item in needs:
+        if not isinstance(item,dict): raise ValueError("待验证事项格式无效")
+        if not isinstance(item.get("id"),str) or not item["id"].strip() or item["id"] in need_ids:
+            raise ValueError("待验证事项编号无效或重复")
+        need_ids.add(item["id"])
+        form_links=item.get("product_form_ids",[]); context_links=item.get("context_ids",[])
+        if not isinstance(form_links,list) or not isinstance(context_links,list) or any(x not in form_ids for x in form_links) or any(x not in context_ids for x in context_links):
+            raise ValueError("待验证事项引用了不存在的商品形态或需求情境")
+    return value
+
+
 def update_overview(archive_id: str, body: dict) -> dict:
     record = _read(archive_id)
     expected = body.get("expected_updated_at")
     if expected is not None and str(expected) != str(record.get("updated_at") or ""):
         raise ValueError("档案内容已被其他操作更新，请刷新后重试")
+    if "market_analysis" in body:
+        record["market_analysis"] = _validate_market_analysis(body["market_analysis"])
+        source_run_id=body.get("market_analysis_run_id")
+        if source_run_id is not None and (not isinstance(source_run_id,str) or not source_run_id.strip()):
+            raise ValueError("market_analysis_run_id 必须是有效草稿编号")
+        if source_run_id is not None:
+            record["market_analysis_run_id"] = source_run_id
+    if "overview_modules" in body:
+        modules = body["overview_modules"]
+        if not isinstance(modules, list) or len(modules) > 100:
+            raise ValueError("概况模块必须是最多 100 项的数组")
+        module_ids = set()
+        item_ids = set()
+        for module in modules:
+            if not isinstance(module, dict):
+                raise ValueError("概况模块格式无效")
+            module_id = module.get("id")
+            field = module.get("field_key")
+            title = module.get("title")
+            items = module.get("items", [])
+            if not isinstance(module_id, str) or not module_id.strip() or len(module_id) > 200:
+                raise ValueError("概况模块需要有效的 id")
+            if module_id in module_ids:
+                raise ValueError("概况模块 id 不能重复")
+            module_ids.add(module_id)
+            if not isinstance(title, str) or len(title) > 200:
+                raise ValueError("概况模块标题最多 200 个字符")
+            if field is not None and (not isinstance(field, str) or field not in OVERVIEW_MODULE_FIELDS):
+                raise ValueError("概况模块 field_key 必须是已知字段或 null")
+            if field == "representative_keywords":
+                raise ValueError("代表关键词只能来自已完成的关键词调研任务")
+            if not isinstance(items, list) or len(items) > 500:
+                raise ValueError("概况模块内容必须是最多 500 项的数组")
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ValueError("概况模块内容格式无效")
+                item_id = item.get("id")
+                text = item.get("text")
+                if not isinstance(item_id, str) or not item_id.strip() or len(item_id) > 200:
+                    raise ValueError("概况模块内容需要有效的 id")
+                if item_id in item_ids:
+                    raise ValueError("概况模块内容 id 不能重复")
+                item_ids.add(item_id)
+                if not isinstance(text, str) or len(text) > 4000:
+                    raise ValueError("概况模块内容最多 4000 个字符")
+        if len(json.dumps(modules, ensure_ascii=False)) > 2_000_000:
+            raise ValueError("概况模块内容超过限制")
+        record["overview_modules"] = modules
+        record["overview_modules_initialized"] = True
     overview = record.setdefault("overview", {})
     sources = record.setdefault("overview_sources", {})
     suggestions = record.setdefault("overview_suggestions", {})
@@ -392,7 +507,7 @@ def update_overview(archive_id: str, body: dict) -> dict:
         raise ValueError("建议不能同时采纳和忽略")
     found = {}
     for field, items in suggestions.items():
-        if field not in OVERVIEW_FIELDS or not isinstance(items, list):
+        if field not in OVERVIEW_MODULE_FIELDS or not isinstance(items, list):
             continue
         for item in items:
             if isinstance(item, dict) and item.get("id") in set(accepted_ids) | set(ignored_ids):

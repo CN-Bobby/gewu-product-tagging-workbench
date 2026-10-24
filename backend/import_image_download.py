@@ -4,7 +4,9 @@ from __future__ import annotations
 import io
 import ipaddress
 import socket
+import time
 import warnings
+from contextlib import nullcontext
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -13,6 +15,7 @@ from PIL import Image, UnidentifiedImageError
 
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
 DEFAULT_TIMEOUT_SECONDS = 10.0
+IMAGE_DOWNLOAD_WORKERS = 6
 
 
 @dataclass(frozen=True)
@@ -91,8 +94,17 @@ def _validate_public_url(url: str) -> tuple[str, int]:
     return normalized_host, effective_port
 
 
+def image_client() -> httpx.Client:
+    """Reuse public-image connections for one bounded import job."""
+    return httpx.Client(timeout=httpx.Timeout(8.0, connect=4.0),
+                        limits=httpx.Limits(max_connections=IMAGE_DOWNLOAD_WORKERS,
+                                            max_keepalive_connections=IMAGE_DOWNLOAD_WORKERS),
+                        follow_redirects=False, trust_env=False)
+
+
 def download_image(url: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS,
-                   max_bytes: int = MAX_IMAGE_BYTES) -> ImageDownloadResult:
+                   max_bytes: int = MAX_IMAGE_BYTES,
+                   client: httpx.Client | None = None) -> ImageDownloadResult:
     """Download and decode one public image URL without following redirects.
 
     All failures are returned as ``ImageDownloadResult`` values so callers can
@@ -106,8 +118,9 @@ def download_image(url: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS,
         response_type = ""
         try:
             # Do not route through ambient proxies, and do not follow redirects.
-            with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
-                with client.stream("GET", url) as response:
+            with (nullcontext(client) if client is not None else
+                  httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False)) as session:
+                with session.stream("GET", url) as response:
                     if 300 <= response.status_code < 400:
                         raise _DownloadFailure("redirect_not_allowed", "图片地址返回了重定向，已拒绝")
                     if not 200 <= response.status_code < 300:
@@ -159,4 +172,15 @@ def download_image(url: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS,
     except Exception:
         # Unexpected per-URL failures must not abort processing the whole workbook.
         return ImageDownloadResult(error_code="download_error", error_message="图片下载失败")
+
+
+def download_with_retry(url: str, *, client: httpx.Client | None = None,
+                        delay: float = 0.2) -> ImageDownloadResult:
+    """Retry one transient network failure, never invalid or blocked URLs."""
+    result = download_image(url, client=client)
+    if result.error_code in {"timeout", "network_error"}:
+        if delay > 0:
+            time.sleep(delay)
+        result = download_image(url, client=client)
+    return result
 

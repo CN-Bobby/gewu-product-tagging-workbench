@@ -548,13 +548,16 @@ if ($Profile -eq 'DEV') {
     $record = New-RunRecord $Profile "http://127.0.0.1:$webPort" $dataPath $cachePath '' '' $root $processes
     Save-Record $record $recordPath
     $env:GEWU_DEV_API_URL = "http://127.0.0.1:$apiPort"
+    $apiReady = $false
+    for ($i=0; $i -lt 90; $i++) { if (Get-Health "http://127.0.0.1:$apiPort") { $apiReady = $true; break }; Start-Sleep -Milliseconds 500 }
+    if (-not $apiReady) { throw "DEV API did not become ready. Logs: $logRoot" }
     $web = Start-Process -FilePath $node -ArgumentList @($vite,'--host','127.0.0.1','--port',"$webPort") -WorkingDirectory (Join-Path $root 'frontend') -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logRoot 'web.out.log') -RedirectStandardError (Join-Path $logRoot 'web.err.log') -PassThru
     Add-ProcessRecord $processes 'web' $web $node 'vite.js'
     $record = New-RunRecord $Profile "http://127.0.0.1:$webPort" $dataPath $cachePath '' '' $root $processes
     Save-Record $record $recordPath
     $ready = $false
-    for ($i=0; $i -lt 90; $i++) { if ((Get-Health "http://127.0.0.1:$apiPort") -and (Get-PortOwner $webPort)) { $ready = $true; break }; Start-Sleep -Milliseconds 500 }
-    if (-not $ready) { throw "DEV did not become ready. Logs: $logRoot" }
+    for ($i=0; $i -lt 90; $i++) { if (Get-PortOwner $webPort) { $ready = $true; break }; Start-Sleep -Milliseconds 500 }
+    if (-not $ready) { throw "DEV frontend did not become ready. Logs: $logRoot" }
     $apiChild = Get-CimInstance Win32_Process | Where-Object {
         Test-ExpectedDevApiProcess $_ $python $apiPort $api.Id
     } | Select-Object -First 1

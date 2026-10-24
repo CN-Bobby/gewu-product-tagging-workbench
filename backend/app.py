@@ -547,6 +547,9 @@ def project_trash_list():return templates.trashed_projects()
 @app.post('/api/projects')
 def project_create(body:dict):return templates.create_project(body.get('name'))
 
+@app.patch('/api/projects/{wid}')
+def project_rename(wid:str,body:dict):return templates.rename_project(wid,(body or {}).get('name'))
+
 @app.delete('/api/projects/{wid}')
 def project_trash(wid:str):return templates.trash_project(wid)
 
@@ -677,6 +680,13 @@ async def images(dataset_id:str,files:list[UploadFile]=File(...)):
         if len(data)>25*1024*1024:raise ValueError('单张图片超过 25 MB')
         inputs.append((f.filename,data))
     return importer.attach_images(dataset_id,inputs)
+
+@app.post('/api/datasets/{dataset_id}/images/download')
+def download_dataset_images(dataset_id:str):
+    external_effects.assert_allowed('other_external_tasks')
+    task=text_facts.prepare_images(dataset_id)
+    if task['status']=='queued' and task['id'] not in batch.active:batch.launch(task['id'])
+    return task
 
 @app.get('/api/assets/{asset_id}')
 def asset(asset_id:str):

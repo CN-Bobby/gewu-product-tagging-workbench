@@ -35,6 +35,8 @@ def prepare(did,model=None):
     with draft.WRITE_LOCK,Session.begin() as s:
         require(s,Dataset,did)
         existing=s.scalars(select(BatchJob).where(BatchJob.dataset_id==did,BatchJob.status.in_(['queued','running','pausing','cancelling']))).all()
+        if any(j.spec.get('kind')=='image_download' for j in existing):
+            raise ValueError('图片下载任务仍在运行，请等待结束后再提取文字属性')
         existing=next((j for j in existing if j.spec.get('kind')=='text_facts'),None)
         if existing:return obj(existing)
         inputs={};expected={};jid=uid();image_assets={}
@@ -57,6 +59,60 @@ def prepare(did,model=None):
                      metrics={'attributes_expected':len(inputs),'attributes_completed':0,'images_expected':len(image_assets),
                               'images_completed':0,'images_failed':0,'images_pending':len(image_assets)})
         s.add(job);s.flush();draft.emit(s,did,'job',obj(job));return obj(job)
+
+
+def prepare_images(did):
+    """Queue only missing workbook URL images; never schedule text/model work."""
+    with draft.WRITE_LOCK,Session.begin() as s:
+        require(s,Dataset,did)
+        active=s.scalars(select(BatchJob).where(
+            BatchJob.dataset_id==did,
+            BatchJob.status.in_(['queued','running','pausing','cancelling']))).all()
+        for job in active:
+            if job.spec.get('kind')=='image_download':
+                return obj(job)
+            if job.spec.get('kind')=='text_facts' and job.spec.get('image_assets'):
+                raise ValueError('导入整理任务仍在处理图片，请等待任务结束后再下载缺失图片')
+        assets=s.scalars(select(Asset).join(Product,Asset.product_id==Product.id)
+                         .where(Product.dataset_id==did,Asset.url.is_not(None))).all()
+        pending={asset.id:{'product_id':asset.product_id,'url':asset.url}
+                 for asset in assets if not asset.path or not Path(asset.path).is_file()}
+        if not pending:
+            completed=s.scalars(select(BatchJob).where(BatchJob.dataset_id==did,BatchJob.status=='completed')
+                                .order_by(BatchJob.created_at.desc())).all()
+            followup=next((job.id for job in completed if job.spec.get('kind')=='image_download'),None)
+            _settle_old_image_failures(s,did,followup)
+            return {'id':None,'status':'completed','spec':{'kind':'image_download'},
+                    'metrics':{'images_expected':0,'images_completed':0,'images_failed':0}}
+        job=BatchJob(id=uid(),dataset_id=did,status='queued',
+                     spec={'kind':'image_download','columns':[],'expected':{},'inputs':{},
+                           'product_ids':[],'image_assets':pending},
+                     metrics={'images_expected':len(pending),'images_completed':0,
+                              'images_failed':0,'images_pending':len(pending),'requests':0})
+        s.add(job);s.flush();draft.emit(s,did,'job',obj(job));return obj(job)
+
+
+def _settle_old_image_failures(s,did,followup_job_id):
+    """Close historical image-only failures once every referenced file is present.
+
+    Keep the original errors and counts as an audit trail; the old run itself did fail.
+    """
+    prior=s.scalars(select(BatchJob).where(BatchJob.dataset_id==did,BatchJob.status=='partial')).all()
+    for job in prior:
+        spec=job.spec or {};assets=spec.get('image_assets') or {};errors=job.errors or {}
+        if spec.get('kind')!='text_facts' or not assets or not errors:
+            continue
+        if not all(key.startswith('image:') for key in errors):
+            continue
+        if not set(spec.get('expected') or {})<=set(job.completed or []):
+            continue
+        if not all((asset:=s.get(Asset,asset_id)) and asset.path and Path(asset.path).is_file()
+                   for asset_id in assets):
+            continue
+        job.status='resolved'
+        job.metrics={**(job.metrics or {}),'resolved_by_image_job_id':followup_job_id,
+                     'resolution':'后续图片下载已补齐；保留原任务失败记录'}
+        draft.emit(s,did,'job',obj(job))
 
 def records(did,offset=0,limit=50):
     with Session() as s:
@@ -276,9 +332,11 @@ def execute(jid):
         metrics['execution_build']=build_info()
         if not stop.is_set():job.status='running'
         draft.emit(s,did,'job',obj(job))
-    from .execution_contract import require_contract,check_models
-    contract=require_contract(spec)
-    check_models(spec)
+    image_only=spec.get('kind')=='image_download'
+    if not image_only:
+        from .execution_contract import require_contract,check_models
+        contract=require_contract(spec)
+        check_models(spec)
     def save(pid,value,cached=False,error=None):
         ts=time.perf_counter()
         with draft.WRITE_LOCK,Session.begin() as s:
@@ -356,7 +414,8 @@ def execute(jid):
             with mlock:metrics['application_cpu_seconds']+=time.thread_time()-t
     def download_asset(asset_id):
         from . import importer
-        from .import_image_download import download_image
+        from .import_image_download import download_with_retry
+        if stop.is_set():return
         with Session() as s:
             asset=s.get(Asset,asset_id)
             if not asset:return
@@ -364,7 +423,7 @@ def execute(jid):
             product=require(s,Product,product_id)
             row_label=f"第{product.row}行（{product.anchor}）"
         if current_path and Path(current_path).is_file():return
-        result=download_image(url or '')
+        result=download_with_retry(url or '',client=image_client)
         failure=result.error_message
         stored=None
         if result.ok:
@@ -389,14 +448,17 @@ def execute(jid):
                     metrics['images_pending']=max(0,len(spec.get('image_assets',{}))-metrics['images_completed'])
             job.errors=errors;job.metrics=dict(metrics);draft.emit(s,did,'job',obj(job))
     try:
-        ids=[pid for pid in spec['product_ids'] if pid not in done]
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            fs=[pool.submit(timed,ids[i:i+5]) for i in range(0,len(ids),5)]
-            for f in fs:f.result()
-        if not stop.is_set() and spec.get('image_assets'):
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                fs=[pool.submit(download_asset,asset_id) for asset_id in spec['image_assets']]
+        if not image_only:
+            ids=[pid for pid in spec['product_ids'] if pid not in done]
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                fs=[pool.submit(timed,ids[i:i+5]) for i in range(0,len(ids),5)]
                 for f in fs:f.result()
+        if not stop.is_set() and spec.get('image_assets'):
+            from .import_image_download import image_client as open_image_client, IMAGE_DOWNLOAD_WORKERS
+            with open_image_client() as image_client:
+                with ThreadPoolExecutor(max_workers=IMAGE_DOWNLOAD_WORKERS) as pool:
+                    fs=[pool.submit(download_asset,asset_id) for asset_id in spec['image_assets']]
+                    for f in fs:f.result()
             from . import project_files
             with Session() as s:
                 assets=s.execute(select(Asset).join(Product,Asset.product_id==Product.id)
@@ -415,6 +477,8 @@ def execute(jid):
             text_complete=set(spec['expected'])<=set(j.completed)
             j.status='cancelled' if j.status=='cancelling' else 'paused' if stop.is_set() else 'completed' if text_complete and all_images_saved and not image_errors else 'partial'
             metrics['wall_seconds']=prior_wall+time.perf_counter()-start;metrics['last_attempt_seconds']=time.perf_counter()-start;metrics['application_cpu_seconds']+=time.thread_time()-cpu;j.metrics=metrics;draft.emit(s,did,'job',obj(j))
+            if image_only and j.status=='completed':
+                _settle_old_image_failures(s,did,jid)
     finally:
         with batch.guard:batch.active.pop(jid,None)
 

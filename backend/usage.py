@@ -112,6 +112,7 @@ def normalize_provider_usage(usage: object) -> dict:
         input_details = {}
     cache_hit = _first_number(
         usage.get("prompt_cache_hit_tokens"), usage.get("cached_tokens"),
+        usage.get("cache_read_input_tokens"),
         prompt_details.get("cached_tokens"), prompt_details.get("cache_read_input_tokens"),
         input_details.get("cached_tokens"), input_details.get("cache_read_input_tokens"),
     )
@@ -331,8 +332,14 @@ def finish_usage_event(event_id: str | None, *, status: str,
             row.usage_source = usage_source or row.usage_source
             row.metadata_json = _safe_metadata({**(row.metadata_json or {}), **(metadata or {})})
             if row.kind == "agent_turn":
-                row.usage_quality = "unknown"
-                row.usage_source = usage_source or "agent_provider_usage_unavailable"
+                for field in ("input_tokens", "output_tokens", "cache_hit_tokens",
+                              "cache_miss_tokens", "cache_creation_tokens"):
+                    if field in normalized:
+                        setattr(row, field, normalized[field])
+                measured = "input_tokens" in normalized or "output_tokens" in normalized
+                row.usage_quality = "measured" if measured else "unknown"
+                row.usage_source = usage_source or (
+                    "agent_reported_aggregate" if measured else "agent_provider_usage_unavailable")
                 return
             if row.kind != "model":
                 row.usage_quality = "not_applicable"
@@ -505,6 +512,11 @@ def _add_event(aggregate: dict, event: UsageEvent) -> None:
             aggregate["mcp_failures"] += 1
     elif event.kind == "agent_turn":
         aggregate["agent_turns"] += 1
+        aggregate["input_tokens"] += event.input_tokens or 0
+        aggregate["output_tokens"] += event.output_tokens or 0
+        aggregate["cache_hit_tokens"] += event.cache_hit_tokens or 0
+        aggregate["cache_miss_tokens"] += event.cache_miss_tokens or 0
+        aggregate["cache_creation_tokens"] += event.cache_creation_tokens or 0
     elif event.kind == "local_cache":
         if event.status == "hit":
             aggregate["local_result_cache_hits"] += 1

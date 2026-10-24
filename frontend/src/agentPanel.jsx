@@ -84,7 +84,7 @@ function InteractionCard({item,busy,onAnswer,onSkip}){
   </section>;
 }
 
-export function AgentPanel({did}){
+export function AgentPanel({did,proposalInbox}){
   const[state,dispatch]=useReducer(agentReducer,initialAgentState);
   const[draft,setDraft]=useState('');
   const[busy,setBusy]=useState('');
@@ -221,6 +221,8 @@ export function AgentPanel({did}){
         <p>启动后会建立一个新的 Agent 会话；回复、工具调用和提问都会实时出现在这里。</p></div>}
       <div ref={end}/>
     </div>
+
+    {proposalInbox&&<div className="agent-proposal-inbox">{proposalInbox}</div>}
 
     {waiting.map(item=><InteractionCard key={item.interactionId} item={item} busy={busy===item.interactionId}
       onAnswer={settle} onSkip={skip}/>)}

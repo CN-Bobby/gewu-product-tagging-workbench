@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Download, FileSpreadsheet, FileText, FolderOpen, RefreshCw, Search, Upload, RotateCcw, Pencil, Trash2, FolderInput, X } from 'lucide-react';
+import { Download, FileSpreadsheet, FileText, FolderOpen, RefreshCw, Search, Upload, RotateCcw, Pencil, Trash2, FolderInput, X, Plus } from 'lucide-react';
 import { artifactDownloadUrl, artifactSourceIdentity, artifactTaskHref, filterProjectArtifacts, formatArtifactDate, formatFileSize, normalizeProjectLibrary } from './projectFilesState';
 import { ProjectPreview } from './projectPreview';
+import { ProjectNameDialog } from './projectNameDialog';
 import './projectManager.css';
 
 const kinds = [['source','来源文件'],['data_x','数据'],['reviews','评论'],['voc','VOC'],['keywords','关键词'],['other','其他']];
@@ -21,8 +22,10 @@ export function ProjectManager({ api, route = {}, navigate = () => {} }) {
   const [loading, setLoading] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState(''), [reload, setReload] = useState(0);
   const [selectedIds, setSelectedIds] = useState([]), [showTrash, setShowTrash] = useState(false), [editItem, setEditItem] = useState(null), [editName, setEditName] = useState(''), [editKind, setEditKind] = useState('other'), [targetWorkspace, setTargetWorkspace] = useState('');
   const [busy, setBusy] = useState(false), [uploadKind, setUploadKind] = useState('source');
+  const [nameDialog, setNameDialog] = useState('');
   const uploadRef = useRef(null);
 
+  useEffect(() => { const refreshProjects = () => setReload(value => value + 1); window.addEventListener('gewu-projects-changed', refreshProjects); return () => window.removeEventListener('gewu-projects-changed', refreshProjects); }, []);
   useEffect(() => { let live = true; api('/api/projects', undefined, 'GET').then(rows => live && setProjects(Array.isArray(rows) ? rows : [])).catch(value => live && setError(value.message)); return () => { live = false; }; }, [api, reload]);
   useEffect(() => {
     if (!workspaceId) { setLibrary(null); setTrash([]); setSelectedIds([]); return undefined; }
@@ -103,9 +106,9 @@ export function ProjectManager({ api, route = {}, navigate = () => {} }) {
   };
 
   return <main className="project-manager">
-    <header className="pm-heading"><div><div className="eyebrow">PROJECT LIBRARY</div><h1>{project?.name || '项目资料'}</h1><p>浏览、整理项目文件，并从来源记录跳转回生成任务。</p></div><div className="pm-heading-actions"><button type="button" onClick={() => { setShowTrash(value => !value); setSelectedIds([]); }} className={inTrash ? 'is-active' : ''}>{inTrash ? '返回项目文件' : `回收站 ${trash.length ? `(${trash.length})` : ''}`}</button><button type="button" onClick={refresh} disabled={loading}><RefreshCw size={15}/>刷新</button></div></header>
+    <header className="pm-heading"><div><div className="eyebrow">PROJECT LIBRARY</div><h1>{project?.name || '项目资料'}</h1><p>浏览、整理项目文件，并从来源记录跳转回生成任务。</p></div><div className="pm-heading-actions"><button type="button" onClick={() => setNameDialog('create')} disabled={busy}><Plus size={14}/>新建项目</button>{project && <button type="button" onClick={() => setNameDialog('rename')} disabled={busy}><Pencil size={14}/>重命名项目</button>}<button type="button" onClick={() => { setShowTrash(value => !value); setSelectedIds([]); }} className={inTrash ? 'is-active' : ''}>{inTrash ? '返回项目文件' : `回收站 ${trash.length ? `(${trash.length})` : ''}`}</button><button type="button" onClick={refresh} disabled={loading}><RefreshCw size={15}/>刷新</button></div></header>
     {error && <div className="pm-error" role="alert">{error}<button aria-label="关闭错误" onClick={() => setError('')}><X size={14}/></button></div>}{notice && <div className="pm-notice">{notice}<button aria-label="关闭提示" onClick={() => setNotice('')}><X size={14}/></button></div>}
-    {!workspaceId ? <section className="pm-empty home-card"><FolderOpen size={30}/><h2>选择一个项目</h2><p>从左侧项目树选择项目或文件夹。</p></section> : <div className="pm-library-layout">
+    {!workspaceId ? <section className="pm-empty home-card"><FolderOpen size={30}/><h2>选择一个项目</h2><p>从左侧项目树选择项目，或直接新建并命名项目。</p><button type="button" className="primary" onClick={() => setNameDialog('create')}><Plus size={15}/>新建项目</button></section> : <div className="pm-library-layout">
       <section className="pm-file-browser home-card">
         <div className="pm-browser-head"><div><small>{inTrash ? '可恢复的已删除文件' : selectedFolder?.label || '项目文件'}</small><h2>{loading ? '正在加载…' : `${visible.length} 个文件`}</h2></div><label className="pm-sort">排序<select aria-label="文件排序" value={order} onChange={event => setOrder(event.target.value)}><option value="newest">最新优先</option><option value="oldest">最早优先</option><option value="name">文件名</option></select></label></div>
         <div className="pm-toolbar"><label className="pm-search"><Search size={15}/><input aria-label="搜索项目文件" placeholder="搜索文件名或来源" value={query} onChange={event => setQuery(event.target.value)}/></label><label className="pm-kind-filter"><span>分类</span><select aria-label="文件分类筛选" value={kindFilter} onChange={event => setKindFilter(event.target.value)}><option value="all">全部</option>{kinds.map(([kind,label]) => <option key={kind} value={kind}>{label}</option>)}</select></label><label className="pm-upload-kind"><span>上传分类</span><select aria-label="上传文件分类" value={uploadKind} onChange={event => setUploadKind(event.target.value)}>{kinds.map(([kind,label]) => <option key={kind} value={kind}>{label}</option>)}</select></label><input ref={uploadRef} type="file" accept=".xlsx,.html" hidden onChange={onUpload}/><button type="button" className="pm-upload" disabled={busy} onClick={() => uploadRef.current?.click()}><Upload size={14}/>上传文件</button></div>
@@ -129,5 +132,6 @@ export function ProjectManager({ api, route = {}, navigate = () => {} }) {
       </section>
     </div>}
     {editItem && <div className="pm-modal-backdrop"><form className="pm-edit-modal" onSubmit={submitEdit}><header><b>整理文件</b><button type="button" aria-label="关闭" onClick={() => setEditItem(null)}><X size={16}/></button></header><label>文件名<input autoFocus value={editName} onChange={event => setEditName(event.target.value)} required maxLength={255}/></label><label>分类<select value={editKind} onChange={event => setEditKind(event.target.value)}>{kinds.map(([kind,label]) => <option key={kind} value={kind}>{label}</option>)}</select></label><label>所属项目<select value={targetWorkspace} onChange={event => setTargetWorkspace(event.target.value)}>{projects.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><footer><button type="button" onClick={() => setEditItem(null)}>取消</button><button className="primary" disabled={busy || !editName.trim()}>{busy ? '保存中…' : '保存'}</button></footer></form></div>}
+    {nameDialog && <ProjectNameDialog api={api} project={nameDialog === 'rename' ? project : null} onClose={() => setNameDialog('')} onSaved={(saved, renamed) => { setNotice(renamed ? `项目名称已更新为“${saved.name}”。` : `项目“${saved.name}”已创建。`); window.dispatchEvent(new Event('gewu-projects-changed')); if (!renamed) navigate(`projects/${saved.id}`); }}/>}
   </main>;
 }

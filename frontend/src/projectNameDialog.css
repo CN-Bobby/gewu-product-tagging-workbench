@@ -1,0 +1,13 @@
+.project-name-backdrop{position:fixed;z-index:85;inset:0;display:grid;place-items:center;padding:18px;background:#24352855;backdrop-filter:blur(2px)}
+.project-name-dialog{width:min(420px,100%);display:grid;gap:13px;padding:18px;border:1px solid #dbe4d5;border-radius:10px;background:#fcfdf8;box-shadow:0 16px 50px #24352830;color:#3d5945}
+.project-name-dialog header,.project-name-dialog footer{display:flex;align-items:center;justify-content:space-between;gap:9px}
+.project-name-dialog header{padding-bottom:8px;border-bottom:1px solid #e6ebe2}
+.project-name-dialog header button{padding:4px;border:0;background:transparent;color:#718070}
+.project-name-dialog p{margin:0;color:#697968;font-size:11px;line-height:1.6}
+.project-name-dialog label{display:grid;gap:5px;color:#758374;font-size:10px}
+.project-name-dialog input{width:100%;padding:8px 9px;font-size:12px}
+.project-name-dialog footer{justify-content:flex-end;padding-top:7px}
+.project-name-dialog footer button{font-size:10px}
+.project-name-dialog footer .primary{border-color:#517b59;background:#517b59;color:#fff}
+.project-name-dialog button:disabled{opacity:.55}
+.project-name-error{padding:7px 9px;border-radius:5px;background:#fff0e9;color:#9b4b35;font-size:10px}

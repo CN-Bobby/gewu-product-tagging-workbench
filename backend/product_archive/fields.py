@@ -8,7 +8,7 @@ FIELD_ROLES = {
     "monthly_sales": {"label": "月销量", "aliases": ["月销量", "预估月销量", "Monthly Sales", "Sales", "销量"]},
     "revenue": {"label": "销售额", "aliases": ["月销售额", "销售额", "Revenue", "Monthly Revenue", "Sales Revenue"]},
     "price": {"label": "价格", "aliases": ["价格", "价格($)", "Price", "售价"]},
-    "seller_country": {"label": "卖家国家/地区", "aliases": ["卖家国家", "卖家国家/地区", "卖家所在地", "Seller Country", "Seller Location"]},
+    "seller_country": {"label": "卖家国家/地区", "aliases": ["卖家国家", "卖家国家/地区", "卖家所在地", "卖家所属地", "Seller Country", "Seller Location"]},
     "fulfillment": {"label": "配送方式", "aliases": ["配送方式", "配送类型", "履约方式", "Fulfillment", "Fulfillment Type"]},
     "review_count": {"label": "评分数", "aliases": ["评分数", "评论数", "Review Count", "Reviews"]},
     "rating": {"label": "评分星级", "aliases": ["评分", "星级", "Rating", "Star Rating"]},
@@ -20,6 +20,7 @@ OVERVIEW_FIELDS = {
     "representative_keywords": "代表关键词",
     "product_function": "产品功能",
     "target_audience": "人群受众",
+    "buying_motives": "需求与动机",
     "cultural_context": "文化背景",
     "seasonality": "季节性",
 }

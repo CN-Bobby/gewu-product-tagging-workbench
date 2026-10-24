@@ -18,6 +18,12 @@
 /* Agent panel: reuses the message and composer styles above so the two panels stay consistent.
    Only the session/turn status line is new, and it reports two separate facts. */
 .agent-panel{display:flex;flex-direction:column;flex:1;min-height:0}
+.agent-proposal-inbox{flex:0 1 auto;min-height:0;max-height:50vh;overflow:auto;padding:8px 16px;border-top:1px solid #dce5d8;background:#f1f6ed}
+.agent-proposal-inbox .proposal-inbox{display:block;margin:0;padding:0;border:0;background:transparent}
+.agent-proposal-inbox .proposal-inbox-heading{margin:0 0 8px}
+.agent-proposal-inbox .proposal-inbox-body{display:grid}
+.agent-proposal-inbox .proposal{margin:0;overflow-wrap:anywhere}
+.agent-proposal-inbox .proposal .button-row{flex-wrap:wrap}
 .agent-status{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;padding:9px 16px;border-bottom:1px solid #e3e8df;background:#f4f7f0;font-size:10px;color:#6f8070}
 .agent-status span{white-space:nowrap}
 .agent-status button{margin-left:auto;font-size:10px;padding:5px 9px}

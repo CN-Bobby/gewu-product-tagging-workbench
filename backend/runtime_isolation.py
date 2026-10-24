@@ -28,6 +28,16 @@ def clear_ephemeral_credentials():
             _EPHEMERAL_SECRET_FILES.discard(raw_path)
 
 
+def clear_ephemeral_credential(home):
+    """Remove the selected-key file owned by one completed Reasonix runtime."""
+    path = str((Path(home).resolve() / '.env'))
+    if path in _EPHEMERAL_SECRET_FILES:
+        try:
+            Path(path).unlink(missing_ok=True)
+        finally:
+            _EPHEMERAL_SECRET_FILES.discard(path)
+
+
 def provider_home():
     return Path(os.environ.get('TAG_PROVIDER_HOME') or os.environ.get('REASONIX_HOME') or
                 str(Path(os.environ.get('APPDATA', str(Path.home()/'.config')))/'reasonix')).resolve()

@@ -110,7 +110,7 @@ def test_customer_artifact_names_are_version_only():
 
 def test_dev_build_directory_name_covers_every_worktree_change(tmp_path):
     # build_info()['source_sha256'] covers VERSION.json, requirements.txt, backend/, frontend/src/
-    # and skills/product-tagging/ only. A tree whose sole change is scripts/desktop_bootstrap.py
+    # and the shipped Product Tagging and Product Archive Research Skills. A tree whose sole change is scripts/desktop_bootstrap.py
     # (which does ship in the app) or frontend/package.json used to get the same build directory
     # name as the previous build, making the next build a refused overwrite instead of a new build.
     # The dev directory name must therefore be derived from the whole worktree.
@@ -143,3 +143,35 @@ def test_dev_build_directory_name_covers_every_worktree_change(tmp_path):
     assert "worktree_sha256=worktree_digest()" in source
     assert "'-dirty.'+worktree_sha256[:8]" in source
     assert "build_info()['source_sha256'][:8]" not in source
+
+
+def test_product_archive_research_skill_is_packaged_and_fingerprinted(tmp_path,monkeypatch):
+    import ast
+    from backend import build_info as module
+
+    root=Path(__file__).resolve().parents[1]
+    build_source=(root/'scripts'/'build_windows.py').read_text(encoding='utf-8')
+    build_tree=ast.parse(build_source)
+    copy_loop=next(node for node in build_tree.body if isinstance(node,ast.For) and
+                   isinstance(node.target,ast.Name) and node.target.id=='directory' and
+                   isinstance(node.iter,ast.Tuple) and
+                   any(isinstance(item,ast.Constant) and item.value=='skills/product-tagging'
+                       for item in node.iter.elts))
+    copied_directories={ast.literal_eval(item) for item in copy_loop.iter.elts}
+    assert 'skills/product-archive-research' in copied_directories
+
+    (tmp_path/'VERSION.json').write_text(json.dumps({'version':VERSION}),encoding='utf-8')
+    (tmp_path/'requirements.txt').write_text('runtime dependency\n',encoding='utf-8')
+    for folder in ('backend','frontend/src','skills/product-tagging','skills/product-archive-research'):
+        (tmp_path/folder).mkdir(parents=True)
+    skill=tmp_path/'skills'/'product-archive-research'/'SKILL.md'
+    skill.write_text('runtime skill version one\n',encoding='utf-8')
+
+    monkeypatch.setattr(module,'ROOT',tmp_path)
+    module.build_info.cache_clear()
+    first=module.build_info()['source_sha256']
+    skill.write_text('runtime skill version two\n',encoding='utf-8')
+    module.build_info.cache_clear()
+    second=module.build_info()['source_sha256']
+    module.build_info.cache_clear()
+    assert second!=first, 'changing the packaged Product Archive Skill must change source_sha256'

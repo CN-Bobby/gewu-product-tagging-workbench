@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, Download, Eye, FileText, Folder, FolderOpen, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RotateCcw, Trash2, Upload, X } from 'lucide-react';
 import { artifactDownloadUrl, latestProjectArtifacts, normalizeProjectLibrary } from './projectFilesState';
+import { ProjectNameDialog } from './projectNameDialog';
 import './projectSidebar.css';
 
 const fileKinds = [
@@ -43,6 +44,7 @@ export function ProjectSidebar({ api, route, navigate, currentWorkspaceId = '' }
   const [targetWorkspace, setTargetWorkspace] = useState('');
   const [confirmItem, setConfirmItem] = useState(null);
   const [confirmProject, setConfirmProject] = useState(null);
+  const [renameProject, setRenameProject] = useState(null);
   const [confirmError, setConfirmError] = useState('');
   const [uploadTarget, setUploadTarget] = useState(null);
   const [uploading, setUploading] = useState(false);
@@ -92,6 +94,11 @@ export function ProjectSidebar({ api, route, navigate, currentWorkspaceId = '' }
   }, []);
 
   const refreshTree = () => setReload(value => value + 1);
+  useEffect(() => {
+    const refresh = () => setReload(value => value + 1);
+    window.addEventListener('gewu-projects-changed', refresh);
+    return () => window.removeEventListener('gewu-projects-changed', refresh);
+  }, []);
   const create = async event => {
     event.preventDefault();
     if (!newName.trim() || busy) return;
@@ -99,8 +106,8 @@ export function ProjectSidebar({ api, route, navigate, currentWorkspaceId = '' }
     try {
       const project = await api('/api/projects', { name: newName.trim() });
       setNewName(''); setExpanded(value => ({ ...value, [project.id]: true }));
+      window.dispatchEvent(new Event('gewu-projects-changed'));
       navigate(`projects/${project.id}`);
-      refreshTree();
     } catch (value) { setError(value.message); }
     finally { setBusy(false); }
   };
@@ -201,6 +208,7 @@ export function ProjectSidebar({ api, route, navigate, currentWorkspaceId = '' }
         <div className={`ps-project-row ${activeId === project.id ? 'active' : ''}`}>
           <button type="button" className="ps-tree-toggle" aria-label={`${expanded[project.id] ? '折叠' : '展开'}项目 ${project.name}`} aria-expanded={!!expanded[project.id]} onClick={() => setExpanded(value => ({ ...value, [project.id]: !value[project.id] }))}>{expanded[project.id] ? <ChevronDown size={14}/> : <ChevronRight size={14}/>}</button>
           <button type="button" className="ps-project-link" title={project.name} onClick={() => { setExpanded(value => ({ ...value, [project.id]: true })); navigate(`projects/${project.id}`); }}><Folder size={15}/><span>{project.name}</span></button>
+          <button type="button" className="ps-icon-button" aria-label={`重命名项目：${project.name}`} title="重命名项目" disabled={busy || uploading} onClick={() => setRenameProject(project)}><Pencil size={13}/></button>
           <button type="button" className="ps-icon-button ps-project-upload" aria-label={`向项目 ${project.name} 上传文件`} title="上传到项目" disabled={uploading || busy} onClick={() => beginUpload(project.id, 'source')}><Upload size={13}/></button>
           <button type="button" className="ps-icon-button ps-project-trash" aria-label={`将项目移入回收站：${project.name}`} title="移入回收站" disabled={busy || uploading} onClick={() => { setConfirmError(''); setConfirmProject(project); }}><Trash2 size={13}/></button>
         </div>
@@ -231,6 +239,7 @@ export function ProjectSidebar({ api, route, navigate, currentWorkspaceId = '' }
       <form className="ps-create" onSubmit={create}><input aria-label="新项目名称" value={newName} onChange={event => setNewName(event.target.value)} placeholder="新项目名称" maxLength={100}/><button type="submit" aria-label="新建项目" disabled={!newName.trim() || busy}><Plus size={15}/></button></form>
       <input ref={uploadRef} className="ps-hidden-input" type="file" accept=".xlsx,.html" onChange={onUpload} aria-label="选择上传文件"/>
     </>}
+    {renameProject && <ProjectNameDialog api={api} project={renameProject} onClose={() => setRenameProject(null)} onSaved={saved => { setNotice(`项目名称已更新为“${saved.name}”。`); window.dispatchEvent(new Event('gewu-projects-changed')); }}/>}
     {editItem && <div className="ps-modal-backdrop"><form className="ps-modal" role="dialog" aria-modal="true" aria-labelledby="ps-edit-title" onSubmit={submitEdit}>
       <header><b id="ps-edit-title">整理文件</b><button type="button" aria-label="关闭" onClick={() => setEditItem(null)}><X size={16}/></button></header>
       <label>文件名<input autoFocus value={editName} onChange={event => setEditName(event.target.value)} required maxLength={255}/></label>

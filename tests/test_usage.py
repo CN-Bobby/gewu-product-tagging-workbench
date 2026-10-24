@@ -106,6 +106,47 @@ def test_missing_provider_usage_stays_estimated_and_local_cache_is_separate():
     assert cache_event.status == "hit" and cache_event.input_tokens is None
 
 
+def test_agent_turn_records_cli_aggregate_usage_without_inventing_model_call_count():
+    event_id = usage.start_usage_event(
+        kind="agent_turn", module="product_archive", task_id="archive-run",
+        model="deepseek/reasoning", provider="deepseek")
+    usage.finish_usage_event(event_id, status="completed", usage={
+        "input_tokens": 195052, "output_tokens": 14133,
+        "cache_read_input_tokens": 164736,
+        "cache_creation_input_tokens": 30316,
+    })
+
+    [event] = _stored_events()
+    assert event.kind == "agent_turn"
+    assert event.usage_quality == "measured"
+    assert (event.input_tokens, event.output_tokens) == (195052, 14133)
+    assert event.cache_hit_tokens == 164736
+    assert event.cache_creation_tokens == 30316
+    totals = usage.summary({"range": "today"})["totals"]
+    assert totals["agent_turns"] == 1
+    assert totals["model_calls"] == 0
+    assert totals["input_tokens"] == 195052
+    assert totals["output_tokens"] == 14133
+
+
+def test_saved_reasonix_envelope_backfills_failed_event_without_new_call():
+    from backend.product_archive import reasonix_worker
+
+    event_id = usage.start_usage_event(
+        kind="agent_turn", module="product_archive", task_id="saved-run",
+        model="deepseek/reasoning", provider="deepseek")
+    usage.finish_usage_event(event_id, status="failed")
+
+    reasonix_worker.reconcile_recorded_usage("saved-run", {
+        "usage": {"input_tokens": 400, "output_tokens": 50,
+                  "cache_read_input_tokens": 300}})
+
+    [event] = _stored_events()
+    assert event.id == event_id and event.status == "failed"
+    assert event.usage_quality == "measured"
+    assert (event.input_tokens, event.output_tokens, event.cache_hit_tokens) == (400, 50, 300)
+
+
 def test_sorftime_mcp_call_is_counted_without_storing_request_or_key(monkeypatch):
     async def fake_call(_endpoint, _key, _name, _arguments):
         return {"ok": True}

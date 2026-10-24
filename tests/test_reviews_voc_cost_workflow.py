@@ -4,7 +4,10 @@ import json
 import threading
 import time
 
+import pytest
+
 from backend.amazon_reviews import service as reviews
+from backend.db import Session, Workspace
 from backend.local_result_cache import LocalResultCache
 from backend.usage_ledger import usage_summary
 
@@ -100,9 +103,21 @@ def test_reviews_modes_default_to_no_translation_model_and_combined_autohandoff(
     monkeypatch.setattr(reviews, "_dispatch_locked", lambda: None)
     monkeypatch.setattr(reviews.sorftime_settings, "connection", lambda: ("https://mcp.invalid", "hidden"))
 
+    workspace_id = "a" * 32
+    with Session() as session:
+        session.add(Workspace(id=workspace_id, name="Reviews workflow test"))
+        session.commit()
+
+    with pytest.raises(ValueError, match="自动 VOC 需要绑定项目"):
+        reviews.create({
+            "mode": "asins", "site": "US", "asins": ["B000000004"],
+            "workflow_mode": "combined", "translate_enabled": False,
+        })
+
     combined = reviews.create({
         "mode": "asins", "site": "US", "asins": ["B000000004"],
         "workflow_mode": "combined", "translate_enabled": False,
+        "workspace_id": workspace_id,
     })
     reviews_only = reviews.create({
         "mode": "asins", "site": "US", "asins": ["B000000005"],

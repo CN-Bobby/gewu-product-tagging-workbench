@@ -166,7 +166,7 @@ def test_import_task_splits_attributes_and_downloads_image_without_touching_sour
 
     monkeypatch.setattr(batch, 'request_json', request_json)
     monkeypatch.setattr(import_image_download, 'download_image',
-                        lambda _url: ImageDownloadResult(data=payload, content_type='image/png'))
+                        lambda _url, **_kwargs: ImageDownloadResult(data=payload, content_type='image/png'))
     job = text_facts.prepare(dataset['id'])
     batch.active[job['id']] = threading.Event()
     batch.execute(job['id'])
@@ -211,7 +211,7 @@ def test_image_failure_is_reported_by_row_and_retried_without_repeating_model(mo
 
     monkeypatch.setattr(batch, 'request_json', request_json)
     monkeypatch.setattr(import_image_download, 'download_image',
-                        lambda _url: ImageDownloadResult(error_code='timeout', error_message='下载图片超时'))
+                        lambda _url, **_kwargs: ImageDownloadResult(error_code='timeout', error_message='下载图片超时'))
     first = text_facts.prepare(dataset['id'])
     batch.active[first['id']] = threading.Event()
     batch.execute(first['id'])
@@ -223,7 +223,7 @@ def test_image_failure_is_reported_by_row_and_retried_without_repeating_model(mo
     assert len(model_calls) == 1
 
     monkeypatch.setattr(import_image_download, 'download_image',
-                        lambda _url: ImageDownloadResult(data=payload, content_type='image/png'))
+                        lambda _url, **_kwargs: ImageDownloadResult(data=payload, content_type='image/png'))
     with Session.begin() as session:
         require(session, BatchJob, first['id']).status = 'queued'
     batch.active[first['id']] = threading.Event()

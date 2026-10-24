@@ -1,6 +1,7 @@
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import Query
 
-from . import linked, service, overview_drafts
+from . import linked, service, overview_drafts, keyword_seasonality
 
 router = APIRouter(prefix="/api/product-archive", tags=["Product Archive"])
 
@@ -55,6 +56,24 @@ def voc_runs(archive_id: str):
     return _run(linked.list_voc_runs, archive_id)
 
 
+@router.get("/archives/{archive_id}/overview-sources")
+def overview_sources(archive_id: str):
+    return _run(overview_drafts.list_sources, archive_id)
+
+
+@router.get("/archives/{archive_id}/keyword-seasonality")
+def keyword_seasonality_chart(archive_id: str, source_id: str = ""):
+    return _run(keyword_seasonality.for_archive, archive_id, source_id)
+
+
+@router.get("/archives/{archive_id}/overview-drafts/preflight")
+def overview_draft_preflight(archive_id: str, category_context: str = "", data_month_context: str = "",
+                             selected_source_ids: list[str] = Query(default=[])):
+    return _run(overview_drafts.preflight, archive_id, category_context=category_context,
+                data_month_context=data_month_context,
+                selected_source_ids=selected_source_ids if selected_source_ids else None)
+
+
 @router.post("/archives/{archive_id}/filter")
 def archive_filter(archive_id: str, body: dict):
     return _run(service.get, archive_id, (body or {}).get("filters") or {})
@@ -70,9 +89,24 @@ def create_overview_draft(archive_id: str, body: dict):
     return _run(overview_drafts.create, archive_id, body or {})
 
 
+@router.get("/archives/{archive_id}/overview-drafts/latest-open")
+def latest_open_overview_draft(archive_id: str):
+    return _run(overview_drafts.latest_open, archive_id)
+
+
 @router.get("/archives/{archive_id}/overview-drafts/{run_id}")
 def get_overview_draft(archive_id: str, run_id: str):
     return _run(overview_drafts.get, archive_id, run_id)
+
+
+@router.post("/archives/{archive_id}/overview-drafts/{run_id}/recover")
+def recover_overview_draft(archive_id: str, run_id: str):
+    return _run(overview_drafts.recover, archive_id, run_id)
+
+
+@router.post("/archives/{archive_id}/overview-drafts/{run_id}/review")
+def review_overview_draft(archive_id: str, run_id: str, body: dict):
+    return _run(overview_drafts.review, archive_id, run_id, body or {})
 
 
 @router.post("/archives/{archive_id}/dataset")

@@ -56,6 +56,16 @@ def create_project(name):
     return {**project, **project_files.public_project(project['id'])}
 
 
+def rename_project(workspace_id, name):
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
+        raise ValueError('项目名称需为1–100字')
+    with Session.begin() as s:
+        workspace = require(s, Workspace, workspace_id)
+        workspace.name = name.strip()
+    from . import project_files
+    return project_files.public_project(workspace_id)
+
+
 def list_templates(workspace_id):
     with Session() as s:
         require(s,Workspace,workspace_id)

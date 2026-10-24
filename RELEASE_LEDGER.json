@@ -145,7 +145,7 @@
     },
     {
       "version": "0.5.0-beta.13",
-      "status": "pending_acceptance",
+      "status": "superseded",
       "artifact_kind": "portable_candidate",
       "commit": null,
       "tag": null,

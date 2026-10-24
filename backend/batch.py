@@ -277,7 +277,7 @@ def execute(jid):
         finally:
             with guard:active.pop(jid,None)
         return
-    is_text=kind=='text_facts'
+    is_text=kind in ('text_facts','image_download')
     if is_text:
         try:text_facts.execute(jid)
         except Exception as e:

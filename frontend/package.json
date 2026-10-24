@@ -10,9 +10,11 @@
     "test:amazon-voc": "node --test tests/amazonVocState.test.js tests/amazonReviewsState.test.js"
   },
   "dependencies": {
+    "lucide-react": "^0.468.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "lucide-react": "^0.468.0"
+    "react-is": "^19.2.8",
+    "recharts": "^3.10.1"
   },
   "devDependencies": {
     "vite": "^7.0.0"

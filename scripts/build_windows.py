@@ -78,7 +78,7 @@ def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 for name,item in pins.items():
     path=Path(item['local']) if item.get('local') else tools/name
     if sha(path)!=item['sha256']:raise SystemExit('Build input checksum mismatch: '+name)
-for directory in ('backend','skills/product-tagging','docs'):
+for directory in ('backend','skills/product-tagging','skills/product-archive-research','docs'):
     shutil.copytree(ROOT/directory,app/directory,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
 (app/'scripts').mkdir()
 shutil.copy2(ROOT/'scripts/desktop_bootstrap.py',app/'scripts/desktop_bootstrap.py')

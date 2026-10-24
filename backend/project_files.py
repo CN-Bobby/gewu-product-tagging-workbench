@@ -468,10 +468,10 @@ def artifact_path(workspace_id: str, artifact_id: str) -> Path:
 
 
 def public_project(workspace_id: str) -> dict[str, Any]:
-    root = project_dir(workspace_id)
+    project_dir(workspace_id)
     with Session() as session:
         workspace = require(session, Workspace, workspace_id)
         count = session.scalar(select(func.count()).select_from(ProjectArtifact).where(
             ProjectArtifact.workspace_id == workspace_id)) or 0
         return {"id": workspace.id, "name": workspace.name, "created_at": workspace.created_at,
-                "root": str(root), "artifact_count": int(count or 0)}
+                "artifact_count": int(count or 0)}

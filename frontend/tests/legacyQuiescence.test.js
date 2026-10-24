@@ -1,5 +1,4 @@
-// The old tag-conversation controls are removed from the tagging page while stored history and
-// backend endpoints remain available to other maintenance paths.
+// The old tag conversation is a read-only history view. New proposals and approvals belong to Agent.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -7,15 +6,17 @@ import {readFileSync} from 'node:fs';
 const main=readFileSync(new URL('../src/main.jsx',import.meta.url),'utf8');
 const backend=readFileSync(new URL('../../backend/app.py',import.meta.url),'utf8');
 
-const LEGACY_UI=['标签对话','conversation-switcher','conversation-recycle','compatibility-note','ChatMessage','QuestionCard','/api/datasets/${did}/conversations'];
-
-test('the tagging page exposes one Agent conversation entry and no retired chat controls',()=>{
-  assert.ok(main.includes('<AgentPanel did={did}/>'),'the Agent is the sole conversation panel');
-  for(const legacy of LEGACY_UI) assert.ok(!main.includes(legacy),'main.jsx must remove '+legacy);
+test('the tagging page defaults to Agent and keeps old history read-only',()=>{
+  assert.ok(main.includes('useState(DEFAULT_PANEL===PANEL.AGENT)'));
+  assert.ok(main.includes('<AgentPanel did={did} proposalInbox={proposalInbox}/>'));
+  assert.ok(main.includes('旧版标签对话仅用于查看历史记录。'));
+  assert.ok(main.includes('onBind={a=>handle(()=>bindAttachment(a))} readOnly/>'));
 });
 
-test('old pending proposals remain actionable from the worksheet',()=>{
-  assert.ok(main.includes('proposal-inbox'),'proposal inbox is rendered above worksheet dispatch');
+test('pending proposals remain actionable from the Agent conversation',()=>{
+  assert.ok(main.includes('<AgentPanel did={did} proposalInbox={proposalInbox}/>'),
+    'the Agent conversation receives the proposal inbox');
+  assert.ok(main.includes('proposal-inbox'),'the proposal inbox is rendered in the conversation');
   assert.ok(main.includes('proposalCard(currentProposal)'),'the selected proposal can still be reviewed');
   assert.ok(main.includes('otherPending.map(p=>proposalCard(p,true))'),'other pending proposals remain reachable');
 });

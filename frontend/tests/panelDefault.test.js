@@ -26,11 +26,10 @@ test('main navigation follows the approved workflow without duplicate project or
   assert.ok(main.includes('<div className="topbar-actions">'));
 });
 
-test('the tagging page renders only the Agent conversation panel',()=>{
-  assert.ok(main.includes('<strong>Agent 会话</strong>'));
-  assert.ok(main.includes('<AgentPanel did={did}/>'));
-  assert.ok(!main.includes('agentMode'));
-  assert.ok(!main.includes('标签对话'));
+test('the tagging page opens Agent by default and routes approval into that panel',()=>{
+  assert.ok(main.includes('useState(DEFAULT_PANEL===PANEL.AGENT)'));
+  assert.ok(main.includes('<AgentPanel did={did} proposalInbox={proposalInbox}/>'));
+  assert.ok(main.includes('旧版标签对话仅用于查看历史记录。'));
 });
 
 test('the new panel cannot reach the legacy chat commands',()=>{

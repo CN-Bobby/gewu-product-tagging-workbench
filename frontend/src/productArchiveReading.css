@@ -1,0 +1,185 @@
+/* Archive reading scale: use the same hierarchy across overview, trends and competition. */
+.pa-dossier{
+  --pa-read-ink:#203a30;
+  --pa-read-body:#2f4337;
+  --pa-read-muted:#526756;
+  --pa-read-accent:#285443;
+  --pa-read-warning:#92502d;
+  color:var(--pa-read-ink);
+  font-family:'Segoe UI','Microsoft YaHei','PingFang SC',sans-serif;
+  font-size:14px;
+  line-height:1.6;
+}
+.pa-dossier .pa-heading h1,.pa-dossier .pa-section-title h2{
+  font-family:inherit;
+  font-weight:700;
+  letter-spacing:-.025em;
+}
+.pa-dossier .pa-heading h1{font-size:clamp(30px,2.8vw,40px);line-height:1.25}
+.pa-dossier .pa-heading .eyebrow{font-size:11px}
+.pa-dossier .pa-heading p,.pa-dossier .pa-back,.pa-dossier .pa-sample-link{color:var(--pa-read-muted);font-size:13px}
+.pa-dossier .pa-page-tabs button{min-height:40px;color:var(--pa-read-muted);font-size:13px}
+.pa-dossier .pa-page-tabs button.active{color:var(--pa-read-accent)}
+.pa-dossier .pa-phase{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-section-title{gap:14px;margin-bottom:20px}
+.pa-dossier .pa-section-title>span{color:#668369;font-size:27px;font-variant-numeric:tabular-nums}
+.pa-dossier .pa-section-title small,.pa-dossier .ma-v3-overview header small,.pa-dossier .ma-v3-heading small,.pa-dossier .ma-trend-head small{
+  color:var(--pa-read-muted);font-size:11px;letter-spacing:.12em;
+}
+.pa-dossier .pa-section-title h2{font-size:clamp(22px,2.1vw,27px);line-height:1.3}
+.pa-dossier .pa-section-title em{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-summary-strip small,.pa-dossier .pa-stat span{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-summary-strip b{font-size:14px}
+.pa-dossier .pa-stat{gap:5px;padding:17px 18px}
+.pa-dossier .pa-stat strong{font-family:inherit;font-size:clamp(24px,2vw,30px);font-weight:700}
+.pa-dossier .pa-stat small,.pa-dossier .pa-method-note{color:var(--pa-read-muted);font-size:12px;line-height:1.55}
+.pa-dossier .pa-keyword-signals .pa-competition-table table{font-size:13px}
+.pa-dossier .pa-keyword-signals .pa-competition-table th{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-keyword-signals .pa-competition-table td{color:var(--pa-read-body);font-size:14px}
+.pa-dossier .pa-tag-slicers small,.pa-dossier .pa-tag-slicers>p{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-tag-slicers>div:first-child small{font-size:11px}
+.pa-dossier .pa-tag-slicers>div:first-child b{font-size:13px}
+.pa-dossier .pa-tag-selects label{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-tag-selects select{min-height:36px;font-size:13px}
+.pa-dossier .pa-tag-slicers>button{min-height:34px;font-size:12px}
+.pa-dossier .pa-competition-group-head h3{font-size:18px}
+.pa-dossier .pa-competition-group-head p{color:var(--pa-read-muted);font-size:13px}
+
+/* The accepted report is the main reading surface. Historical review remains reachable. */
+.pa-dossier .ma-generate-disclosure>summary,.pa-dossier .ma-saved-analysis>summary,
+.pa-dossier .ma-old-draft-disclosure>summary{color:var(--pa-read-accent);font-size:14px;line-height:1.5}
+.pa-dossier .pa-overview-generate>.ma-old-draft-disclosure{grid-column:1/-1}
+.pa-dossier .pa-overview-actions label{color:var(--pa-read-muted);font-size:13px}
+.pa-dossier .pa-save-note{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-overview-generate>p,.pa-dossier .pa-overview-generate label,
+.pa-dossier .pa-overview-source-list>p,.pa-dossier .pa-overview-source-list legend,
+.pa-dossier .pa-research-scope>small,.pa-dossier .pa-research-date-coverage p,
+.pa-dossier .pa-research-cost-consent{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-overview-source-list label b,.pa-dossier .pa-analysis-sources li b{font-size:13px}
+.pa-dossier .pa-overview-source-list label small,.pa-dossier .pa-analysis-sources li small,
+.pa-dossier .pa-analysis-sources li span,.pa-dossier .pa-research-date-coverage small{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-research-preflight,.pa-dossier .pa-research-summary,
+.pa-dossier .pa-analysis-diagnostics,.pa-dossier .pa-analysis-decision small{font-size:12px;line-height:1.55}
+.pa-dossier .pa-research-preflight small,.pa-dossier .pa-research-summary>small,
+.pa-dossier .pa-research-summary li small{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-research-findings article p{color:var(--pa-read-body);font-size:13px}
+.pa-dossier .pa-research-findings article small{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .overview-progress-stage{font-size:13px}
+.pa-dossier .overview-progress-stage b{font-size:14px}
+.pa-dossier .overview-progress-stage small{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .overview-research-warning,.pa-dossier .overview-quality-warning,
+.pa-dossier .overview-quality-warning ul{font-size:12px}
+.pa-dossier .overview-suggestion-preview>header>span,
+.pa-dossier .overview-suggestion-preview>header small,
+.pa-dossier .overview-preview-meta,.pa-dossier .overview-preview-item>small,
+.pa-dossier .overview-preview-links,.pa-dossier .overview-cost-note{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .overview-structure-summary{font-size:13px}
+.pa-dossier .overview-structure-summary>section>b,
+.pa-dossier .overview-structure-summary article p,
+.pa-dossier .overview-structure-summary section>p{font-size:13px}
+.pa-dossier .overview-structure-summary article small,
+.pa-dossier .overview-structure-summary .overview-segment-supported,
+.pa-dossier .overview-structure-summary .overview-segment-hypothesis{font-size:12px}
+.pa-dossier .pa-analysis-decision b{font-size:14px}
+.pa-dossier .pa-analysis-decision button{min-height:36px;font-size:13px}
+.pa-dossier .ma-v3-toolbar,.pa-dossier .ma-v3-toolbar span small{color:var(--pa-read-muted);font-size:13px}
+.pa-dossier .ma-keywords>small{color:var(--pa-read-muted);font-size:12px}
+
+/* A short synthesis and its reasoning share the available width; narrow cards stack. */
+.pa-dossier .ma-v3-overview{container-type:inline-size;padding:clamp(18px,2.1vw,28px)}
+.pa-dossier .ma-v3-overview header{align-items:center}
+.pa-dossier .ma-v3-overview header span{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .ma-v3-overview-reading{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:clamp(18px,2.4vw,36px);align-items:start;margin-top:16px}
+.pa-dossier .ma-v3-overview-main{min-width:0;max-width:68ch}
+.pa-dossier .ma-v3-overview-main>p{margin:0 0 12px;color:var(--pa-read-body);font-size:clamp(15px,1.1vw,17px);line-height:1.72;white-space:pre-wrap;overflow-wrap:anywhere}
+.pa-dossier .ma-v3-overview-main>p:first-child{color:var(--pa-read-ink);font-weight:600}
+.pa-dossier .ma-v3-overview-main>p:last-of-type{margin-bottom:0}
+.pa-dossier .ma-v3-overview-points{display:grid;gap:0;margin:16px 0 0;border-top:1px solid #d5e1d3}
+.pa-dossier .ma-v3-overview-points>div{display:grid;grid-template-columns:84px minmax(0,1fr);gap:12px;padding:10px 0;border-bottom:1px solid #d5e1d3}
+.pa-dossier .ma-v3-overview-points dt{color:var(--pa-read-accent);font-size:13px;font-weight:750}
+.pa-dossier .ma-v3-overview-points dd{margin:0;color:var(--pa-read-body);font-size:14px;line-height:1.6;overflow-wrap:anywhere}
+.pa-dossier .ma-v3-overview-edit{display:grid;gap:12px;margin-top:16px}
+.pa-dossier .ma-v3-overview-edit>button,.pa-dossier .ma-v3-overview-point-edit>button{justify-self:start;min-height:34px;padding:6px 10px;border:1px solid #c6d6c6;border-radius:5px;background:#fff;color:var(--pa-read-accent);cursor:pointer}
+.pa-dossier .ma-v3-overview-point-edit{display:grid;grid-template-columns:minmax(120px,.4fr) minmax(0,1fr) auto;gap:10px;align-items:end}
+.pa-dossier .ma-v3-overview-point-edit>button{color:#8d4432}
+.pa-dossier .ma-v3-overview:not(.has-context) .ma-v3-overview-reading{display:block;max-width:980px}
+.pa-dossier .ma-v3-overview-context{display:grid;gap:13px;padding:15px 17px;border-left:3px solid #8fab93;border-radius:0 7px 7px 0;background:#eff5ed}
+.pa-dossier .ma-v3-overview-context>div+div{padding-top:11px;border-top:1px solid #d5e1d3}
+.pa-dossier .ma-v3-overview-context h4{margin:0 0 4px;color:var(--pa-read-accent);font-size:12px;font-weight:800}
+.pa-dossier .ma-v3-overview-context p{margin:0;color:var(--pa-read-body);font-size:13px;line-height:1.65;overflow-wrap:anywhere}
+.pa-dossier .ma-v3-overview details summary{font-size:13px}
+.pa-dossier .ma-v3-evidence{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .ma-v3-card>header h3{font-size:19px}
+.pa-dossier .ma-v3-field h4{color:var(--pa-read-accent);font-size:13px}
+.pa-dossier .ma-v3-lines p{color:var(--pa-read-body);font-size:14px}
+.pa-dossier .ma-v3-lines .ma-v3-missing,.pa-dossier .ma-v3-lines small{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .ma-v3 label{color:var(--pa-read-muted);font-size:13px}
+
+/* The ten keyword series remain in one chart, with readable controls and legend. */
+.pa-dossier .ma-trend-head p,.pa-dossier .ma-trend-meta,
+.pa-dossier .ma-trend-axis-note{color:var(--pa-read-muted);font-size:13px}
+.pa-dossier .ma-trend-mode button,.pa-dossier .ma-trend-legend button,
+.pa-dossier .ma-trend-table summary{font-size:13px}
+.pa-dossier .ma-trend-legend button{min-height:38px;padding:7px 9px}
+.pa-dossier .ma-trend-legend button small{color:var(--pa-read-muted);font-size:11px}
+.pa-dossier .ma-trend-tooltip{font-size:13px}
+.pa-dossier .ma-trend-table table,.pa-dossier .ma-trend-table th,
+.pa-dossier .ma-trend-table td{font-size:14px}
+.pa-dossier .ma-trend .recharts-cartesian-axis-tick-value{font-size:12px}
+.pa-dossier .ma-trend-legend button[aria-pressed="false"]{opacity:1;border-style:dashed;background:#fff;color:var(--pa-read-muted)}
+
+/* Tables use one numeric scale and alignment; overflow stays inside each table. */
+.pa-dossier .pa-section-competition .pa-dist-head h4,
+.pa-dossier .pa-section-competition .pa-concentration h4{font-size:16px}
+.pa-dossier .pa-section-competition .pa-dist-head>span,
+.pa-dossier .pa-section-competition .pa-concentration header>span{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-section-competition .pa-competition-table table,
+.pa-dossier .pa-section-competition .pa-brand-summary{font-size:14px}
+.pa-dossier .pa-section-competition .pa-competition-table th,
+.pa-dossier .pa-section-competition .pa-brand-columns{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-section-competition .pa-competition-table td,
+.pa-dossier .pa-section-competition .pa-brand-summary,
+.pa-dossier .pa-section-competition .pa-brand-name b{color:var(--pa-read-body)}
+.pa-dossier .pa-section-competition .pa-brand-summary>span:nth-child(n+2){
+  color:var(--pa-read-body);
+  font-size:14px;
+  font-weight:400;
+  line-height:1.5;
+  font-variant-numeric:tabular-nums;
+}
+.pa-dossier .pa-section-competition .pa-brand-name{text-align:left}
+.pa-dossier .pa-section-competition .pa-brand-name b{font-size:14px}
+.pa-dossier .pa-section-competition .pa-brand-name i{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-section-competition .pa-brand-image>small{max-width:100px;color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-section-competition .pa-brand-scroll-hint{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-section-competition .pa-concentration-metrics dt{color:var(--pa-read-muted);font-size:13px}
+.pa-dossier .pa-section-competition .pa-concentration-metrics dd{font-size:22px}
+.pa-dossier .pa-section-competition .pa-dist-table{font-size:14px}
+.pa-dossier .pa-section-competition .pa-dist-table thead th{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-section-competition .pa-dist-table tbody th,
+.pa-dossier .pa-section-competition .pa-dist-table tbody td{color:var(--pa-read-body);font-size:14px}
+.pa-dossier .pa-section-competition .pa-missing{color:var(--pa-read-warning);font-size:12px}
+.pa-dossier .pa-section-competition .pa-view-toggle button{font-size:12px;min-height:34px}
+.pa-dossier .pa-section-competition .pa-price-heading{flex-wrap:wrap}
+.pa-dossier .pa-section-competition .pa-price-dist .pa-chart-legend{color:var(--pa-read-muted);font-size:12px}
+.pa-dossier .pa-section-competition .pa-chart-label{fill:#526756;font-size:12px}
+.pa-dossier .pa-section-competition .pa-dist.is-unavailable{grid-column:1/-1;display:flex;align-items:center;flex-wrap:wrap;gap:8px 20px;padding:11px 16px;background:#f5f8f3}
+.pa-dossier .pa-section-competition .pa-dist.is-unavailable .pa-dist-head{margin:0;gap:10px}
+.pa-dossier .pa-section-competition .pa-dist.is-unavailable .pa-muted{margin:0;color:var(--pa-read-muted);font-size:13px}
+
+@container (max-width:850px){
+  .pa-dossier .ma-v3-overview-reading{grid-template-columns:minmax(0,1fr)}
+  .pa-dossier .ma-v3-overview-context{grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr))}
+  .pa-dossier .ma-v3-overview-context>div+div{padding-top:0;border-top:0}
+}
+@media(max-width:720px){
+  .pa-dossier .ma-v3-overview-point-edit{grid-template-columns:minmax(0,1fr)}
+  .pa-dossier .ma-v3-overview-points>div{grid-template-columns:72px minmax(0,1fr);gap:8px}
+  .pa-dossier .pa-section-title{align-items:flex-start}
+  .pa-dossier .pa-summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .pa-dossier .pa-section-competition .pa-brand-summary{font-size:13px}
+  .pa-dossier .pa-section-competition .pa-brand-summary>span:nth-child(2):before,
+  .pa-dossier .pa-section-competition .pa-brand-summary>span:nth-child(3):before,
+  .pa-dossier .pa-section-competition .pa-brand-summary>span:nth-child(4):before{color:var(--pa-read-muted);font-size:11px}
+  .pa-dossier .pa-section-competition .pa-dist.is-unavailable{align-items:flex-start;flex-direction:column}
+}

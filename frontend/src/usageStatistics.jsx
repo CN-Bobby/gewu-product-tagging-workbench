@@ -89,6 +89,7 @@ export function UsageStatistics({ api, projects = [], initialWorkspaceId = '', o
   }, [api, requestFilters, offset, rangeMode, start, end, reload]);
 
   useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { const refreshAfterProjectRename = () => setReload(value => value + 1); window.addEventListener('gewu-projects-changed', refreshAfterProjectRename); return () => window.removeEventListener('gewu-projects-changed', refreshAfterProjectRename); }, []);
 
   const totals = summary?.totals || {};
   const series = summary?.series || [];
