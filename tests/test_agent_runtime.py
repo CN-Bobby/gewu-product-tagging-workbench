@@ -294,7 +294,10 @@ def test_ring_buffers_are_bounded(spawn):
     from backend.agent.runtime import LIFECYCLE_RING_CAPACITY,PROTOCOL_RING_CAPACITY,STDERR_RING_CAPACITY
     runtime,events,diagnostics,lifecycle=spawn('noisy_stderr')
     deadline=time.time()+10
-    while len(runtime.diagnostics()['stderr'])<STDERR_RING_CAPACITY and time.time()<deadline:time.sleep(.05)
+    while time.time()<deadline:
+        stderr=runtime.diagnostics()['stderr']
+        if len(stderr)==STDERR_RING_CAPACITY and stderr[-1]['line']=='noise-299\n':break
+        time.sleep(.05)
     stderr=runtime.diagnostics()['stderr']
     assert len(stderr)==STDERR_RING_CAPACITY and stderr[-1]['line']=='noise-299\n'
     assert len(runtime.diagnostics()['lifecycle'])<=LIFECYCLE_RING_CAPACITY
