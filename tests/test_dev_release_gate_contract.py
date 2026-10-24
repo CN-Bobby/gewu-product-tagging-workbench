@@ -12,7 +12,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
+POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
 pytestmark = pytest.mark.skipif(not POWERSHELL, reason="PowerShell is required for the Windows release-gate module")
 
 

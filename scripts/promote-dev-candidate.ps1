@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$ManualResult,
     [Parameter(Mandatory = $true)][string]$BackupEvidence,

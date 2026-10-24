@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$CandidateReport,
     [Parameter(Mandatory = $true)][string]$Checklist,

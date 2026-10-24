@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$ManualResult,
     [Parameter(Mandatory = $true)][string]$CandidateReport,
@@ -141,17 +141,17 @@ $releaseExit = $LASTEXITCODE
 $ErrorActionPreference = $oldPreference
 if ($releaseExit -eq 0) { throw "GitHub Release $tag appeared during publication; no attachments were uploaded." }
 if (($releaseOutput -join "`n") -notmatch 'HTTP 404: Not Found') { throw "Could not re-check Release $tag before creation: $($releaseOutput -join ' ')" }
-$notes = @"
-# 格物工作台 $($candidate.version)
-
-- DEV 人工验收 Run ID：$($manual.result.run_id)
-- 源码 main commit：$($candidate.commit)
-- Build ID：$($candidate.build_id)
-- PROD 实时核验文件：$verificationPath
-- 便携 ZIP SHA-256：$($candidate.portable_sha256)
-
-此 Release 上传的是 DEV 人工验收并经 Run Center 核验为当前 PROD 实例的原始便携 ZIP 与 SHA-256 侧车，不重新构建或重压缩。
-"@
+$notes = @(
+    "# 格物工作台 $($candidate.version)",
+    '',
+    "- DEV 人工验收 Run ID：$($manual.result.run_id)",
+    "- 源码 main commit：$($candidate.commit)",
+    "- Build ID：$($candidate.build_id)",
+    "- PROD 实时核验文件：$verificationPath",
+    "- 便携 ZIP SHA-256：$($candidate.portable_sha256)",
+    '',
+    '此 Release 上传的是 DEV 人工验收并经 Run Center 核验为当前 PROD 实例的原始便携 ZIP 与 SHA-256 侧车，不重新构建或重压缩。'
+) -join "`n"
 & gh release create $tag $candidate.portable_zip $candidate.portable_sidecar --repo $ReleaseRepository --title "格物工作台 $($candidate.version)" --prerelease --verify-tag --target $candidate.commit --notes $notes
 if ($LASTEXITCODE -ne 0) { throw 'GitHub Release creation failed; inspect the tag and repository state before retrying.' }
 Write-Output "Published verified PROD build to $ReleaseRepository Release $tag"

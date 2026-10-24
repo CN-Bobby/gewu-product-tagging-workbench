@@ -1,4 +1,5 @@
-Set-StrictMode -Version 2.0
+﻿Set-StrictMode -Version 2.0
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 
 function Get-DgSha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
@@ -114,14 +115,13 @@ function Test-DgAppTree([string]$AppPath, $Manifest, [string]$ExpectedManifestHa
             continue
         }
         if ($actual.ContainsKey($relative)) { throw "$Label contains a duplicate file path: $relative" }
-        $actual[$relative] = $file.FullName
+        $actual[$relative] = [pscustomobject]@{ path = $file.FullName; relative = $relative }
     }
     if ($actual.Count -ne $map.Count) { throw "$Label file count does not match its manifest." }
     foreach ($relative in $map.Keys) {
         if (-not $actual.ContainsKey($relative)) { throw "$Label is missing manifest file: $relative" }
-        $actualRelative = @($actual.Keys | Where-Object { $_ -ieq $relative })[0]
-        if ($actualRelative -cne $relative) { throw "$Label file path casing differs from its manifest: $relative" }
-        if ((Get-DgSha256 $actual[$relative]) -ne $map[$relative]) { throw "$Label file hash does not match its manifest: $relative" }
+        if ($actual[$relative].relative -cne $relative) { throw "$Label file path casing differs from its manifest: $relative" }
+        if ((Get-DgSha256 $actual[$relative].path) -ne $map[$relative]) { throw "$Label file hash does not match its manifest: $relative" }
     }
 }
 
@@ -134,6 +134,7 @@ function Get-DgZipEntryHash($Entry) {
 
 function Test-DgPortableZip([string]$ZipPath, $Manifest, [string]$ManifestHash, [string]$Label) {
     Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
     $archive = [IO.Compression.ZipFile]::OpenRead($ZipPath)
     try {
         $map = Get-DgManifestFileMap $Manifest $Label
@@ -160,8 +161,7 @@ function Test-DgPortableZip([string]$ZipPath, $Manifest, [string]$ManifestHash, 
         if ($entries.Count -ne ($map.Count + 1)) { throw "$Label contains files outside the manifest or is incomplete." }
         foreach ($relative in $map.Keys) {
             if (-not $entries.ContainsKey($relative)) { throw "$Label is missing manifest file: $relative" }
-            $actual = @($entries.Keys | Where-Object { $_ -ieq $relative })[0]
-            if ($actual -cne $relative) { throw "$Label ZIP path casing differs from the manifest: $relative" }
+            if ($entries[$relative].FullName -cne $relative) { throw "$Label ZIP path casing differs from the manifest: $relative" }
             if ((Get-DgZipEntryHash $entries[$relative]) -ne $map[$relative]) { throw "$Label file hash does not match manifest: $relative" }
         }
     } finally { $archive.Dispose() }
@@ -174,6 +174,7 @@ function Expand-DgPortableZip([string]$ZipPath, [string]$AppPath, $Manifest, [st
     Assert-DgNoReparseAncestors $appRoot "$Label app destination" | Out-Null
     Test-DgPortableZip $zipFile $Manifest $ManifestHash $Label
     Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
     $archive = [IO.Compression.ZipFile]::OpenRead($zipFile)
     try {
         foreach ($entry in $archive.Entries) {
