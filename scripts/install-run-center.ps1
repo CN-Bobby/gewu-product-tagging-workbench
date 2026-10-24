@@ -6,6 +6,7 @@ param(
     [string]$DesktopPath = [Environment]::GetFolderPath('Desktop'),
     [string]$DevData = 'K:\GeWuDev\Data',
     [string]$DevCache = 'K:\GeWuDev\Cache',
+    [string]$DevReports = 'K:\GeWuDev\Reports',
     [string]$Reports = 'K:\GeWuTest\Reports',
     [string]$TestApp = 'K:\GeWuTest\Current\app',
     [string]$TestData = 'K:\GeWuTest\Data',
@@ -21,7 +22,7 @@ if ((Canonical $InstallRoot) -ne $expectedInstallRoot) {
     throw "Run Center installation is pinned to $expectedInstallRoot so all launch and maintenance actions share one lock and identity store."
 }
 $fixedPaths = @{
-    DevData = 'K:\GeWuDev\Data'; DevCache = 'K:\GeWuDev\Cache'; Reports = 'K:\GeWuTest\Reports'
+    DevData = 'K:\GeWuDev\Data'; DevCache = 'K:\GeWuDev\Cache'; DevReports = 'K:\GeWuDev\Reports'; Reports = 'K:\GeWuTest\Reports'
     TestApp = 'K:\GeWuTest\Current\app'; TestData = 'K:\GeWuTest\Data'; TestCache = 'K:\GeWuTest\Cache'
     ProdApp = 'K:\Bobbytagging\Candidate-beta.9\app'; ProdData = 'K:\Bobbytagging\Data'; ProdCache = 'K:\Bobbytagging\Cache'
 }
@@ -42,13 +43,16 @@ $runnerDestination = Join-Path $InstallRoot 'run-center.ps1'
 $runnerText = [IO.File]::ReadAllText($runnerSource, [Text.UTF8Encoding]::new($false))
 $runnerText = [Text.RegularExpressions.Regex]::Replace($runnerText, "`r?`n", "`r`n")
 [IO.File]::WriteAllText($runnerDestination, $runnerText, [Text.UTF8Encoding]::new($true))
+$gateModuleSource = Join-Path $PSScriptRoot 'dev-release-gates.psm1'
+if (-not (Test-Path -LiteralPath $gateModuleSource -PathType Leaf)) { throw "DEV release gate module is missing: $gateModuleSource" }
+Copy-Item -LiteralPath $gateModuleSource -Destination (Join-Path $InstallRoot 'dev-release-gates.psm1')
 $config = [ordered]@{
     schema = 1
     projectRoot = $ProjectRoot
     candidateProjectRoot = $CandidateProjectRoot
     nodeExe = $nodeExe
     profiles = [ordered]@{
-        DEV = [ordered]@{ url = 'http://127.0.0.1:5174'; webPort = 5174; apiPort = 8896; data = $DevData; cache = $DevCache; providerHome = (Join-Path $InstallRoot 'profiles\DEV\providers'); reports = $Reports }
+        DEV = [ordered]@{ url = 'http://127.0.0.1:5174'; webPort = 5174; apiPort = 8896; data = $DevData; cache = $DevCache; providerHome = (Join-Path $InstallRoot 'profiles\DEV\providers'); reports = $DevReports }
         TEST = [ordered]@{ url = 'http://127.0.0.1:8895'; port = 8895; app = $TestApp; data = $TestData; cache = $TestCache; providerHome = (Join-Path $InstallRoot 'profiles\TEST\providers'); reports = $Reports }
         PROD = [ordered]@{ url = 'http://127.0.0.1:8765'; port = 8765; app = $ProdApp; data = $ProdData; cache = $ProdCache; reports = $Reports }
     }
@@ -64,6 +68,11 @@ if (Test-Path -LiteralPath $configPath) {
         if (-not $config.profiles.$profile.providerHome) {
             $config.profiles.$profile | Add-Member -NotePropertyName providerHome -NotePropertyValue (Join-Path $InstallRoot "profiles\$profile\providers")
         }
+    }
+    if ([IO.Path]::GetFullPath([string]$config.profiles.DEV.reports).TrimEnd('\') -ieq 'K:\GeWuTest\Reports') {
+        $config.profiles.DEV.reports = $DevReports
+    } elseif (-not $config.profiles.DEV.reports) {
+        $config.profiles.DEV | Add-Member -NotePropertyName reports -NotePropertyValue $DevReports
     }
     $config | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $configPath -Encoding UTF8
 } else {

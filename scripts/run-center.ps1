@@ -4,6 +4,7 @@ param(
     [ValidateSet('Start', 'Stop', 'Status')][string]$Action = 'Start',
     [ValidateSet('online', 'offline')][string]$ExternalEffectsMode = 'online',
     [string]$ConfigPath = (Join-Path $env:LOCALAPPDATA 'GeWuWorkbench\RunCenter\config.json'),
+    [string]$DevCandidateReport = '',
     [switch]$NoOpen
 )
 $ErrorActionPreference = 'Stop'
@@ -77,7 +78,7 @@ function Show-ProdPendingNotice($Health) {
     if (Test-Path -LiteralPath $promotionPath -PathType Leaf) {
         try {
             $promotion = Get-Content -LiteralPath $promotionPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($promotion.status -eq 'promoted' -and $promotion.build_id -eq $Health.build_id -and
+            if ($promotion.status -in @('promoted', 'promoted_pending_prod_verification', 'prod_verified') -and $promotion.build_id -eq $Health.build_id -and
                 $promotion.commit -eq $Health.commit) { return }
         } catch { }
     }
@@ -220,18 +221,34 @@ if (-not (Test-Path -LiteralPath $ConfigPath)) { throw "Run Center is not instal
 $config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $entry = Get-ProfileConfig $config $Profile
 if (-not $entry) { throw "No $Profile profile is configured in $ConfigPath" }
+$devCandidateBundle = $null
+if ($DevCandidateReport) {
+    if ($Profile -ne 'DEV') { throw '-DevCandidateReport is valid only with -Profile DEV.' }
+    if ($ExternalEffectsMode -ne 'offline') { throw 'Frozen DEV candidates may only start with -ExternalEffectsMode offline.' }
+    $gateModule = Join-Path $runCenterRoot 'dev-release-gates.psm1'
+    if (-not (Test-Path -LiteralPath $gateModule -PathType Leaf)) { throw "Run Center DEV release gate module is missing: $gateModule" }
+    Import-Module $gateModule -Force
+    $reports = [IO.Path]::GetFullPath([string]$config.profiles.DEV.reports)
+    $builds = Join-Path ([IO.Path]::GetFullPath([string]$config.projectRoot)) 'builds'
+    $devCandidateBundle = Test-DgCandidateBundle $DevCandidateReport $reports $builds
+    $DevCandidateReport = $devCandidateBundle.report_path
+}
 $runRoot = Join-Path $runCenterRoot 'runtime'
 New-Item -ItemType Directory -Force -Path $runRoot | Out-Null
 $recordPath = Join-Path $runRoot "$Profile.json"
 $record = if (Test-Path -LiteralPath $recordPath) { Get-Content -LiteralPath $recordPath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+if ($Action -eq 'Stop' -and $DevCandidateReport -and
+    (-not $record -or [IO.Path]::GetFullPath([string]$record.dev_candidate_report) -ine $DevCandidateReport)) {
+    throw 'The requested DEV candidate does not match the Run Center process record; nothing was stopped.'
+}
 
 if ($Action -eq 'Status') {
-    $url = $entry.url
+    $url = if ($devCandidateBundle) { "http://127.0.0.1:$($entry.apiPort)" } else { $entry.url }
     $healthUrl = if ($Profile -eq 'DEV') { "http://127.0.0.1:$($entry.apiPort)" } else { $url }
     $health = Get-Health $healthUrl
     $runtime = Get-RuntimeStatus $healthUrl
     $runtimeIdentity = if ($runtime) { "$($runtime.profile)/$($runtime.external_effects.policy); instance_id=$($runtime.instance_id)" } else { 'runtime-status-unavailable' }
-    [pscustomobject]@{ profile = $Profile; url = $url; api_url = $healthUrl; page_status = if ($Profile -eq 'DEV') { if (Get-PortOwner ([int]$entry.webPort)) { 'listening' } else { 'stopped' } } else { if ($health) { 'ready' } else { 'stopped' } }; api_status = if ($health) { $health.status } else { 'stopped' }; runtime = $runtimeIdentity; build_id = $health.build_id; commit = $health.commit; storage = $health.storage; record = $recordPath } | Format-List
+    [pscustomobject]@{ profile = $Profile; url = $url; api_url = $healthUrl; page_status = if ($Profile -eq 'DEV' -and -not ($record -and $record.dev_candidate_report)) { if (Get-PortOwner ([int]$entry.webPort)) { 'listening' } else { 'stopped' } } else { if ($health) { 'ready' } else { 'stopped' } }; api_status = if ($health) { $health.status } else { 'stopped' }; runtime = $runtimeIdentity; build_id = $health.build_id; commit = $health.commit; storage = $health.storage; candidate_report = if ($record) { $record.dev_candidate_report } else { $null }; record = $recordPath } | Format-List
     exit 0
 }
 
@@ -289,7 +306,7 @@ if ($Action -eq 'Start' -and $record) {
             }
         }
     }
-    if ($Profile -eq 'DEV' -and $runningHealth -and $runningHealth.application -eq 'product-tagging-workbench' -and
+    if ($Profile -eq 'DEV' -and -not $record.dev_candidate_report -and $runningHealth -and $runningHealth.application -eq 'product-tagging-workbench' -and
         (Get-CanonicalPath $runningHealth.storage) -eq (Get-CanonicalPath $record.data)) {
         $apiOwner = Get-PortOwner ([int]$entry.apiPort)
         $knownPids = @($record.processes | ForEach-Object { [int]$_.pid })
@@ -318,6 +335,10 @@ if ($Action -eq 'Start' -and $record) {
     $recordMatches = $runningHealth -and $runningHealth.application -eq 'product-tagging-workbench' -and
         (Get-CanonicalPath $runningHealth.storage) -eq (Get-CanonicalPath $record.data) -and
         $runningHealth.commit -eq $record.commit -and $runningHealth.build_id -eq $record.build_id
+    if ($Profile -eq 'DEV' -and $devCandidateBundle) {
+        $recordMatches = $recordMatches -and [IO.Path]::GetFullPath([string]$record.dev_candidate_report) -ieq $devCandidateBundle.report_path -and
+            [string]$record.dev_candidate_report_sha256 -eq $devCandidateBundle.report_sha256
+    } elseif ($Profile -eq 'DEV' -and $record.dev_candidate_report) { $recordMatches = $false }
     if ($recordMatches -and $Profile -ne 'PROD') {
         $expectedPolicy = if ($Profile -eq 'TEST') { @($testRuntimePolicy) } else { @($devRuntimePolicy) }
         $expectedInstance = if ($Profile -eq 'TEST') { @($testRuntimeInstanceId) } else { @($devRuntimeInstanceId) }
@@ -332,13 +353,13 @@ if ($Action -eq 'Start' -and $record) {
         foreach ($processRole in $record.processes.role | Select-Object -Unique) {
             $null = Test-RecordedProcess $record $processRole
         }
-        if ($Profile -eq 'DEV') {
+        if ($Profile -eq 'DEV' -and -not $record.dev_candidate_report) {
             $webOwner = Get-PortOwner ([int]$entry.webPort)
             if (-not $webOwner -or $webOwner -notin @($record.processes | Where-Object role -eq 'web' | ForEach-Object { [int]$_.pid })) {
                 throw 'DEV API is running but the recorded Vite listener is unavailable or no longer matches. Stop the owned entry before restarting.'
             }
         }
-        if (-not $NoOpen) { Open-RunCenterPage $entry.url | Out-Null; Show-ProdPendingNotice $runningHealth }
+        if (-not $NoOpen) { Open-RunCenterPage $(if ($record.dev_candidate_report) { $healthUrl } else { $entry.url }) | Out-Null; Show-ProdPendingNotice $runningHealth }
         Write-Output "$Profile is already running with the recorded identity: $($record.build_id) / $($record.commit)"
         exit 0
     }
@@ -374,7 +395,7 @@ if ($Action -eq 'Stop') {
         $health.build_id -ne $record.build_id -or $health.commit -ne $record.commit)) {
         throw "Service identity on $url does not match the recorded $Profile process, build, and data path. Nothing was stopped."
     }
-    if ($Profile -eq 'DEV') {
+    if ($Profile -eq 'DEV' -and -not $record.dev_candidate_report) {
         # Close Vite before stopping the API. When this script is launched by the API,
         # stopping the API can terminate its launcher process on Windows before it gets
         # a chance to close the browser-facing listener.
@@ -400,7 +421,7 @@ if ($Action -eq 'Stop') {
                 throw "Runtime profile or policy does not match this $Profile entry. Nothing was stopped."
             }
         }
-        if ($Profile -ne 'DEV') {
+        if ($Profile -ne 'DEV' -or $record.dev_candidate_report) {
             try { Invoke-RestMethod -Method Post -Uri "$url/api/server/stop" -TimeoutSec 3 | Out-Null } catch { }
             for ($i=0; $i -lt 20; $i++) {
                 if (-not (Get-PortOwner $servicePort)) { $released = $true; break }
@@ -409,6 +430,9 @@ if ($Action -eq 'Stop') {
         }
     }
     if (-not $released -and $Profile -eq 'DEV') {
+        if ($record.dev_candidate_report) {
+            throw 'The packaged DEV candidate did not stop gracefully. Its app-runtime identity is retained; no source-DEV process termination was attempted.'
+        }
         # The DEV API may be unresponsive while its exact listener is still alive. After the
         # graceful stop window, terminate only API processes that still match recorded PID,
         # executable, command-line token, and creation time. Never touch an unrecorded owner.
@@ -456,12 +480,21 @@ if ($Profile -eq 'PROD') {
     $promotionPath = Join-Path (Split-Path -Parent (Get-CanonicalPath $entry.app)) 'PROMOTION.json'
     if (-not (Test-Path -LiteralPath $promotionPath -PathType Leaf)) { throw "PROD promotion evidence is missing: $promotionPath" }
     $promotion = Get-Content -LiteralPath $promotionPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($promotion.status -ne 'promoted' -or [IO.Path]::GetFullPath([string]$promotion.target_app) -ine (Get-CanonicalPath $entry.app) -or
+    if ($promotion.status -notin @('promoted', 'promoted_pending_prod_verification', 'prod_verified') -or [IO.Path]::GetFullPath([string]$promotion.target_app) -ine (Get-CanonicalPath $entry.app) -or
         [IO.Path]::GetFullPath([string]$promotion.run_center_config) -ine (Get-CanonicalPath $ConfigPath) -or
         [IO.Path]::GetFullPath([string]$promotion.prod_data_path) -ine $dataPath -or
         [IO.Path]::GetFullPath([string]$promotion.prod_cache_path) -ine $cachePath -or
         -not $promotion.manual_result -or -not $promotion.manual_result_sha256 -or -not $promotion.portable_zip -or -not $promotion.portable_sha256) {
         throw 'PROD promotion evidence is incomplete or does not identify the configured app.'
+    }
+    Import-Module (Join-Path $PSScriptRoot 'dev-release-gates.psm1') -Force
+    $backupGate = Test-DgProdBackupReadiness ([string]$promotion.prod_backup_report) 'K:\Bobbytagging\Backups' $dataPath $cachePath
+    if ([string]$promotion.prod_backup_report_sha256 -ne $backupGate.report_sha256 -or
+        [IO.Path]::GetFullPath([string]$promotion.prod_database_backup) -ine $backupGate.database_backup -or
+        [IO.Path]::GetFullPath([string]$promotion.prod_reasonix_backup) -ine $backupGate.reasonix_backup -or
+        [IO.Path]::GetFullPath([string]$promotion.prod_restore_root) -ine $backupGate.restore_root -or
+        [IO.Path]::GetFullPath([string]$promotion.prod_restored_database) -ine $backupGate.restored_database) {
+        throw 'PROD promotion backup and isolated restore evidence is missing or changed.'
     }
     foreach ($bound in @(
         @{ path = [string]$promotion.manual_result; hash = [string]$promotion.manual_result_sha256 },
@@ -505,7 +538,7 @@ $processes = [System.Collections.Generic.List[object]]::new()
 $buildId = ''
 $env:GEWU_PROFILE = $Profile.ToLowerInvariant()
 if ($Profile -eq 'PROD') { Remove-Item Env:GEWU_ALLOW_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue }
-if ($Profile -eq 'DEV') {
+if ($Profile -eq 'DEV' -and -not $DevCandidateReport) {
     $root = Get-CanonicalPath $config.projectRoot
     $python = Join-Path $root '.venv\Scripts\python.exe'
     $node = $config.nodeExe
@@ -526,7 +559,7 @@ if ($Profile -eq 'DEV') {
     $env:GEWU_API_URL = "http://127.0.0.1:$apiPort"
     $env:GEWU_FRONTEND_URL = "http://127.0.0.1:$webPort"
     $env:GEWU_INSTANCE_ID = 'DEV'
-    $env:GEWU_REPORTS_DIR = $config.profiles.TEST.reports
+    $env:GEWU_REPORTS_DIR = $entry.reports
     Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue
     # DEV code is loaded on each Run Center start. Avoid uvicorn --reload here:
     # its orphanable reloader/worker tree makes an identity-checked Stop leave port 8896 alive.
@@ -577,7 +610,7 @@ if ($Profile -eq 'DEV') {
     }
     $entry.url = "http://127.0.0.1:$webPort"
 } else {
-    $appDir = Get-CanonicalPath $entry.app
+    $appDir = if ($devCandidateBundle) { $devCandidateBundle.candidate_app } else { Get-CanonicalPath $entry.app }
     $exe = Join-Path $appDir 'Workbench.exe'
     $manifestPath = Join-Path $appDir 'build-manifest.json'
     if (-not (Test-Path -LiteralPath $exe) -or -not (Test-Path -LiteralPath $manifestPath)) { throw "$Profile frozen app or build manifest is missing: $appDir" }
@@ -592,7 +625,15 @@ if ($Profile -eq 'DEV') {
             throw 'PROD app manifest does not match the promoted and manually accepted candidate.'
         }
     }
-    $port = [int]$entry.port
+    $port = if ($devCandidateBundle) { [int]$entry.apiPort } else { [int]$entry.port }
+    if ($devCandidateBundle) { $entry.url = "http://127.0.0.1:$port" }
+    if ($devCandidateBundle) {
+        $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($manifestHash -ne $devCandidateBundle.manifest_sha256 -or $manifest.build_mode -ne 'candidate' -or
+            $manifest.storage_mode -ne 'user-selected' -or $manifest.dirty -ne $false) {
+            throw 'DEV frozen app manifest does not match the pending manual-acceptance report.'
+        }
+    }
     if ($Profile -eq 'TEST') {
         if ($manifest.dirty -ne $false -or $manifest.build_mode -ne 'candidate' -or
             $manifest.storage_mode -ne 'user-selected' -or -not $manifest.commit) {
@@ -648,7 +689,7 @@ if ($Profile -eq 'DEV') {
     $env:TAG_PROVIDER_HOME = if ($entry.providerHome) { [IO.Path]::GetFullPath([string]$entry.providerHome) } else { Join-Path $dataPath 'providers' }
     $env:GEWU_API_URL = $entry.url
     $env:GEWU_FRONTEND_URL = $entry.url
-    $env:GEWU_REPORTS_DIR = $config.profiles.TEST.reports
+    $env:GEWU_REPORTS_DIR = $entry.reports
     if ($Profile -eq 'PROD') { Remove-Item Env:GEWU_ALLOW_EXTERNAL_EFFECTS -ErrorAction SilentlyContinue }
     $args = @('--data',$dataPath,'--cache',$cachePath,'--port',"$port",'--no-open')
     $previousDevExternalEffects = [Environment]::GetEnvironmentVariable('GEWU_DEV_EXTERNAL_EFFECTS', 'Process')
@@ -675,6 +716,11 @@ if ($Profile -eq 'DEV') {
     }
     Add-ProcessRecord $processes 'app' $app $exe '--data'
     $record = New-RunRecord $Profile $entry.url $dataPath $cachePath $buildId $manifest.commit '' $processes
+    if ($devCandidateBundle) {
+        $record['dev_candidate_report'] = $devCandidateBundle.report_path
+        $record['dev_candidate_report_sha256'] = $devCandidateBundle.report_sha256
+        $record['candidate_app'] = $devCandidateBundle.candidate_app
+    }
     Save-Record $record $recordPath
     $ready = $false
     for ($i=0; $i -lt 90; $i++) { $health = Get-Health $entry.url; if ($health -and $health.application -eq 'product-tagging-workbench') { $ready = $true; break }; Start-Sleep -Milliseconds 500 }
@@ -702,7 +748,44 @@ $health = Get-Health $(if ($Profile -eq 'DEV') { "http://127.0.0.1:$($entry.apiP
 if ($Profile -eq 'DEV' -and -not (Test-ProfileRuntime "http://127.0.0.1:$($entry.apiPort)" 'dev' @($devRuntimePolicy) @($devRuntimeInstanceId))) {
     throw 'DEV API did not report profile=dev and the selected external-call policy.'
 }
+$runtimeStatus = Get-RuntimeStatus $(if ($Profile -eq 'DEV') { "http://127.0.0.1:$($entry.apiPort)" } else { $entry.url })
+if (-not $health -or (Get-CanonicalPath $health.storage) -ne $dataPath) { throw "$Profile health does not identify its configured data directory." }
+if ($Profile -eq 'PROD' -and
+    (-not $runtimeStatus -or $runtimeStatus.profile -ne 'prod' -or $runtimeStatus.instance_id -ne 'PROD' -or
+     $health.build_id -ne $promotion.build_id -or $health.commit -ne $promotion.commit -or
+     $health.source_sha256 -ne $promotion.source_sha256 -or
+     $runtimeStatus.source.build_id -ne $promotion.build_id -or $runtimeStatus.source.commit -ne $promotion.commit -or
+     $runtimeStatus.source.source_sha256 -ne $promotion.source_sha256)) {
+    throw 'Live PROD runtime identity does not match the promoted build, source digest, profile, or instance. No verification record was written.'
+}
 $record = New-RunRecord $Profile $entry.url $dataPath $cachePath $(if ($Profile -eq 'DEV') { $health.build_id } else { $buildId }) $health.commit $(if ($Profile -eq 'DEV') { $config.projectRoot } else { '' }) $processes
+if ($devCandidateBundle) {
+    $record['dev_candidate_report'] = $devCandidateBundle.report_path
+    $record['dev_candidate_report_sha256'] = $devCandidateBundle.report_sha256
+    $record['candidate_app'] = $devCandidateBundle.candidate_app
+}
+if ($Profile -eq 'PROD') {
+    $runtimeProcessRecord = $processes | Where-Object role -eq 'app-runtime' | Select-Object -First 1
+    if (-not $runtimeProcessRecord) { throw 'Verified PROD runtime process identity is missing; no PROD verification was recorded.' }
+    $verificationRoot = Split-Path -Parent (Get-CanonicalPath $entry.app)
+    $verificationPath = Join-Path $verificationRoot ('PROD_VERIFICATION-' + [Guid]::NewGuid().ToString('N') + '.json')
+    if (Test-Path -LiteralPath $verificationPath) { throw 'Unique PROD verification path unexpectedly exists.' }
+    $verification = [ordered]@{
+        schema = 1; status = 'verified_live_prod'; created_at = [DateTime]::UtcNow.ToString('o')
+        profile = [string]$runtimeStatus.profile; instance_id = [string]$runtimeStatus.instance_id
+        version = [string]$health.version; build_id = [string]$health.build_id; commit = [string]$health.commit
+        source_sha256 = [string]$health.source_sha256; manifest_sha256 = [string]$health.manifest_sha256
+        app = Get-CanonicalPath $entry.app; app_manifest_sha256 = [string]$promotion.app_manifest_sha256
+        data_path = $dataPath; cache_path = $cachePath; url = [string]$entry.url
+        promotion_path = $promotionPath; promotion_sha256 = (Get-FileHash -LiteralPath $promotionPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        run_record = $recordPath; run_record_profile = 'PROD'; process = $runtimeProcessRecord
+    }
+    $tempVerification = "$verificationPath.tmp"
+    $verification | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $tempVerification -Encoding UTF8
+    Move-Item -LiteralPath $tempVerification -Destination $verificationPath
+    $record['prod_verification_path'] = $verificationPath
+    $record['prod_verification_sha256'] = (Get-FileHash -LiteralPath $verificationPath -Algorithm SHA256).Hash.ToLowerInvariant()
+}
 Save-Record $record $recordPath
 Write-Output "$Profile ready: $($entry.url)"
 Write-Output "  data: $dataPath"

@@ -154,12 +154,21 @@
     },
     {
       "version": "0.5.0-beta.14",
+      "status": "superseded",
+      "artifact_kind": "portable_candidate",
+      "commit": null,
+      "tag": null,
+      "superseded_by": "0.5.0-beta.15",
+      "note": "DEV 人工验收由用户确认。包含响应式工作台导航及选品档案证据建议/季节性验证改进。自动化回归存在已记录的失败项；外机安装验收仍待评估，PROD 部署和 GitHub 便携包发布待本候选冻结后完成。"
+    },
+    {
+      "version": "0.5.0-beta.15",
       "status": "pending_acceptance",
       "artifact_kind": "portable_candidate",
       "commit": null,
       "tag": null,
       "superseded_by": null,
-      "note": "DEV 人工验收由用户确认。包含响应式工作台导航及选品档案证据建议/季节性验证改进。自动化回归存在已记录的失败项；外机安装验收仍待评估，PROD 部署和 GitHub 便携包发布待本候选冻结后完成。"
+      "note": "汇总 2026-10-24 DEV 选品档案、竞争结构阅读体验和工作台增量；等待本版本 DEV 人工验收、冻结构建、PROD 身份核验及 GitHub Release。"
     }
   ]
 }
