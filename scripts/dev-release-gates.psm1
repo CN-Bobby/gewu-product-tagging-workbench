@@ -1,5 +1,5 @@
 ﻿Set-StrictMode -Version 2.0
-Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -Force -ErrorAction Stop
 
 function Get-DgSha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
@@ -496,6 +496,66 @@ function Test-DgProdBackupReadiness([string]$ReportPath, [string]$BackupsRoot, [
     }
 }
 
+# Compatibility for restarting the already promoted beta.13 app. Its original
+# portable archive can be moved after installation; the installed app and its
+# acceptance chain must still match their original hashes and exact identity.
+function Test-DgLegacyProdPromotion([string]$PromotionPath, [string]$ExpectedApp, [string]$ExpectedConfig, [string]$ExpectedData, [string]$ExpectedCache) {
+    $appPath = Get-DgCanonicalExistingPath $ExpectedApp 'Legacy PROD app'
+    $promotionFile = Get-DgCanonicalExistingPath $PromotionPath 'Legacy PROD promotion'
+    $configPath = Get-DgCanonicalExistingPath $ExpectedConfig 'Run Center config'
+    $dataPath = Get-DgCanonicalExistingPath $ExpectedData 'PROD data'
+    $cachePath = Get-DgCanonicalExistingPath $ExpectedCache 'PROD cache'
+    Assert-DgPlainPath $appPath 'Legacy PROD app' -Directory | Out-Null
+    Assert-DgPlainPath $dataPath 'PROD data' -Directory | Out-Null
+    Assert-DgPlainPath $cachePath 'PROD cache' -Directory | Out-Null
+    $expectedPromotion = Join-Path (Split-Path -Parent $appPath) 'PROMOTION.json'
+    if ($promotionFile -ine $expectedPromotion -or (Split-Path -Leaf (Split-Path -Parent $appPath)) -ine 'Candidate-beta.13') {
+        throw 'Legacy PROD promotion must belong to the installed beta.13 candidate.'
+    }
+    $promotion = Read-DgJson $promotionFile 'Legacy PROD promotion'
+    $version = '0.5.0-beta.13'
+    $commit = '80fa8c41618c7eadff7bdfd90aba6fb7be687015'
+    $build = '0.5.0-beta.13+80fa8c41618c'
+    if ($promotion.schema -ne 1 -or $promotion.status -notin @('promoted', 'prod_verified') -or
+        $promotion.version -ne $version -or $promotion.build_id -ne $build -or $promotion.commit -ne $commit -or
+        (Get-DgCanonicalPath ([string]$promotion.target_app) 'Promotion app') -ine $appPath -or
+        (Get-DgCanonicalPath ([string]$promotion.run_center_config) 'Promotion config') -ine $configPath -or
+        (Get-DgCanonicalPath ([string]$promotion.prod_data_path) 'Promotion data') -ine $dataPath -or
+        (Get-DgCanonicalPath ([string]$promotion.prod_cache_path) 'Promotion cache') -ine $cachePath) {
+        throw 'Legacy PROD promotion does not identify the installed, accepted beta.13 app and fixed data paths.'
+    }
+    $manifestPath = Join-Path $appPath 'build-manifest.json'
+    $manifest = Read-DgJson $manifestPath 'Legacy PROD manifest'
+    $manifestHash = Get-DgSha256 $manifestPath
+    $sourceHash = Assert-DgHash $manifest.source_sha256 'Legacy PROD source_sha256'
+    if ($manifest.version -ne $version -or $manifest.build_id -ne $build -or $manifest.commit -ne $commit -or
+        $manifestHash -ne (Assert-DgHash $promotion.app_manifest_sha256 'Promotion app_manifest_sha256')) {
+        throw 'Installed beta.13 manifest does not match the promotion identity or hash.'
+    }
+    $manualPath = Get-DgCanonicalExistingPath ([string]$promotion.manual_result) 'Legacy manual acceptance'
+    $candidatePath = Get-DgCanonicalExistingPath ([string]$promotion.candidate_report) 'Legacy candidate report'
+    if ((Get-DgSha256 $manualPath) -ne (Assert-DgHash $promotion.manual_result_sha256 'Promotion manual_result_sha256') -or
+        (Get-DgSha256 $candidatePath) -ne (Assert-DgHash $promotion.candidate_report_sha256 'Promotion candidate_report_sha256')) {
+        throw 'Legacy acceptance or candidate report hash changed.'
+    }
+    $manual = Read-DgJson $manualPath 'Legacy manual acceptance'
+    $candidate = Read-DgJson $candidatePath 'Legacy candidate report'
+    $portableHash = Assert-DgHash $promotion.portable_sha256 'Promotion portable_sha256'
+    $sidecarHash = Assert-DgHash $promotion.portable_sidecar_sha256 'Promotion portable_sidecar_sha256'
+    if ($manual.status -ne 'passed' -or $manual.profile -ne 'dev' -or
+        $candidate.status -ne 'promoted' -or $candidate.profile -ne 'dev' -or
+        $manual.version -ne $version -or $candidate.version -ne $version -or
+        $manual.build_id -ne $build -or $candidate.build_id -ne $build -or
+        $manual.commit -ne $commit -or $candidate.commit -ne $commit -or
+        $manual.candidate_report_sha256 -ne (Get-DgSha256 $candidatePath) -or
+        $manual.app_manifest_sha256 -ne $manifestHash -or $candidate.manifest_sha256 -ne $manifestHash -or
+        $manual.portable_sha256 -ne $portableHash -or $candidate.portable_sha256 -ne $portableHash -or
+        $manual.portable_sidecar_sha256 -ne $sidecarHash -or $candidate.portable_sidecar_sha256 -ne $sidecarHash) {
+        throw 'Legacy beta.13 acceptance, candidate, and installed manifest do not describe the same build.'
+    }
+    return [pscustomobject]@{ promotion = $promotion; source_sha256 = $sourceHash; manifest_sha256 = $manifestHash }
+}
+
 Export-ModuleMember -Function Get-DgSha256, Assert-DgHash, Get-DgCanonicalExistingPath, Get-DgCanonicalPath,
     Assert-DgUnderRoot, Assert-DgPlainPath, Assert-DgNoReparseAncestors, Read-DgJson, Test-DgAppTree, Test-DgPortableZip, Expand-DgPortableZip,
-    Test-DgOfflineReport, Test-DgCandidateBundle, Test-DgManualAcceptance, Test-DgProdVerification, Test-DgProdBackupReadiness
+    Test-DgOfflineReport, Test-DgCandidateBundle, Test-DgManualAcceptance, Test-DgProdVerification, Test-DgProdBackupReadiness, Test-DgLegacyProdPromotion

@@ -8,6 +8,9 @@ param(
     [switch]$NoOpen
 )
 $ErrorActionPreference = 'Stop'
+# Desktop launchers use Windows PowerShell. Pin its built-in Utility module so
+# a PowerShell 7 module earlier in PSModulePath cannot hide Get-FileHash.
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -Force -ErrorAction Stop
 $runCenterRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'GeWuWorkbench\RunCenter'))
 $expectedConfigPath = Join-Path $runCenterRoot 'config.json'
 if ([IO.Path]::GetFullPath($ConfigPath) -ine $expectedConfigPath) {
@@ -271,6 +274,16 @@ $testRuntimeInstanceId = 'TEST'
 if ($Action -eq 'Start' -and $record) {
     $healthUrl = if ($Profile -eq 'DEV') { "http://127.0.0.1:$($entry.apiPort)" } else { $entry.url }
     $runningHealth = Get-Health $healthUrl
+    $runningDevCandidateBundle = $null
+    if ($Profile -eq 'DEV' -and -not $devCandidateBundle -and $record.dev_candidate_report) {
+        if (-not $runningHealth) {
+            throw 'The recorded frozen DEV candidate is not responding. Use Run Center to inspect or stop it before starting live DEV.'
+        }
+        Import-Module (Join-Path $PSScriptRoot 'dev-release-gates.psm1') -Force
+        $reports = [IO.Path]::GetFullPath([string]$config.profiles.DEV.reports)
+        $builds = Join-Path ([IO.Path]::GetFullPath([string]$config.projectRoot)) 'builds'
+        $runningDevCandidateBundle = Test-DgCandidateBundle ([string]$record.dev_candidate_report) $reports $builds
+    }
     # Reconcile a detached TEST runtime child only when its recorded Workbench launcher,
     # current health identity, parent PID, bootstrap path, and frozen manifest all agree.
     # This allows Run Center Stop/Start to manage the exact child without adopting unknown listeners.
@@ -335,12 +348,14 @@ if ($Action -eq 'Start' -and $record) {
     $recordMatches = $runningHealth -and $runningHealth.application -eq 'product-tagging-workbench' -and
         (Get-CanonicalPath $runningHealth.storage) -eq (Get-CanonicalPath $record.data) -and
         $runningHealth.commit -eq $record.commit -and $runningHealth.build_id -eq $record.build_id
-    if ($Profile -eq 'DEV' -and $devCandidateBundle) {
-        $recordMatches = $recordMatches -and [IO.Path]::GetFullPath([string]$record.dev_candidate_report) -ieq $devCandidateBundle.report_path -and
-            [string]$record.dev_candidate_report_sha256 -eq $devCandidateBundle.report_sha256
+    if ($Profile -eq 'DEV' -and ($devCandidateBundle -or $runningDevCandidateBundle)) {
+        $matchingDevBundle = if ($devCandidateBundle) { $devCandidateBundle } else { $runningDevCandidateBundle }
+        $recordMatches = $recordMatches -and [IO.Path]::GetFullPath([string]$record.dev_candidate_report) -ieq $matchingDevBundle.report_path -and
+            [string]$record.dev_candidate_report_sha256 -eq $matchingDevBundle.report_sha256 -and
+            (Get-CanonicalPath $record.candidate_app) -eq (Get-CanonicalPath $matchingDevBundle.candidate_app)
     } elseif ($Profile -eq 'DEV' -and $record.dev_candidate_report) { $recordMatches = $false }
     if ($recordMatches -and $Profile -ne 'PROD') {
-        $expectedPolicy = if ($Profile -eq 'TEST') { @($testRuntimePolicy) } else { @($devRuntimePolicy) }
+        $expectedPolicy = if ($Profile -eq 'TEST') { @($testRuntimePolicy) } elseif ($runningDevCandidateBundle -or $devCandidateBundle) { @('offline') } else { @($devRuntimePolicy) }
         $expectedInstance = if ($Profile -eq 'TEST') { @($testRuntimeInstanceId) } else { @($devRuntimeInstanceId) }
         $recordMatches = Test-ProfileRuntime $healthUrl $Profile.ToLowerInvariant() $expectedPolicy $expectedInstance
     }
@@ -362,6 +377,9 @@ if ($Action -eq 'Start' -and $record) {
         if (-not $NoOpen) { Open-RunCenterPage $(if ($record.dev_candidate_report) { $healthUrl } else { $entry.url }) | Out-Null; Show-ProdPendingNotice $runningHealth }
         Write-Output "$Profile is already running with the recorded identity: $($record.build_id) / $($record.commit)"
         exit 0
+    }
+    if ($Profile -eq 'DEV' -and $runningDevCandidateBundle) {
+        throw 'The recorded frozen DEV candidate did not pass live identity checks. Nothing was started or stopped.'
     }
 }
 
@@ -520,33 +538,41 @@ if ($Profile -eq 'PROD') {
         throw 'PROD promotion evidence is incomplete or does not identify the configured app.'
     }
     Import-Module (Join-Path $PSScriptRoot 'dev-release-gates.psm1') -Force
-    $backupGate = Test-DgProdBackupReadiness ([string]$promotion.prod_backup_report) 'K:\Bobbytagging\Backups' $dataPath $cachePath
-    if ([string]$promotion.prod_backup_report_sha256 -ne $backupGate.report_sha256 -or
-        [IO.Path]::GetFullPath([string]$promotion.prod_database_backup) -ine $backupGate.database_backup -or
-        [IO.Path]::GetFullPath([string]$promotion.prod_reasonix_backup) -ine $backupGate.reasonix_backup -or
-        [IO.Path]::GetFullPath([string]$promotion.prod_restore_root) -ine $backupGate.restore_root -or
-        [IO.Path]::GetFullPath([string]$promotion.prod_restored_database) -ine $backupGate.restored_database) {
-        throw 'PROD promotion backup and isolated restore evidence is missing or changed.'
-    }
-    foreach ($bound in @(
-        @{ path = [string]$promotion.manual_result; hash = [string]$promotion.manual_result_sha256 },
-        @{ path = [string]$promotion.portable_zip; hash = [string]$promotion.portable_sha256 },
-        @{ path = [string]$promotion.portable_sidecar; hash = [string]$promotion.portable_sidecar_sha256 },
-        @{ path = [string]$promotion.candidate_report; hash = [string]$promotion.candidate_report_sha256 }
-    )) {
-        if (-not (Test-Path -LiteralPath $bound.path -PathType Leaf) -or
-            (Get-FileHash -LiteralPath $bound.path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $bound.hash.ToLowerInvariant()) {
-            throw "PROD promotion evidence file is missing or changed: $($bound.path)"
+    if ($promotion.version -eq '0.5.0-beta.13') {
+        # This exact historical promotion predates backup/sidecar startup gates.
+        # Recheck its immutable installed app and acceptance chain on restart.
+        $legacyPromotion = Test-DgLegacyProdPromotion $promotionPath $entry.app $ConfigPath $dataPath $cachePath
+        $expectedProdSourceSha256 = [string]$legacyPromotion.source_sha256
+    } else {
+        $backupGate = Test-DgProdBackupReadiness ([string]$promotion.prod_backup_report) 'K:\Bobbytagging\Backups' $dataPath $cachePath
+        if ([string]$promotion.prod_backup_report_sha256 -ne $backupGate.report_sha256 -or
+            [IO.Path]::GetFullPath([string]$promotion.prod_database_backup) -ine $backupGate.database_backup -or
+            [IO.Path]::GetFullPath([string]$promotion.prod_reasonix_backup) -ine $backupGate.reasonix_backup -or
+            [IO.Path]::GetFullPath([string]$promotion.prod_restore_root) -ine $backupGate.restore_root -or
+            [IO.Path]::GetFullPath([string]$promotion.prod_restored_database) -ine $backupGate.restored_database) {
+            throw 'PROD promotion backup and isolated restore evidence is missing or changed.'
         }
-    }
-    $manualResult = Get-Content -LiteralPath $promotion.manual_result -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($manualResult.status -ne 'passed' -or $manualResult.build_id -ne $promotion.build_id -or
-        $manualResult.commit -ne $promotion.commit -or $manualResult.version -ne $promotion.version -or
-        $manualResult.portable_sha256 -ne $promotion.portable_sha256 -or
-        $manualResult.portable_sidecar_sha256 -ne $promotion.portable_sidecar_sha256 -or
-        $manualResult.candidate_report_sha256 -ne $promotion.candidate_report_sha256 -or
-        $manualResult.app_manifest_sha256 -ne $promotion.app_manifest_sha256) {
-        throw 'PROD promotion does not match a passing manual acceptance record for this portable build.'
+        foreach ($bound in @(
+            @{ path = [string]$promotion.manual_result; hash = [string]$promotion.manual_result_sha256 },
+            @{ path = [string]$promotion.portable_zip; hash = [string]$promotion.portable_sha256 },
+            @{ path = [string]$promotion.portable_sidecar; hash = [string]$promotion.portable_sidecar_sha256 },
+            @{ path = [string]$promotion.candidate_report; hash = [string]$promotion.candidate_report_sha256 }
+        )) {
+            if (-not (Test-Path -LiteralPath $bound.path -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $bound.path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $bound.hash.ToLowerInvariant()) {
+                throw "PROD promotion evidence file is missing or changed: $($bound.path)"
+            }
+        }
+        $manualResult = Get-Content -LiteralPath $promotion.manual_result -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($manualResult.status -ne 'passed' -or $manualResult.build_id -ne $promotion.build_id -or
+            $manualResult.commit -ne $promotion.commit -or $manualResult.version -ne $promotion.version -or
+            $manualResult.portable_sha256 -ne $promotion.portable_sha256 -or
+            $manualResult.portable_sidecar_sha256 -ne $promotion.portable_sidecar_sha256 -or
+            $manualResult.candidate_report_sha256 -ne $promotion.candidate_report_sha256 -or
+            $manualResult.app_manifest_sha256 -ne $promotion.app_manifest_sha256) {
+            throw 'PROD promotion does not match a passing manual acceptance record for this portable build.'
+        }
+        $expectedProdSourceSha256 = [string]$promotion.source_sha256
     }
 }
 foreach ($otherProfile in @('DEV', 'TEST', 'PROD') | Where-Object { $_ -ne $Profile }) {
@@ -786,9 +812,9 @@ if (-not $health -or (Get-CanonicalPath $health.storage) -ne $dataPath) { throw 
 if ($Profile -eq 'PROD' -and
     (-not $runtimeStatus -or $runtimeStatus.profile -ne 'prod' -or $runtimeStatus.instance_id -ne 'PROD' -or
      $health.build_id -ne $promotion.build_id -or $health.commit -ne $promotion.commit -or
-     $health.source_sha256 -ne $promotion.source_sha256 -or
+     $health.source_sha256 -ne $expectedProdSourceSha256 -or
      $runtimeStatus.source.build_id -ne $promotion.build_id -or $runtimeStatus.source.commit -ne $promotion.commit -or
-     $runtimeStatus.source.source_sha256 -ne $promotion.source_sha256)) {
+     $runtimeStatus.source.source_sha256 -ne $expectedProdSourceSha256)) {
     throw 'Live PROD runtime identity does not match the promoted build, source digest, profile, or instance. No verification record was written.'
 }
 $record = New-RunRecord $Profile $entry.url $dataPath $cachePath $(if ($Profile -eq 'DEV') { $health.build_id } else { $buildId }) $health.commit $(if ($Profile -eq 'DEV') { $config.projectRoot } else { '' }) $processes
