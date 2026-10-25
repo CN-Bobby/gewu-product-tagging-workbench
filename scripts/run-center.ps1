@@ -5,7 +5,8 @@ param(
     [ValidateSet('online', 'offline')][string]$ExternalEffectsMode = 'online',
     [string]$ConfigPath = (Join-Path $env:LOCALAPPDATA 'GeWuWorkbench\RunCenter\config.json'),
     [string]$DevCandidateReport = '',
-    [switch]$NoOpen
+    [switch]$NoOpen,
+    [switch]$Json
 )
 $ErrorActionPreference = 'Stop'
 # Desktop launchers use Windows PowerShell. Pin its built-in Utility module so
@@ -246,6 +247,23 @@ if ($Action -eq 'Stop' -and $DevCandidateReport -and
 }
 
 if ($Action -eq 'Status') {
+    if ($Json) {
+        # Status is read only; Start and Stop retain the full candidate safety gates.
+        Import-Module (Join-Path $PSScriptRoot 'run-center-status.psm1') -Force -ErrorAction Stop
+        $apiUrl = if ($Profile -eq 'DEV') { "http://127.0.0.1:$($entry.apiPort)" } else { [string]$entry.url }
+        $servicePort = if ($Profile -eq 'DEV') { [int]$entry.apiPort } else { [int]$entry.port }
+        $serviceOwner = Get-PortOwner $servicePort
+        $mode = if ($Profile -eq 'DEV' -and $record -and $record.dev_candidate_report) { 'candidate' } else { 'live' }
+        $webOwner = if ($Profile -eq 'DEV' -and $mode -eq 'live') { Get-PortOwner ([int]$entry.webPort) } else { $null }
+        $health = if ($serviceOwner) { Get-Health $apiUrl } else { $null }
+        $runtime = if ($health) { Get-RuntimeStatus $apiUrl } else { $null }
+        $snapshot = Get-DgControlPanelStatus -Profile $Profile -Entry $entry -Record $record -ServiceOwner $serviceOwner `
+            -WebOwner $webOwner -Health $health -Runtime $runtime -VerifyProcess {
+                param($recordToVerify, $role) Test-RecordedProcess $recordToVerify $role
+            }
+        $snapshot | ConvertTo-Json -Compress -Depth 5
+        exit 0
+    }
     $url = if ($devCandidateBundle) { "http://127.0.0.1:$($entry.apiPort)" } else { $entry.url }
     $healthUrl = if ($Profile -eq 'DEV') { "http://127.0.0.1:$($entry.apiPort)" } else { $url }
     $health = Get-Health $healthUrl

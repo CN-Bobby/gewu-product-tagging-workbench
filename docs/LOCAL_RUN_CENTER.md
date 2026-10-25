@@ -1,5 +1,7 @@
 # 格物本地运行中心（M1）
 
+DEV 常驻桌面面板的安装、操作和备用入口见 [DEV 开发控制台](DEV_CONTROL_PANEL.md)。
+
 > 当前日常开发与人工测试统一使用 DEV，独立 TEST 服务已停止；TEST 的程序与数据保留。旧候选流程说明不代表当前日常测试入口，详见 [DEV 唯一日常人工测试环境](DEV_ONLY_DAILY_TESTING.md)。
 
 `scripts/install-run-center.ps1` 用于安装当前用户的运行中心配置和三个桌面入口。它只写入 `%LOCALAPPDATA%\GeWuWorkbench\RunCenter` 与桌面快捷方式，不会启动服务。已知的旧 beta.7 正式快捷方式和旧 TEST 快捷方式会移入 `%LOCALAPPDATA%\GeWuWorkbench\RunCenter\LegacyShortcuts` 留存；目标不明的同名快捷方式会让安装停止，不会覆盖。

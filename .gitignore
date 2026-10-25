@@ -1,6 +1,9 @@
 storage/
 frontend/node_modules/
 frontend/dist/
+tools/**/bin/
+tools/**/obj/
+tools/**/publish/
 __pycache__/
 .pytest_cache/
 .test-temp/
