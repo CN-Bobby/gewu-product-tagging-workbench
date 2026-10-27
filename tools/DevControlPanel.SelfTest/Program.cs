@@ -23,6 +23,10 @@ static RunCenterStatus Fixture(string state, bool verified, string mode = "live"
 
 var stopped = Fixture("stopped", false);
 Check(stopped.CanStart && !stopped.CanOpen && !stopped.IsVerified, "stopped allows start only");
+var staleRecord = Fixture("degraded", false);
+staleRecord.Reason = "record_without_listener";
+Check(staleRecord.CanClearStale && !staleRecord.CanStart && !staleRecord.CanOpen,
+    "stale record permits verified Run Center cleanup only");
 var live = Fixture("verified_running", true);
 Check(!live.CanStart && live.CanOpen && live.IsVerified, "verified live allows open/control");
 var candidate = Fixture("verified_running", true, "candidate");
@@ -32,6 +36,7 @@ foreach (var state in new[] { "degraded", "identity_conflict" })
 {
     var item = Fixture(state, false);
     Check(!item.CanStart && !item.CanOpen && !item.IsVerified, state + " disables controls");
+    Check(!item.CanClearStale, state + " does not expose cleanup for other failures");
 }
 var wrong = false;
 try { RunCenterClient.ParseStatus(JsonSerializer.Serialize(live), "PROD"); }

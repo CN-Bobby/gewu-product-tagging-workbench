@@ -24,6 +24,8 @@ public sealed class RunCenterStatus
 
     public bool IsVerified => Schema == 1 && State == "verified_running" && OwnershipVerified;
     public bool CanStart => Schema == 1 && State == "stopped" && !OwnershipVerified;
+    public bool CanClearStale => Schema == 1 && State == "degraded" &&
+        Reason == "record_without_listener" && !OwnershipVerified;
     public bool CanOpen => IsVerified && Uri.TryCreate(Url, UriKind.Absolute, out var uri)
         && uri.Scheme == Uri.UriSchemeHttp && uri.IsLoopback;
 }

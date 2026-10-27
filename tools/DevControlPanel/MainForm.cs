@@ -312,7 +312,8 @@ public sealed class MainForm : Form
         _start.Enabled = !_busy && _dev?.CanStart == true;
         _start.BackColor = _start.Enabled ? GreenColor : Color.FromArgb(226, 233, 226);
         _start.ForeColor = _start.Enabled ? Color.White : MutedColor;
-        _stop.Enabled = !_busy && _dev?.IsVerified == true;
+        _stop.Enabled = !_busy && (_dev?.IsVerified == true || _dev?.CanClearStale == true);
+        _stop.Text = _dev?.CanClearStale == true ? "清理失效记录" : "停止";
         _restart.Enabled = !_busy && _dev?.IsVerified == true;
         _openDev.Enabled = !_busy && _dev?.CanOpen == true;
         _openProd.Enabled = _prod?.CanOpen == true;
@@ -368,8 +369,15 @@ public sealed class MainForm : Form
 
     private async Task StopAsync()
     {
-        if (_dev?.IsVerified != true || _busy) return;
-        if (!ConfirmInterruption("停止")) return;
+        if (_busy || (_dev?.IsVerified != true && _dev?.CanClearStale != true)) return;
+        if (_dev?.CanClearStale == true)
+        {
+            if (MessageBox.Show(this,
+                "Run Center 留有上次的 DEV 记录，但服务端口已停止。清理前会再次核对记录与端口；身份不符时会保留现场。确定清理吗？",
+                "清理失效记录", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+        }
+        else if (!ConfirmInterruption("停止")) return;
         await ActAsync("Stop");
     }
 
