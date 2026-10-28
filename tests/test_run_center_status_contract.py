@@ -36,13 +36,16 @@ $badPolicy = Get-DgControlPanelStatus -Profile DEV -Entry $entry -Record $record
 $missingListener = Get-DgControlPanelStatus -Profile DEV -Entry $entry -Record $record -ServiceOwner 102 -Health $health -Runtime $runtime -VerifyProcess {{param($r,$role) return $null}}
 $liveRecord = [pscustomobject]@{{data='K:\DevData';build_id='build';commit='commit';processes=@(
   [pscustomobject]@{{role='api';pid=201}}, [pscustomobject]@{{role='web';pid=202}})}}
+$liveChildRecord = [pscustomobject]@{{data='K:\DevData';build_id='build';commit='commit';processes=@(
+  [pscustomobject]@{{role='api';pid=201}}, [pscustomobject]@{{role='api-child';pid=203}}, [pscustomobject]@{{role='web';pid=202}})}}
 $liveRuntime = [pscustomobject]@{{profile='dev';instance_id='DEV';external_effects=[pscustomobject]@{{policy='live_validation'}}}}
 $webAsApi = Get-DgControlPanelStatus -Profile DEV -Entry $entry -Record $liveRecord -ServiceOwner 202 -WebOwner 202 -Health $health -Runtime $liveRuntime -VerifyProcess {{param($r,$role) return [pscustomobject]@{{pid=201}}}}
 $missingWeb = Get-DgControlPanelStatus -Profile DEV -Entry $entry -Record $liveRecord -ServiceOwner 201 -WebOwner 202 -Health $health -Runtime $liveRuntime -VerifyProcess {{param($r,$role) if($role -eq 'web'){{return $null}}; return [pscustomobject]@{{pid=201}}}}
+$liveChild = Get-DgControlPanelStatus -Profile DEV -Entry $entry -Record $liveChildRecord -ServiceOwner 203 -WebOwner 202 -Health $health -Runtime $liveRuntime -VerifyProcess {{param($r,$role) if($role -eq 'api-child'){{return [pscustomobject]@{{pid=203}}}}; if($role -eq 'web'){{return [pscustomobject]@{{pid=202}}}}; return [pscustomobject]@{{pid=201}}}}
 $prodEntry = [pscustomobject]@{{url='http://127.0.0.1:8765';port=8765;data='K:\DevData'}}
 $prodRuntime = [pscustomobject]@{{profile='prod';instance_id='PROD';external_effects=[pscustomobject]@{{policy='online'}}}}
 $prod = Get-DgControlPanelStatus -Profile PROD -Entry $prodEntry -Record $record -ServiceOwner 102 -Health $health -Runtime $prodRuntime -VerifyProcess $verify
-@($stopped,$foreign,$stale,$healthy,$noHealth,$mismatch,$badPolicy,$missingListener,$webAsApi,$missingWeb,$prod) | ConvertTo-Json -Depth 5 -Compress
+@($stopped,$foreign,$stale,$healthy,$noHealth,$mismatch,$badPolicy,$missingListener,$webAsApi,$missingWeb,$prod,$liveChild) | ConvertTo-Json -Depth 5 -Compress
 """
     result = subprocess.run(
         [POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", command],
@@ -62,8 +65,11 @@ $prod = Get-DgControlPanelStatus -Profile PROD -Entry $prodEntry -Record $record
         ("identity_conflict", "unrecorded_api_owner"),
         ("degraded", "recorded_listener_missing"),
         ("verified_running", "ok"),
+        ("verified_running", "ok"),
     ]
     assert states[3]["ownership_verified"] is True
-    assert all(item["ownership_verified"] is False for i, item in enumerate(states) if i not in (3, 10))
+    assert all(item["ownership_verified"] is False for i, item in enumerate(states) if i not in (3, 10, 11))
     assert states[3]["mode"] == "candidate"
     assert states[3]["url"] == "http://127.0.0.1:8896"
+    assert states[11]["mode"] == "live"
+    assert states[11]["ownership_verified"] is True

@@ -21,7 +21,7 @@ function Get-DgControlPanelStatus {
         $state = if ($WebOwner) { 'identity_conflict' } else { 'degraded' }
         $reason = if ($WebOwner) { 'web_without_recorded_api' } else { 'record_without_listener' }
     } else {
-        $apiRoles = if ($mode -eq 'live') { @('api', 'api-runtime') } else { @('app', 'app-runtime') }
+        $apiRoles = if ($mode -eq 'live') { @('api', 'api-runtime', 'api-child') } else { @('app', 'app-runtime') }
         $knownApiPids = @($Record.processes | Where-Object { $_.role -in $apiRoles } | ForEach-Object { [int]$_.pid })
         if ($ServiceOwner -notin $knownApiPids) {
             $state = 'identity_conflict'; $reason = 'unrecorded_api_owner'
