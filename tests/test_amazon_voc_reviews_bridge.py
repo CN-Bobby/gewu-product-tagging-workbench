@@ -33,6 +33,7 @@ def review_workbook() -> bytes:
 def bridge(tmp_path, monkeypatch):
     instance = AmazonVOCService(root=tmp_path / "amazon-voc")
     monkeypatch.setattr(voc_router, "service", instance)
+    monkeypatch.setattr(instance, "start_worker", lambda **_kwargs: None)
     monkeypatch.setattr(instance, "public_model_settings", lambda: {
         "configured": True, "default_model": "shared/fake-text",
         "default_credential_id": "cred-1", "providers": [],
@@ -80,6 +81,7 @@ def test_reviewed_workbook_creates_one_project_and_idempotent_voc_run(bridge):
     assert result["project"]["category"] == ""
     assert job_id[:8] in result["project"]["name"]
     assert result["run"]["status"] == "uploaded"
+    assert result["run"]["sources"]["analysis_mode"] == "full_voc_v2"
     digest = hashlib.sha256((folder / "result.xlsx").read_bytes()).hexdigest()
     assert result["run"]["sources"]["reviews_sha256"] == digest
     assert result["source_job"]["voc_handoff"] == {
@@ -101,6 +103,24 @@ def test_reviewed_workbook_creates_one_project_and_idempotent_voc_run(bridge):
     assert voc.db.one("SELECT COUNT(*) AS n FROM runs")["n"] == 1
     saved_job = json.loads((folder / "job.json").read_text(encoding="utf-8"))
     assert saved_job["voc_handoff"]["run_id"] == result["run"]["id"]
+
+
+def test_combined_reviews_auto_handoff_creates_full_voc_v2_run(bridge, monkeypatch):
+    voc, _api = bridge
+    monkeypatch.setattr(voc_service_module, "service", voc)
+    job_id = "7" * 32
+    add_source_job(job_id, status="completed", review_count=1)
+    source_job = reviews_service.get(job_id)
+    source_job["auto_voc_policy"] = "any_exported"
+    reviews_service._save(source_job)
+
+    reviews_service._auto_voc_handoff(reviews_service.get(job_id))
+
+    saved_job = reviews_service.get(job_id)
+    assert saved_job["voc_handoff"]["status"] == "started"
+    run = voc.db.get_run(saved_job["voc_handoff"]["run_id"])
+    assert run["sources"]["analysis_mode"] == "full_voc_v2"
+    assert run["sources"]["reviews_sha256"] == saved_job["voc_handoff"]["workbook_sha256"]
 
 
 @pytest.mark.parametrize("payload,status", [
@@ -196,6 +216,9 @@ def test_review_source_scope_is_written_into_html_and_excel(tmp_path):
     html_path.write_text("<html><body><main>Report</main></body></html>", encoding="utf-8")
     excel_path = tmp_path / "report.xlsx"
     workbook = Workbook()
+    workbook.active.title = "任务与方法说明"
+    for index in range(11):
+        workbook.create_sheet(f"VOC证据{index + 1}")
     workbook.save(excel_path)
     _append_review_scope(html_path, excel_path, context)
 
@@ -203,7 +226,14 @@ def test_review_source_scope_is_written_into_html_and_excel(tmp_path):
     assert "评论采集范围与 ASIN 覆盖" in html_report
     assert "B000000002" in html_report
     workbook = load_workbook(excel_path, read_only=True)
-    assert "采集范围" in workbook.sheetnames
-    values = list(workbook["采集范围"].values)
-    assert values[5][1] == 1
-    assert values[10][1] == "B000000002"
+    assert len(workbook.sheetnames) == 12
+    assert "采集范围" not in workbook.sheetnames
+    values = list(workbook["任务与方法说明"].values)
+    metadata = {row[0]: row[1] for row in values if len(row) >= 2 and row[0]}
+    assert metadata["有评论的 ASIN 数"] == 1
+    assert metadata["失败或未完成 ASIN"] == "B000000002"
+    _append_review_scope(html_path, excel_path, context)
+    workbook = load_workbook(excel_path, read_only=True)
+    values = list(workbook["任务与方法说明"].values)
+    assert len(workbook.sheetnames) == 12
+    assert sum(row[0] == "评论采集范围与 ASIN 覆盖" for row in values) == 1

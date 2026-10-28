@@ -726,7 +726,33 @@ def _call_for_job(client, job: dict, run_id: str = '') -> dict:
     }
     if kind == 'category_tree' and run_id:
         audit_context.update(_tree_no_data_context(run_id, job))
-    payload = call_sync(client, kind, arguments, audit_context=audit_context)
+    usage_event_id = None
+    try:
+        from ..usage import start_usage_event
+        usage_event_id = start_usage_event(
+            kind="mcp", module="xunlongjue", task_id=run_id or None,
+            function_name=kind, server_name="Sorftime", attempt=int(job.get("attempt") or 1),
+            metadata={"job_id": str(job.get("job_id") or "")},
+        )
+    except Exception:
+        usage_event_id = None
+    usage_started = time.perf_counter()
+    try:
+        payload = call_sync(client, kind, arguments, audit_context=audit_context)
+    except Exception:
+        try:
+            from ..usage import finish_usage_event
+            finish_usage_event(usage_event_id, status="failed",
+                               duration_ms=round((time.perf_counter()-usage_started)*1000))
+        except Exception:
+            pass
+        raise
+    try:
+        from ..usage import finish_usage_event
+        finish_usage_event(usage_event_id, status="success",
+                           duration_ms=round((time.perf_counter()-usage_started)*1000))
+    except Exception:
+        pass
     if kind == 'category_trend':
         return _normalize_sorftime_trend(payload, str(job.get('indicator') or ''))
     return payload

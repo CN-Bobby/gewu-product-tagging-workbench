@@ -1,5 +1,5 @@
 import io
-from pathlib import Path
+import json
 
 import openpyxl
 import pytest
@@ -43,7 +43,10 @@ def test_project_import_registers_source_and_archive_and_dispatches_child_asins(
         dossier = next(item for item in artifacts if item["kind"] == "product_archive")
         assert source["sha256"]
         assert dossier["downloadable"] is True
-        assert all((Path(project["root"]) / item["relative_path"]).is_file() for item in (source, dossier))
+        assert "root" not in project
+        dossier_download = client.get(f"/api/projects/{project['id']}/artifacts/{dossier['id']}/download")
+        assert dossier_download.status_code == 200
+        assert json.loads(dossier_download.content)["dataset_id"] == archive["dataset_id"]
         download = client.get(f"/api/projects/{project['id']}/artifacts/{source['id']}/download")
         assert download.status_code == 200
         assert download.content == raw_workbook

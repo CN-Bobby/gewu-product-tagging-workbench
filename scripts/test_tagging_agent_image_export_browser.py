@@ -226,8 +226,10 @@ def _check_runtime(request, base_url: str) -> dict:
             raise E2EFailure(f"{kind}_credential_missing", f"默认{kind}模型没有已启用的授权凭据")
         validation = provider.get("validation") or {}
         visual_validation = validation.get("vision") or validation.get("image")
-        if kind == "vision" and visual_validation and visual_validation.get("status") not in (None, "validated"):
-            raise E2EFailure("vision_model_not_validated", "默认视觉模型尚未通过视觉能力验证")
+        if kind == "vision":
+            vision_validation_status = (visual_validation or {}).get("status") or "unknown"
+            if visual_validation and vision_validation_status != "validated":
+                raise E2EFailure("vision_model_not_validated", "默认视觉模型尚未通过视觉能力验证")
     return {
         "profile": "dev",
         "policy": "live_validation",
@@ -237,6 +239,7 @@ def _check_runtime(request, base_url: str) -> dict:
         "visual_tagging": True,
         "text_credential_available": True,
         "vision_credential_available": True,
+        "vision_validation_status": vision_validation_status,
     }
 
 
@@ -262,17 +265,33 @@ def _wait_import_enrichment(request, base_url: str, dataset_id: str, max_product
                         "import_enrichment_timeout", "导入文字/图片整理任务超时")
     jobs = state.get("jobs") or []
     text_job = next((job for job in reversed(jobs) if (job.get("spec") or {}).get("kind") == "text_facts"), None)
-    if not text_job or text_job.get("status") != "completed":
-        raise E2EFailure("import_enrichment_failed", "导入文字/图片整理没有完整成功")
+    if not text_job:
+        raise E2EFailure("import_enrichment_missing", "没有找到导入文字/图片整理任务")
     metrics = text_job.get("metrics") or {}
-    if int(metrics.get("images_completed") or 0) != max_products or int(metrics.get("images_failed") or 0) != 0:
-        raise E2EFailure("image_download_failed", "fixture 主图 URL 未全部下载为可用图片")
     rows = state.get("rows") or []
     if len(rows) != max_products:
         raise E2EFailure("imported_row_count_mismatch", "导入后的商品行数与 max-products 不一致")
-    if any(not any(asset.get("path") for asset in row.get("assets") or []) for row in rows):
-        raise E2EFailure("local_images_missing", "至少一行商品没有已下载的本地图片")
+    images_available = sum(any(asset.get("path") for asset in row.get("assets") or []) for row in rows)
     return {"status": text_job.get("status"), "image_downloads": int(metrics.get("images_completed") or 0),
+            "image_failures": int(metrics.get("images_failed") or 0), "images_available": images_available,
+            "text_items_completed": int(metrics.get("attributes_completed") or 0),
+            "text_items_expected": int(metrics.get("attributes_expected") or 0)}
+
+
+def _verify_import_enrichment(state: dict, max_products: int) -> dict:
+    jobs = state.get("jobs") or []
+    text_job = next((job for job in reversed(jobs) if (job.get("spec") or {}).get("kind") == "text_facts"), None)
+    if not text_job or text_job.get("status") != "completed":
+        raise E2EFailure("import_enrichment_failed", "重试后导入文字/图片整理仍未完整成功")
+    metrics = text_job.get("metrics") or {}
+    rows = state.get("rows") or []
+    if len(rows) != max_products:
+        raise E2EFailure("imported_row_count_mismatch", "导入后的商品行数与 max-products 不一致")
+    images_available = sum(any(asset.get("path") for asset in row.get("assets") or []) for row in rows)
+    if images_available != max_products or int(metrics.get("images_failed") or 0) != 0:
+        raise E2EFailure("local_images_missing", "重试后仍有商品没有可用的本地图片")
+    return {"status": text_job.get("status"), "image_downloads": int(metrics.get("images_completed") or 0),
+            "image_failures": int(metrics.get("images_failed") or 0), "images_available": images_available,
             "text_items_completed": int(metrics.get("attributes_completed") or 0),
             "text_items_expected": int(metrics.get("attributes_expected") or 0)}
 
@@ -333,7 +352,12 @@ def _wait_label_job(request, base_url: str, dataset_id: str, label_name: str, ma
         product_ids = [product_id for target in spec.get("targets") or []
                        for product_id in target.get("product_ids") or []]
     product_ids = list(dict.fromkeys(str(value) for value in product_ids))
-    if not product_ids or len(product_ids) > max_products:
+    product_count = int(spec.get("product_count") or job.get("expected_count") or len(product_ids))
+    if not product_ids and product_count == len(state.get("rows") or []):
+        # The current job contract records the bounded row count rather than persisting row IDs.
+        # This fixture contains only the rows submitted for the run, so all rows are in scope.
+        product_ids = [str(row.get("id")) for row in state.get("rows") or [] if row.get("id")]
+    if not product_ids or len(product_ids) > max_products or product_count > max_products:
         raise E2EFailure("image_label_scope_invalid", "图片标签任务范围为空或超过产品上限")
     metrics = job.get("metrics") or {}
     column = next(column for column in (spec.get("columns") or [])
@@ -460,7 +484,11 @@ def main() -> int:
                 )
                 inspection = _post_inspect(request, args.base_url, bounded_fixture, product_sheet)
                 _validate_fixture_content(bounded_fixture, inspection, product_sheet, args.max_products)
+                candidate_sheets = [str(value) for value in inspection.get("candidate_sheets") or []]
+                if any(name.strip().casefold() == "notes" for name in candidate_sheets):
+                    raise E2EFailure("notes_candidate_not_excluded", "Notes 仍被识别为商品工作表候选")
                 report["checks"]["bounded_url_fixture_with_notes_and_text_input"] = True
+                report["checks"]["notes_sheet_excluded"] = True
                 report["fixture"] = {"product_sheet": fixture_info["product_sheet"],
                                      "notes_sheet_preserved": True,
                                      "product_rows": args.max_products,
@@ -468,7 +496,7 @@ def main() -> int:
                                      "text_enrichment_rows": "at least 1"}
 
                 stage = "open_dev_and_upload"
-                page.goto(args.base_url, wait_until="domcontentloaded", timeout=60_000)
+                page.goto(f"{args.base_url}/#/tagging", wait_until="domcontentloaded", timeout=60_000)
                 page.locator("input[type=file]").first.set_input_files(str(bounded_fixture))
                 page.get_by_text("核对表头与项目", exact=True).wait_for(state="visible", timeout=30_000)
                 with page.expect_response(lambda response: response.url.endswith("/api/import")
@@ -488,6 +516,38 @@ def main() -> int:
                 stage = "import_image_and_text_enrichment"
                 import_evidence = _wait_import_enrichment(
                     request, args.base_url, dataset_id, args.max_products, args.timeout_seconds)
+                if (import_evidence["status"] != "completed"
+                        or import_evidence["image_failures"] > 0
+                        or import_evidence["text_items_completed"] < import_evidence["text_items_expected"]):
+                    stage = "retry_import_enrichment"
+                    page.get_by_role("button", name="文字底稿", exact=True).click()
+                    with page.expect_response(lambda response: response.url.endswith(
+                            f"/api/drafts/{dataset_id}/text-records/extract")
+                            and response.request.method == "POST", timeout=60_000) as retry_response:
+                        page.get_by_role("button", name="提取／重试属性与图片", exact=True).click()
+                    retry_task = _json_response(retry_response.value, "import_enrichment_retry")
+                    retry_task_id = str(retry_task.get("id") or "")
+                    if not retry_task_id:
+                        raise E2EFailure("import_retry_id_missing", "导入整理重试没有返回任务 ID")
+                    retry_state = _poll_state(
+                        request, args.base_url, dataset_id, args.timeout_seconds,
+                        lambda value: any(job.get("id") == retry_task_id
+                                          and job.get("status") not in ACTIVE_STATUSES
+                                          for job in value.get("jobs") or []),
+                        "import_retry_timeout", "导入图片/文字整理重试超时")
+                    import_evidence["retry"] = {"attempted": True, "task_id": retry_task_id}
+                    import_evidence["retry_result"] = _verify_import_enrichment(retry_state, args.max_products)
+                    import_evidence["status"] = import_evidence["retry_result"]["status"]
+                    import_evidence["image_downloads"] = import_evidence["retry_result"]["image_downloads"]
+                    import_evidence["image_failures"] = import_evidence["retry_result"]["image_failures"]
+                    import_evidence["images_available"] = import_evidence["retry_result"]["images_available"]
+                    import_evidence["text_items_completed"] = import_evidence["retry_result"]["text_items_completed"]
+                    import_evidence["text_items_expected"] = import_evidence["retry_result"]["text_items_expected"]
+                else:
+                    import_evidence["retry"] = {"attempted": False}
+                    import_evidence = {**import_evidence,
+                        **_verify_import_enrichment(_get_json(request,
+                            f"{args.base_url}/api/drafts/{dataset_id}", "dataset_state"), args.max_products)}
                 report["import_enrichment"] = import_evidence
                 report["checks"]["url_images_downloaded_and_text_enrichment_completed"] = True
                 for row in page.locator(".product-table tbody tr").all()[:args.max_products]:
@@ -498,6 +558,8 @@ def main() -> int:
                 panel = page.locator(".agent-panel")
                 if panel.count() == 0:
                     page.get_by_role("button", name="打开 Agent 会话", exact=True).click()
+                if panel.count() != 1:
+                    raise E2EFailure("agent_panel_missing", "打标页没有唯一的 Agent 会话面板")
                 panel = page.locator(".agent-panel")
                 start = page.get_by_role("button", name="启动 Agent", exact=True)
                 if start.count() == 0:
@@ -554,7 +616,6 @@ def main() -> int:
                 session_active = False
 
                 stage = "human_confirm_proposal_in_worksheet"
-                page.get_by_role("button", name="标签对话", exact=True).click()
                 proposal_card = page.locator("section.proposal").filter(has_text=label_name).first
                 proposal_card.wait_for(state="visible", timeout=30_000)
                 scope_select = proposal_card.get_by_label("确认商品范围", exact=True)
@@ -573,9 +634,11 @@ def main() -> int:
                 report["checks"]["image_label_job_completed_within_cap"] = True
 
                 stage = "save_version"
+                state_before_save = _get_json(request, f"{args.base_url}/api/drafts/{dataset_id}", "dataset_state")
+                prior_version_count = len(state_before_save.get("versions") or [])
                 page.get_by_role("button", name="保存版本", exact=True).click()
                 state = _poll_state(request, args.base_url, dataset_id, args.timeout_seconds,
-                                    lambda value: bool(value.get("versions")),
+                                    lambda value: len(value.get("versions") or []) > prior_version_count,
                                     "version_save_timeout", "保存正式版本超时")
                 version = max(state["versions"], key=lambda item: int(item.get("version") or 0))
                 version_id = str(version.get("id") or "")
@@ -627,6 +690,9 @@ def main() -> int:
                 if external_browser_count:
                     raise E2EFailure("browser_external_request_attempted", "浏览器请求了被策略拦截的非本机地址")
                 report["checks"]["browser_requests_local_only"] = True
+                if page_errors:
+                    raise E2EFailure("browser_page_error", "打标页浏览器运行期间出现前端错误")
+                report["checks"]["browser_page_error_free"] = True
                 report["status"] = "completed"
                 session_active = False
                 browser.close()

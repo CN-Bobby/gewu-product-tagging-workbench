@@ -14,6 +14,8 @@ from .exporter import export_run
 from . import draft,batch,draft_export,text_facts
 from . import field_catalog,worksheet_query,task_control,project_files
 from . import project_library
+from . import usage as usage_stats
+from . import runtime_status as runtime_identity
 from . import knowledge,templates,storage_management,model_settings,capabilities
 from .keyword_research import routes as keyword_research_routes
 from .keyword_research import registry as keyword_registry, runner as keyword_runner
@@ -91,6 +93,9 @@ async def validation_error(request,e):return JSONResponse({'detail':str(e)},stat
 
 @app.get('/api/health')
 def health():return {'status':'ok','application':'product-tagging-workbench','storage':str(STORAGE),'capabilities':capabilities.public(),**build_info()}
+
+@app.get('/api/runtime/status')
+def runtime_status():return runtime_identity.runtime_status()
 
 @app.get('/api/amazon-scraper/runtime')
 def amazon_scraper_runtime():return amazon_scraper.runtime_status()
@@ -223,6 +228,26 @@ def settings_credential_action(provider:str,credential_id:str,action:str):return
 
 @app.get('/api/storage')
 def storage_usage():return storage_management.usage()
+
+@app.get('/api/usage/summary')
+def usage_summary(range:str='last30',bucket:str='day',start:str|None=None,end:str|None=None,
+                  workspace_id:str|None=None,task_id:str|None=None,module:str|None=None,
+                  provider:str|None=None,model:str|None=None,function_name:str|None=None,
+                  quality:str|None=None):
+    return usage_stats.summary({key:value for key,value in locals().items()
+                                if key not in {'request'}})
+
+@app.get('/api/usage/events')
+def usage_events(range:str='last30',bucket:str='day',start:str|None=None,end:str|None=None,
+                 workspace_id:str|None=None,task_id:str|None=None,module:str|None=None,
+                 provider:str|None=None,model:str|None=None,function_name:str|None=None,
+                 quality:str|None=None,limit:int=50,offset:int=0):
+    return usage_stats.events({key:value for key,value in locals().items()
+                               if key not in {'request'}})
+
+@app.put('/api/usage/tasks/{module}/{task_id}/project')
+def usage_task_project(module:str,task_id:str,body:dict):
+    return usage_stats.set_task_project(module,task_id,(body or {}).get('workspace_id'))
 
 @app.post('/api/storage/clear-cache')
 def cache_clear():return storage_management.clear()

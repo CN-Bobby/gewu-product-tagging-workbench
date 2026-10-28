@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .db import utcnow
 from .prompts import PromptRegistry
+from .provider import usage_scope
 from .quality import FIELD_NAMESPACES, NAMESPACES, evaluate, iter_values
 from .schemas import SCHEMAS
 
@@ -447,7 +448,12 @@ class Pipeline:
                 request_payload["repair_instruction"] += "；segment_id 只能使用这些候选 ID：" + json.dumps(allowed_segment_ids, ensure_ascii=False)
             started = datetime.now(timezone.utc)
             try:
-                result, usage = self.provider.call(task, model, instructions, request_payload, schema)
+                context = {"run_id": run["id"],
+                           "task_title": "Amazon VOC · " + str(run.get("project_name") or run.get("name") or "任务"),
+                           "stage": task, "batch_id": batch_id,
+                           "pipeline_attempt": attempt + 1}
+                with usage_scope(context):
+                    result, usage = self.provider.call(task, model, instructions, request_payload, schema)
                 errors = _schema_errors(result, schema)
                 status, error_text = ("completed", "") if not errors else ("invalid", "; ".join(errors[:8]))
                 retryable_error = True

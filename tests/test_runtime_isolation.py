@@ -37,7 +37,7 @@ def test_session_copy_backed_up_and_original_preserved(tmp_path,monkeypatch):
     env=runtime_isolation.environment('legacy_copy','existing');target=Path(env['REASONIX_HOME'])
     assert (target/'sessions/existing.jsonl').read_text()=='original transcript'
     assert not (target/'sessions/existing.jsonl.lock').exists()
-    report=json.loads((target/'migration.json').read_text());assert Path(report['backup']).is_dir()
+    report=json.loads((target/'migration.json').read_text(encoding='utf-8'));assert Path(report['backup']).is_dir()
     assert report['status']=='copied_pending_acp_resume'
     assert (sessions/'existing.jsonl').read_text()=='original transcript'
 

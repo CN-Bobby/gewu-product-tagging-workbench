@@ -18,3 +18,6 @@ releases/
 !tests/fixtures/
 !tests/fixtures/*.xlsx
 tests/fixtures/keyword_research/
+
+# Local VOC runtime database and SQLite journal files
+workbench-voc/*.sqlite3*

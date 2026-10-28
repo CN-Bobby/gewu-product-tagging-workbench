@@ -6,15 +6,21 @@ adapter's tool allowlist is scoped to the category-tree workflow.
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import re
+import time
 from typing import Any
 from urllib.parse import quote
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+from .. import usage as usage_stats
+
 TOOLS = {"category_report", "product_reviews"}
+_USAGE_CONTEXT = ContextVar("sorftime_usage_context", default=None)
 _SECRET = re.compile(r"(?i)(key|token|secret)([=: ]+)[^&\s,;]+")
 _AUTH_QUERY = re.compile(r"(?i)([?&](?:key|api[_-]?key|secret-key)=)[^&\s]+")
 _BEARER = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
@@ -62,12 +68,40 @@ async def _call(endpoint: str, key: str, name: str, arguments: dict[str, Any]) -
             return _decode(result, key)
 
 
-def call(endpoint: str, key: str, name: str, arguments: dict[str, Any]) -> Any:
+@contextmanager
+def usage_scope(context: dict[str, Any]):
+    token = _USAGE_CONTEXT.set(dict(context))
     try:
-        return asyncio.run(asyncio.wait_for(_call(endpoint, key, name, arguments), timeout=180.0))
+        yield
+    finally:
+        _USAGE_CONTEXT.reset(token)
+
+
+def call(endpoint: str, key: str, name: str, arguments: dict[str, Any], *,
+         usage_context: dict[str, Any] | None = None) -> Any:
+    context = usage_context or _USAGE_CONTEXT.get() or {}
+    event_id = usage_stats.start_usage_event(
+        kind="mcp", module=str(context.get("module") or "amazon_reviews"),
+        task_id=context.get("task_id"), task_title=context.get("task_title"),
+        function_name=name, server_name="Sorftime", attempt=context.get("attempt", 1),
+        metadata={key: value for key, value in context.items()
+                  if key not in {"module", "task_id", "task_title", "attempt"}},
+    )
+    started = time.perf_counter()
+    try:
+        result = asyncio.run(asyncio.wait_for(_call(endpoint, key, name, arguments), timeout=180.0))
     except ExceptionGroup as exc:
+        usage_stats.finish_usage_event(event_id, status="failed",
+            duration_ms=round((time.perf_counter() - started) * 1000))
         raise RuntimeError(_scrub(_diagnostic(exc), key)) from None
     except TimeoutError:
+        usage_stats.finish_usage_event(event_id, status="failed",
+            duration_ms=round((time.perf_counter() - started) * 1000))
         raise RuntimeError("Sorftime MCP call exceeded 180 seconds") from None
     except Exception as exc:  # noqa: BLE001
+        usage_stats.finish_usage_event(event_id, status="failed",
+            duration_ms=round((time.perf_counter() - started) * 1000))
         raise RuntimeError(_scrub(exc, key)) from None
+    usage_stats.finish_usage_event(event_id, status="success",
+        duration_ms=round((time.perf_counter() - started) * 1000))
+    return result

@@ -81,14 +81,16 @@ class Pipeline:
         self.call_log = CallLog(self.task_dir / "cache" / "call_log.json")
         if mcp is None:
             mcp = MCPClient(config.mcp_endpoint, self.rate_limiter,
-                            self.call_log, on_event=self.on_event, headers=config.mcp_headers)
+                            self.call_log, on_event=self.on_event, headers=config.mcp_headers,
+                            usage_context={"module": "keyword_research", "task_id": self.task_dir.name})
         self.mcp = mcp
         if llm is None:
             llm = LLMClient(config.llm_base_url, config.llm_api_key,
                             config.llm_model, mode=config.llm_mode,
                             temperature=config.llm_temperature,
                             max_tokens=config.llm_max_tokens,
-                            timeout=config.llm_request_timeout)
+                            timeout=config.llm_request_timeout,
+                            usage_context={"module": "keyword_research", "task_id": self.task_dir.name})
         self.llm = llm
         self.labeler = LLMLabeler(self.llm, on_event=self.on_event)
         self.analyzer = LLMAnalyzer(self.llm, on_event=self.on_event)

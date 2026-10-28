@@ -4,6 +4,20 @@ import json
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
+from contextvars import ContextVar
+
+
+_USAGE_CONTEXT = ContextVar("amazon_voc_usage_context", default=None)
+
+
+@contextmanager
+def usage_scope(context):
+    token = _USAGE_CONTEXT.set(dict(context or {}))
+    try:
+        yield
+    finally:
+        _USAGE_CONTEXT.reset(token)
 
 
 class ModelError(RuntimeError):
@@ -33,10 +47,38 @@ class OpenAICompatibleProvider:
         self.settings = settings
 
     def _request(self, url, body):
+        from .... import usage as usage_stats
+
         request = urllib.request.Request(url, data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
             headers={"Authorization": "Bearer " + self.settings.model_api_key, "Content-Type": "application/json"})
-        with urllib.request.urlopen(request, timeout=180) as response:
-            return json.loads(response.read().decode("utf-8"))
+        context = _USAGE_CONTEXT.get() or {}
+        request_no = int(context.get("request_no") or 0) + 1
+        context["request_no"] = request_no
+        event_id = usage_stats.start_usage_event(
+            kind="model", module="amazon_voc", task_id=context.get("run_id"),
+            task_title=context.get("task_title"), model=body.get("model"),
+            provider=usage_stats.provider_name(body.get("model"), url),
+            attempt=context.get("pipeline_attempt", 1), usage_source="provider_response",
+            request_text=body,
+            metadata={key: value for key, value in context.items() if key != "request_no"}
+                     | {"request_no": request_no},
+        )
+        started = time.perf_counter()
+        try:
+            with urllib.request.urlopen(request, timeout=180) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            usage_stats.finish_usage_event(event_id, status="failed",
+                duration_ms=round((time.perf_counter() - started) * 1000))
+            raise
+        response_text = _output_text(result)
+        if not response_text:
+            response_text = (((result.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+        usage_stats.finish_usage_event(event_id, status="success",
+            duration_ms=round((time.perf_counter() - started) * 1000),
+            usage=result.get("usage") or {}, request_text=body,
+            response_text=response_text or None)
+        return result
 
     def call(self, task, model, instructions, payload, schema):
         if not self.settings.model_api_key:

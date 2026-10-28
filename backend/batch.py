@@ -1,5 +1,6 @@
 """Bounded direct-model execution, independently of the dataset's Reasonix conversation."""
 import base64
+from contextvars import ContextVar
 import hashlib
 import io
 import json
@@ -16,6 +17,12 @@ from .vision import provider_config
 active={}
 guard=threading.Lock()
 API_LIMIT=threading.Semaphore(3)
+_REQUEST_USAGE_MODULE=ContextVar('request_usage_module',default=None)
+
+def _call_with_usage_module(module,*args,**kwargs):
+    token=_REQUEST_USAGE_MODULE.set(module)
+    try:return request_json(*args,**kwargs)
+    finally:_REQUEST_USAGE_MODULE.reset(token)
 
 def result_items(result):
     items=result if isinstance(result,list) else result.get('results') if isinstance(result,dict) else None
@@ -23,27 +30,54 @@ def result_items(result):
     if any(not isinstance(x,dict) for x in items):raise ValueError('response.results[]：每个商品结果必须是对象')
     return items
 
-def request_json(model_ref,messages,metrics,metric_lock,credential_id=None):
+def request_json(model_ref,messages,metrics,metric_lock,credential_id=None,module=None):
     endpoint,key,model=provider_config(model_ref,credential_id)
     body={'model':model,'messages':messages,'response_format':{'type':'json_object'},'max_tokens':8192}
     if 'deepseek' in model:body['thinking']={'type':'disabled'}
-    for attempt in range(3):
-        queued=time.perf_counter();started=None;r=None;choice=None;content=None;failure=None;usage=None
+    task_id=metrics.get('job_id')
+    usage_module=module or _REQUEST_USAGE_MODULE.get() or 'tagging'
+    if module is None and task_id:
         try:
-            API_LIMIT.acquire();started=time.perf_counter()
+            with Session() as s:
+                job=s.get(BatchJob,task_id)
+                if job and job.spec.get('kind')=='text_facts':usage_module='text_extraction'
+        except Exception:
+            pass
+    for attempt in range(3):
+        queued=time.perf_counter();started=None;r=None;choice=None;content=None;failure=None;usage=None;event_id=None
+        try:
+            API_LIMIT.acquire();acquired=time.perf_counter()
             with metric_lock:
-                metrics['request_queue_seconds']=metrics.get('request_queue_seconds',0)+started-queued
+                metrics['request_queue_seconds']=metrics.get('request_queue_seconds',0)+acquired-queued
                 metrics['requests']=metrics.get('requests',0)+1
             try:
+                try:
+                    from .usage import start_usage_event,provider_name
+                    event_id=start_usage_event(kind='model',module=usage_module,task_id=task_id,model=model_ref,provider=provider_name(model_ref,endpoint),attempt=attempt+1,request_text=messages)
+                except Exception:
+                    event_id=None
+                started=time.perf_counter()
                 with httpx.Client(timeout=180) as client:r=client.post(endpoint,headers={'Authorization':'Bearer '+key},json=body)
+            except Exception:
+                try:
+                    from .usage import finish_usage_event
+                    finish_usage_event(event_id,status='network_error',duration_ms=round((time.perf_counter()-started)*1000),usage=None,request_text=messages)
+                except Exception:
+                    pass
+                raise
             finally:
                 with metric_lock:metrics['model_seconds']=metrics.get('model_seconds',0)+time.perf_counter()-started
                 API_LIMIT.release()
+            if r.status_code!=200:
+                try:
+                    from .usage import finish_usage_event
+                    finish_usage_event(event_id,status='http_error',duration_ms=round((time.perf_counter()-started)*1000),usage=None,request_text=messages,response_text=r.text)
+                except Exception:
+                    pass
             if r.status_code in (429,500,502,503,504):
                 if attempt<2:time.sleep(2**attempt);continue
             if r.status_code!=200:raise RuntimeError(f'模型请求 HTTP {r.status_code}')
-            response=r.json();choice=response['choices'][0]
-            usage=response.get('usage') or {}
+            response=r.json();usage=response.get('usage') or {};choice=response['choices'][0]
             with metric_lock:
                 metrics['input_tokens']=metrics.get('input_tokens',0)+(usage.get('prompt_tokens') or usage.get('input_tokens') or 0)
                 metrics['output_tokens']=metrics.get('output_tokens',0)+(usage.get('completion_tokens') or usage.get('output_tokens') or 0)
@@ -58,12 +92,23 @@ def request_json(model_ref,messages,metrics,metric_lock,credential_id=None):
                 raise ValueError('模型响应不是合法JSON')
             if choice.get('finish_reason')=='length':
                 with metric_lock:metrics['truncated_responses']=metrics.get('truncated_responses',0)+1
+            try:
+                from .usage import finish_usage_event
+                finish_usage_event(event_id,status='success',duration_ms=round((time.perf_counter()-started)*1000),usage=usage,request_text=messages,response_text=content)
+            except Exception:
+                pass
             return parsed
         except (httpx.TimeoutException,httpx.NetworkError) as e:
             failure=type(e).__name__
             if attempt==2:raise RuntimeError('模型网络请求失败，已达到重试上限')
             time.sleep(2**attempt)
         except Exception as e:
+            if r is not None and r.status_code==200:
+                try:
+                    from .usage import finish_usage_event
+                    finish_usage_event(event_id,status='invalid',duration_ms=round((time.perf_counter()-started)*1000) if started else None,usage=usage,request_text=messages,response_text=content if isinstance(content,str) else (r.text if r is not None else None))
+                except Exception:
+                    pass
             failure=str(e)[:500];raise
         finally:
             if metrics.get('job_id'):
@@ -86,9 +131,16 @@ def observation(asset,model,requirements,refresh,metrics,mlock,context=None,rule
     fingerprint=hashlib.sha256((json.dumps(signature,sort_keys=True)+model+rules+requirements+json.dumps([context,model_identity(model)],ensure_ascii=False,sort_keys=True)).encode()).hexdigest()
     with Session() as s:
         cached=s.scalar(select(VisionCache).where(VisionCache.fingerprint==fingerprint))
-        if cached and not refresh:
-            with mlock:metrics['cache_hits']=metrics.get('cache_hits',0)+1
-            return {**cached.content,'asset_id':asset['id'],'cached':True}
+    if not refresh or not cached:
+        try:
+            from .usage import record_local_cache
+            record_local_cache(module='vision',task_id=metrics.get('job_id'),cache_name='vision_result',
+                               hit=bool(cached and not refresh))
+        except Exception:
+            pass
+    if cached and not refresh:
+        with mlock:metrics['cache_hits']=metrics.get('cache_hits',0)+1
+        return {**cached.content,'asset_id':asset['id'],'cached':True}
     start=time.perf_counter()
     with mlock:metrics['vision_requests']=metrics.get('vision_requests',0)+1
     content=[]
@@ -111,7 +163,7 @@ def observation(asset,model,requirements,refresh,metrics,mlock,context=None,rule
     with mlock:metrics['vision_images_sent']=metrics.get('vision_images_sent',0)+sum(1 for item in content if item.get('type')=='image_url')
     if context:content.append({'type':'text','text':'商品文字证据（与图片冲突时保留各自来源，不擅自覆盖）：'+json.dumps(context,ensure_ascii=False)})
     args=(model,[{'role':'system','content':rules+requirements},{'role':'user','content':content}],metrics,mlock)
-    result=request_json(*args,credential_id) if credential_id else request_json(*args)
+    result=_call_with_usage_module('vision',*args,credential_id) if credential_id else _call_with_usage_module('vision',*args)
     if not isinstance(result,dict):raise ValueError('视觉观察应为JSON对象')
     if not isinstance(result.get('observation'),str):raise ValueError('视觉观察结构不完整')
     result.setdefault('entities',[]);result.setdefault('relationships',[]);result.setdefault('dimensions',{});result.setdefault('parts',[]);result.setdefault('unknown',[]);result.setdefault('conflicts',[]);result.setdefault('scope','image')
@@ -139,9 +191,16 @@ def calibration_group(rows,model,goal,refresh,metrics,mlock):
     fingerprint=hashlib.sha256(json.dumps({'version':'main-image-calibration-v2','goal':goal,'model':model,'provider':model_identity(model),'rules':effective_rules,'skill_sha256':skill_bundle['sha256'],'modules':calibration_profile['module_hashes'],'inputs':signature},ensure_ascii=False,sort_keys=True).encode()).hexdigest()
     with Session() as s:
         cached=s.scalar(select(VisionCache).where(VisionCache.fingerprint==fingerprint))
-        if cached and not refresh:
-            with mlock:metrics['cache_hits']=metrics.get('cache_hits',0)+1
-            return {**cached.content,'cached':True,'fingerprint':fingerprint}
+    if not refresh or not cached:
+        try:
+            from .usage import record_local_cache
+            record_local_cache(module='vision',task_id=metrics.get('job_id'),
+                               cache_name='vision_calibration',hit=bool(cached and not refresh))
+        except Exception:
+            pass
+    if cached and not refresh:
+        with mlock:metrics['cache_hits']=metrics.get('cache_hits',0)+1
+        return {**cached.content,'cached':True,'fingerprint':fingerprint}
     content=[{'type':'text','text':'本组观察目标：'+goal+'。以下每件商品只提供一张主图。'}]
     for row,item in chosen:
         asset=item['asset']
@@ -157,7 +216,7 @@ def calibration_group(rows,model,goal,refresh,metrics,mlock):
         metrics['main_images_compared']=metrics.get('main_images_compared',0)+len(chosen)
         metrics['supplemental_images_ignored']=metrics.get('supplemental_images_ignored',0)+sum(item['supplemental_images_ignored'] for _,item in chosen)
     started=time.perf_counter()
-    result=request_json(model,[{'role':'system','content':effective_rules},{'role':'user','content':content}],metrics,mlock)
+    result=_call_with_usage_module('vision',model,[{'role':'system','content':effective_rules},{'role':'user','content':content}],metrics,mlock)
     products=result.get('products') if isinstance(result,dict) else None
     expected={row['id'] for row,_ in chosen}
     if not isinstance(products,list) or {p.get('product_id') for p in products if isinstance(p,dict)}!=expected:
@@ -268,6 +327,12 @@ def execute(jid):
             with visual_locks[cache_key]:
                 if cache_key in visual_results:
                     with mlock:metrics['shared_visual_hits']=metrics.get('shared_visual_hits',0)+1
+                    try:
+                        from .usage import record_local_cache
+                        record_local_cache(module='vision',task_id=metrics.get('job_id'),
+                                           cache_name='shared_visual',hit=True)
+                    except Exception:
+                        pass
                     return visual_results[cache_key]
                 from .image_inputs import selection
                 image_input=selection(p,policy);asset=image_input['asset']

@@ -66,7 +66,8 @@ class LLMClient:
 
     def __init__(self, base_url: str, api_key: str, model: str,
                  mode: str = "auto", temperature: float = 0.2,
-                 max_tokens: int = 4096, timeout: float = DEFAULT_TIMEOUT) -> None:
+                 max_tokens: int = 4096, timeout: float = DEFAULT_TIMEOUT,
+                 usage_context: dict | None = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
@@ -75,6 +76,7 @@ class LLMClient:
         self.max_tokens = max_tokens
         self.timeout = timeout
         self.detected_mode: str | None = None  # 探测成功后记录
+        self.usage_context = dict(usage_context or {})
 
     # ---------- 内部 HTTP ----------
 
@@ -87,11 +89,66 @@ class LLMClient:
     def _post(self, path: str, body: dict) -> httpx.Response:
         url = f"{self.base_url}{path}"
         for attempt in range(CONNECT_ATTEMPTS):
+            usage_event_id = None
+            started = None
             try:
-                return httpx.post(
+                from ..usage import start_usage_event, provider_name
+                context = self.usage_context
+                usage_event_id = start_usage_event(
+                    kind="model", module=context.get("module", "keyword_research"),
+                    task_id=context.get("task_id"), task_title=context.get("task_title"),
+                    model=self.model, provider=provider_name(self.model, self.base_url),
+                    attempt=attempt + 1, request_text=body,
+                    metadata={"protocol_path": path},
+                )
+            except Exception:
+                usage_event_id = None
+            started = time.perf_counter()
+            try:
+                response = httpx.post(
                     url, json=body, headers=self._headers(), timeout=self.timeout,
                 )
+                response_payload = None
+                try:
+                    response_payload = response.json()
+                except Exception:
+                    pass
+                if isinstance(response_payload, dict):
+                    usage = response_payload.get("usage") or {}
+                    response_text = response_payload.get("output_text")
+                    if not isinstance(response_text, str):
+                        response_text = "".join(
+                            str(part.get("text") or "")
+                            for item in response_payload.get("output") or []
+                            for part in item.get("content") or []
+                            if isinstance(part, dict) and part.get("type") in ("output_text", "text")
+                        )
+                    if not response_text:
+                        choices = response_payload.get("choices") or []
+                        message = (choices[0].get("message") or {}) if choices else {}
+                        response_text = message.get("content") if isinstance(message, dict) else None
+                        if isinstance(response_text, list):
+                            response_text = "".join(str(item.get("text") or "") for item in response_text if isinstance(item, dict))
+                else:
+                    usage, response_text = None, None
+                try:
+                    from ..usage import finish_usage_event
+                    finish_usage_event(
+                        usage_event_id, status="success" if response.status_code < 400 else "http_error",
+                        duration_ms=round((time.perf_counter() - started) * 1000),
+                        usage=usage, request_text=body, response_text=response_text,
+                    )
+                except Exception:
+                    pass
+                return response
             except _CONNECTION_ERRORS as exc:
+                try:
+                    from ..usage import finish_usage_event
+                    finish_usage_event(usage_event_id, status="network_error",
+                                       duration_ms=round((time.perf_counter() - started) * 1000),
+                                       request_text=body)
+                except Exception:
+                    pass
                 if attempt + 1 == CONNECT_ATTEMPTS:
                     raise LLMError(
                         f"模型连接失败（已尝试 {CONNECT_ATTEMPTS} 次）: {exc}",
@@ -99,6 +156,13 @@ class LLMClient:
                     ) from exc
                 time.sleep(CONNECT_BACKOFF_SECONDS * (2 ** attempt))
             except httpx.HTTPError as exc:
+                try:
+                    from ..usage import finish_usage_event
+                    finish_usage_event(usage_event_id, status="network_error",
+                                       duration_ms=round((time.perf_counter() - started) * 1000),
+                                       request_text=body)
+                except Exception:
+                    pass
                 # Once a request may have reached the provider, retrying can bill
                 # twice. Transport failures also cannot establish API incompatibility.
                 raise LLMError(

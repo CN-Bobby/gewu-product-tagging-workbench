@@ -94,6 +94,7 @@ class MCPClient:
         rate_limit_retry_wait: float = 60.0,
         task_retry_budget: int = 10,
         headers: dict[str, str] | None = None,
+        usage_context: dict | None = None,
     ) -> None:
         self.endpoint = endpoint
         self.headers = {str(key): str(value) for key, value in (headers or {}).items()}
@@ -105,6 +106,7 @@ class MCPClient:
         self.rate_limit_retry_wait = rate_limit_retry_wait
         self.task_retry_budget = max(0, int(task_retry_budget))
         self.task_retries_used = 0
+        self.usage_context = dict(usage_context or {})
 
     def set_task_retry_budget(self, retry_budget: int, retries_used: int = 0) -> None:
         """Set the confirmed plan's allowance and retries already recorded for this run."""
@@ -237,6 +239,19 @@ class MCPClient:
                 planned_total=planned_total,
                 hard_cap=hard_cap,
             )
+            usage_event_id = None
+            try:
+                from urllib.parse import urlparse
+                from ..usage import start_usage_event
+                usage_event_id = start_usage_event(
+                    kind="mcp", module=self.usage_context.get("module", "keyword_research"),
+                    task_id=self.usage_context.get("task_id"),
+                    task_title=self.usage_context.get("task_title"),
+                    function_name=tool, server_name=urlparse(self.endpoint).hostname or "SellerSprite",
+                    attempt=attempt + 1, metadata={"is_retry": attempt > 0},
+                )
+            except Exception:
+                usage_event_id = None
             self._emit("call_start", seq=seq, tool=tool, scope=scope)
             if attempt > 0:
                 # This synchronous section has no await, so concurrent coroutines
@@ -246,12 +261,19 @@ class MCPClient:
             # Count every request attempt, including one that fails in transport
             # or at the business layer, so the limiter reflects actual traffic.
             self.rate_limiter.record_call()
+            usage_started = asyncio.get_running_loop().time()
             try:
                 data = await self._call_once(tool, arguments)
             except MCPError as exc:
                 last_error = exc
                 returned = None
                 self.call_log.finish_call(seq, success=False, error=str(exc))
+                try:
+                    from ..usage import finish_usage_event
+                    finish_usage_event(usage_event_id, status="failed",
+                                       duration_ms=round((asyncio.get_running_loop().time()-usage_started)*1000))
+                except Exception:
+                    pass
                 self._emit("call_error", seq=seq, tool=tool, error=str(exc),
                            retryable=exc.retryable)
                 if exc.retryable and attempt < self.max_temp_retries:
@@ -272,6 +294,12 @@ class MCPClient:
             truncated = self._detect_truncation(data)
             self.call_log.finish_call(seq, success=True, returned=returned,
                                       truncated=truncated)
+            try:
+                from ..usage import finish_usage_event
+                finish_usage_event(usage_event_id, status="success",
+                                   duration_ms=round((asyncio.get_running_loop().time()-usage_started)*1000))
+            except Exception:
+                pass
             self._emit("call_success", seq=seq, tool=tool, returned=returned,
                        truncated=truncated)
             return data

@@ -273,7 +273,10 @@ def _collect_asins(job: dict[str, Any]) -> list[dict[str, Any]]:
     if job["mode"] == "asins":
         return [{"asin": asin, "title": "", "category": "", "rank": None} for asin in job["asins"]]
     endpoint, key = sorftime_settings.connection()
-    payload = sorftime.call(endpoint, key, "category_report", {"amz_site": job["site"], "node_id": job["node_id"]})
+    with sorftime.usage_scope({"module": "amazon_reviews", "task_id": job["id"],
+                               "task_title": f"Amazon 评论 · {job.get('site') or '未知站点'}",
+                               "attempt": int(job.get("attempt") or 1)}):
+        payload = sorftime.call(endpoint, key, "category_report", {"amz_site": job["site"], "node_id": job["node_id"]})
     products = _extract_products(payload)
     _atomic_json(_job_dir(job["id"]) / "category_report.json", payload)
     if job["mode"] == "node_asins":
@@ -502,6 +505,11 @@ def _run(job_id: str, cancel: threading.Event) -> None:
         base_url, api_key, model = model_target(job["model"], job["credential_id"])
         require_validated(job["model"], job["credential_id"], "text")
         client = LLMClient(base_url, api_key, model)
+        if hasattr(client, "usage_context"):
+            client.usage_context = {
+                "module": "amazon_reviews", "task_id": job_id,
+                "task_title": f"Amazon 评论 · {job.get('site') or '未知站点'}",
+            }
         endpoint, sorftime_key = sorftime_settings.connection()
         job["status"] = "running"
         job["attempt"] = int(job.get("attempt") or 0) + 1
@@ -524,8 +532,12 @@ def _run(job_id: str, cancel: threading.Event) -> None:
                 for round_number in (1, 2):
                     if cancel.is_set() or round_number in completed_rounds:
                         continue
-                    payload = sorftime.call(endpoint, sorftime_key, "product_reviews", {
-                        "amz_site": job["site"], "asin": item["asin"], "review_type": "Both"})
+                    with sorftime.usage_scope({"module": "amazon_reviews", "task_id": job_id,
+                                               "task_title": f"Amazon 评论 · {job.get('site') or '未知站点'}",
+                                               "attempt": max(1, (int(job.get("attempt") or 1) - 1) * 2 + round_number),
+                                               "review_round": round_number}):
+                        payload = sorftime.call(endpoint, sorftime_key, "product_reviews", {
+                            "amz_site": job["site"], "asin": item["asin"], "review_type": "Both"})
                     calls.append({"round": round_number, "review_type": "Both", "payload": payload})
                     completed_rounds.add(round_number)
                     _atomic_json(calls_path, calls)

@@ -20,6 +20,8 @@ Run Center 配置通常位于：
 
 以实时输出为准记录环境名、页面/API 地址、代码来源、commit、build ID、dirty 状态、数据/缓存路径、外部调用 policy 和实例 ID。状态缺失、端口冲突、目录重叠或身份不一致时，停止操作并先查明原因。
 
+DEV/TEST 后端必须提供只读 `GET /api/runtime/status`，至少返回 `profile`、`instance_id` 和 `external_effects.policy`。Run Center 按此接口核对本次启动的环境与策略；源码变更后应先通过接口回归，再由 Run Center 启动并打开页面。该接口报告进程环境中选择的策略，不代表对所有第三方请求做了网络级拦截。
+
 ## 2. 环境职责
 
 | 环境 | 用途 | 代码形态 | 数据规则 |
