@@ -50,3 +50,30 @@ export function parseAmazonVocRoute(hash){
   }
   return {page:'amazon-voc',runId};
 }
+
+export function parseAmazonReviewInput(value,{allowWootReviewLinks=false}={}){
+ const asins=[],wootReviewUrls={},invalid=[];
+ for(const raw of String(value||'').split(/[\s,;，；、]+/).map(item=>item.trim()).filter(Boolean)){
+  if(allowWootReviewLinks&&/^https:\/\//i.test(raw)){
+   try{
+    const url=new URL(raw),host=url.hostname.toLowerCase();
+    const match=url.pathname.match(/^\/review\/(?:Reviews\/)?(B[A-Z0-9]{9})\/?$/i);
+    const itemid=url.searchParams.getAll('itemid'),offerid=url.searchParams.getAll('offerid');
+    const validHost=host==='woot.com'||host.endsWith('.woot.com');
+    const validIds=itemid.length===1&&/^[A-Za-z0-9_-]{1,100}$/.test(itemid[0])
+      &&offerid.length===1&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(offerid[0]);
+    if(url.protocol!=='https:'||!validHost||url.username||url.password||url.port||!match||!validIds){invalid.push(raw);continue}
+    const asin=match[1].toUpperCase();
+    if(!asins.includes(asin))asins.push(asin);
+    if(!wootReviewUrls[asin])wootReviewUrls[asin]=raw;
+    continue;
+   }catch{
+    invalid.push(raw);continue;
+   }
+  }
+  const asin=raw.toUpperCase();
+  if(!/^B0[A-Z0-9]{8}$/.test(asin)){invalid.push(raw);continue}
+  if(!asins.includes(asin))asins.push(asin);
+ }
+ return {asins,wootReviewUrls,invalid};
+}

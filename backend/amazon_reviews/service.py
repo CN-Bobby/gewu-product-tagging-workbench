@@ -22,6 +22,8 @@ from ..keyword_research.llm_client import LLMClient, LLMError
 from ..model_settings import defaults, read as read_model_settings, require_validated
 from ..usage_ledger import record_usage, usage_summary
 from ..xunlongjue import settings as sorftime_settings
+from . import brightdata
+from . import brightdata_settings
 from . import sorftime
 from . import woot
 
@@ -34,6 +36,13 @@ MAX_ACTIVE_JOBS = 2
 REVIEW_CALL_CONTRACT = {
     "review_type": "Both", "calls_per_asin": 2, "pagination": False,
     "label": "每个 ASIN 使用相同站点和 Both 参数调用两次；这是重复调用，不是分页",
+}
+AUTO_REVIEW_CONTRACT = {
+    "source": "automatic", "woot_mode": "max", "woot_exact_asin_required": True,
+    "fallback": "Sorftime MCP after a complete catalog miss, a candidate limit, or an incomplete Woot catalog read",
+    "sorftime_review_type": "Both", "sorftime_calls_per_asin": 2,
+    "sorftime_pagination": False,
+    "label": "指定 ASIN 优先用 Woot；目录无匹配、检索达到上限或目录读取不完整时改用 Sorftime。榜单/类目模式使用 Sorftime。",
 }
 COLLECTION_CACHE = LocalResultCache("reviews-collection")
 TRANSLATION_CACHE = LocalResultCache("reviews-translation")
@@ -81,6 +90,38 @@ def _save(job: dict[str, Any]) -> dict[str, Any]:
         return job
 
 
+def _start_attempt(job: dict[str, Any]) -> None:
+    now = time.time()
+    attempt = int(job.get("attempt") or 0) + 1
+    job["attempt"] = attempt
+    job["started_at"] = now
+    job["finished_at"] = None
+    job["duration_seconds"] = None
+    history = list(job.get("attempt_history") or [])
+    history.append({"attempt": attempt, "status": "running", "started_at": now,
+                    "finished_at": None, "duration_seconds": None})
+    job["attempt_history"] = history
+
+
+def _finish_attempt(job: dict[str, Any]) -> None:
+    now = time.time()
+    started_at = job.get("started_at")
+    duration = max(0.0, now - float(started_at)) if started_at is not None else None
+    job["finished_at"] = now
+    job["duration_seconds"] = round(duration, 3) if duration is not None else None
+    history = list(job.get("attempt_history") or [])
+    attempt = int(job.get("attempt") or 0)
+    for record in reversed(history):
+        if record.get("attempt") == attempt and record.get("finished_at") is None:
+            record.update({"status": job.get("status"), "finished_at": now,
+                           "duration_seconds": job["duration_seconds"]})
+            break
+    job["attempt_history"] = history
+    job["total_duration_seconds"] = round(sum(
+        float(record.get("duration_seconds") or 0) for record in history
+    ), 3)
+
+
 def _safe_error(value: Any, *secrets: str) -> str:
     message = str(value or "任务失败")
     for secret in secrets:
@@ -89,6 +130,11 @@ def _safe_error(value: Any, *secrets: str) -> str:
     message = re.sub(r"(?i)([?&](?:key|api[_-]?key|secret-key)=)[^&\s]+", r"\1[hidden]", message)
     message = re.sub(r"(?i)bearer\s+[^\s,;]+", "Bearer [hidden]", message)
     return message[:400]
+
+
+def _source_label(source: Any) -> str:
+    return {"woot": "Woot", "sorftime": "Sorftime MCP", "brightdata": "Bright Data"}.get(
+        str(source or "").lower(), "未知")
 
 
 def _site(value: Any) -> str:
@@ -117,12 +163,33 @@ def _asins(values: Any) -> list[str]:
     return result
 
 
+def _woot_review_ids(value: Any, selected_asins: list[str], collection_source: str) -> dict[str, dict[str, str]]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("Woot 评论链接必须按 ASIN 提供")
+    if value and collection_source not in ("woot", "auto"):
+        raise ValueError("只有选择 Woot 或自动采集时才能提供 Woot 评论链接")
+    result: dict[str, dict[str, str]] = {}
+    for raw_asin, review_url in value.items():
+        asin = str(raw_asin or "").strip().upper()
+        if asin not in selected_asins:
+            raise ValueError("Woot 评论链接中的 ASIN 不在本次任务范围内")
+        result[asin] = woot.parse_review_url(asin, review_url)
+    return result
+
+
 def _job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
-    items = [{key: item.get(key) for key in ("asin", "title", "status", "review_count", "error", "review_call_metrics")}
+    items = [{key: item.get(key) for key in ("asin", "title", "status", "review_count", "error",
+                                              "review_call_metrics", "request_budget_metrics",
+                                              "collection_source", "fallback_from",
+                                              "fallback_reason")}
              for item in job.get("items", [])]
     total = len(items)
     done = sum(item["status"] in ("completed", "failed", "cancelled") for item in items)
     snapshot = {key: job.get(key) for key in ("id", "status", "mode", "site", "created_at", "updated_at",
+                                               "started_at", "finished_at", "duration_seconds",
+                                               "total_duration_seconds", "attempt_history",
                                                "stage", "error", "review_count", "attempt", "model", "credential_id",
                                                "workspace_id", "source_dataset_id", "source_archive_id",
                                                "workflow_mode", "translate_enabled", "force_refresh",
@@ -135,6 +202,12 @@ def _job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
                          and (_job_dir(job["id"]) / "result.xlsx").is_file()),
         "errors": job.get("errors", []),
         "review_collection_contract": job.get("review_collection_contract", REVIEW_CALL_CONTRACT),
+        "collection_sources": {
+            "woot_asins": sum(item.get("collection_source") == "woot" for item in job.get("items", [])),
+            "sorftime_asins": sum(item.get("collection_source") == "sorftime" for item in job.get("items", [])),
+            "brightdata_asins": sum(item.get("collection_source") == "brightdata" for item in job.get("items", [])),
+            "auto_fallback_asins": sum(bool(item.get("fallback_from")) for item in job.get("items", [])),
+        },
         "metrics": job.get("metrics", {"review_tool_calls": 0, "raw_records": 0, "new_unique_records": 0,
                                         "cached_review_requests": 0}),
         "voc_handoff": job.get("voc_handoff"),
@@ -190,7 +263,8 @@ def model_settings_public() -> dict[str, Any]:
         providers.append({key: provider.get(key) for key in (
             "name", "model_refs", "primary_credential_id", "credentials")})
     return {"configured": bool(providers), "providers": providers, "default_model": text_model,
-            "defaults": [text_model], "sorftime": sorftime_settings.status()}
+            "defaults": [text_model], "sorftime": sorftime_settings.status(),
+            "brightdata": brightdata_settings.status()}
 
 
 def _public_review(review: Any) -> dict[str, Any]:
@@ -209,6 +283,28 @@ def _review_key(review: dict[str, Any]) -> str:
         str(review.get("content") or review.get("review") or review.get("text") or ""),
     ]
     return hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode()).hexdigest()
+
+
+def _variant_attribute_values(review: dict[str, Any]) -> list[str]:
+    values = review.get("source_variant_attributes")
+    has_values = isinstance(values, list)
+    result = [str(value).strip() for value in values if str(value).strip()] if has_values else []
+    value = review.get("variant_attribute")
+    if value is not None and not has_values:
+        normalized = str(value).strip()
+        if normalized and normalized not in result:
+            result.append(normalized)
+    return result
+
+
+def _merge_variant_attributes(target: dict[str, Any], source: dict[str, Any]) -> None:
+    values = _variant_attribute_values(target)
+    for value in _variant_attribute_values(source):
+        if value not in values:
+            values.append(value)
+    if values:
+        target["source_variant_attributes"] = values
+        target["variant_attribute"] = " | ".join(values)
 
 
 def _payload_nodes(payload: Any) -> list[Any]:
@@ -337,14 +433,24 @@ def _reviews_from_calls(calls: list[dict[str, Any]], asin: str = "") -> tuple[li
                 by_identity[identity] = row
                 reviews.append(row)
                 added += 1
-            elif call["round"] not in by_identity[identity]["source_review_rounds"]:
-                by_identity[identity]["source_review_rounds"].append(call["round"])
+            else:
+                if call["round"] not in by_identity[identity]["source_review_rounds"]:
+                    by_identity[identity]["source_review_rounds"].append(call["round"])
+                _merge_variant_attributes(by_identity[identity], row)
         payload = call.get("payload")
+        provider_call = call.get("review_type") in ("Woot max", "Bright Data max20")
         request_count = (int(payload.get("request_count") or 1)
-                         if call.get("review_type") == "Woot max" and isinstance(payload, dict) else 1)
+                         if provider_call and isinstance(payload, dict) else 1)
         metrics.append({"round": call["round"], "review_type": call.get("review_type", "Both"),
                         "raw_record_count": len(rows), "new_unique_count": added,
-                        "request_count": request_count, "cache_hit": bool(call.get("cache_hit"))})
+                        "request_count": request_count,
+                        "total_request_count": int(payload.get("total_request_count") or request_count)
+                        if call.get("review_type") == "Woot max" and isinstance(payload, dict) else 0,
+                        "directory_request_count": int(payload.get("directory_request_count") or 0)
+                        if call.get("review_type") == "Woot max" and isinstance(payload, dict) else 0,
+                        "review_request_count": int(payload.get("review_request_count") or request_count)
+                        if call.get("review_type") == "Woot max" and isinstance(payload, dict) else 0,
+                        "cache_hit": bool(call.get("cache_hit"))})
     return reviews, metrics
 
 
@@ -364,7 +470,7 @@ def _annotate_reviews(reviews: list[dict[str, Any]], job: dict[str, Any], item: 
         row["asin"] = item["asin"]
         row["product_title"] = row.get("product_title") or item.get("title", "")
         row["source_site"] = job.get("site", "")
-        row["collection_source"] = job.get("collection_source", "sorftime")
+        row["collection_source"] = item.get("collection_source") or job.get("collection_source", "sorftime")
         row["source_node"] = job.get("node_id", "")
         row["sentiment"] = row.get("sentiment") or _sentiment(
             row.get("star_rating") or row.get("rating") or row.get("star"))
@@ -563,8 +669,13 @@ def _run(job_id: str, cancel: threading.Event) -> None:
         if cancel.is_set():
             job["status"] = "cancelled"
             job["stage"] = "已取消"
+            _finish_attempt(job)
             _save(job)
             return
+        job["status"] = "running"
+        job["error"] = ""
+        _start_attempt(job)
+        _save(job)
         if job.get("export_only_retry"):
             job["status"] = "completed"
             job["stage"] = "正在重建导出文件"
@@ -572,9 +683,10 @@ def _run(job_id: str, cancel: threading.Event) -> None:
             job["metrics"] = _metrics_from_items(job.get("items", []))
             _export(job)
             job["stage"] = "已完成（恢复导出）"
-            _save(job)
             _register_project_artifacts(job)
             _auto_voc_handoff(job)
+            _finish_attempt(job)
+            _save(job)
             return
         if not job.get("items"):
             _atomic_json(_job_dir(job_id) / "products.json", _collect_asins(job))
@@ -596,18 +708,27 @@ def _run(job_id: str, cancel: threading.Event) -> None:
                     "task_title": f"Amazon 评论 · {job.get('site') or '未知站点'}",
                 }
         collection_source = job.get("collection_source", "sorftime")
-        endpoint, sorftime_key = sorftime_settings.connection() if (
-            collection_source == "sorftime" or job.get("mode") != "asins") else ("", "")
-        job["status"] = "running"
-        job["attempt"] = int(job.get("attempt") or 0) + 1
-        job["error"] = ""
-        _save(job)
+        endpoint, sorftime_key = "", ""
+        sorftime_connection_loaded = False
+        brightdata_key = ""
+        if collection_source == "brightdata":
+            brightdata_key = brightdata_settings.connection()
+        if collection_source == "sorftime" or job.get("mode") != "asins":
+            endpoint, sorftime_key = sorftime_settings.connection()
+            sorftime_connection_loaded = True
         for item in job["items"]:
             if cancel.is_set():
                 break
             if item["status"] == "completed":
                 continue
             try:
+                if collection_source == "auto":
+                    item_source = item.get("collection_source")
+                    if item_source not in ("woot", "sorftime"):
+                        item_source = "woot" if job.get("mode") == "asins" else "sorftime"
+                else:
+                    item_source = collection_source
+                item["collection_source"] = item_source
                 item["status"] = "collecting"
                 job["stage"] = f"正在拉取 {item['asin']} 评论"
                 _save(job)
@@ -616,20 +737,47 @@ def _run(job_id: str, cancel: threading.Event) -> None:
                 calls_path = _call_payloads_path(job_id, item["asin"])
                 calls = json.loads(calls_path.read_text(encoding="utf-8")) if calls_path.is_file() else []
                 completed_rounds = {int(call.get("round", 0)) for call in calls}
-                rounds = (1,) if collection_source == "woot" else (1, 2)
+                rounds = ((1, 2) if collection_source == "auto" else
+                          (1,) if item_source in ("woot", "brightdata") else (1, 2))
                 for round_number in rounds:
+                    if item_source == "woot" and round_number > 1:
+                        continue
                     if cancel.is_set() or (round_number in completed_rounds and not job.get("force_refresh")):
                         continue
                     if job.get("force_refresh"):
                         calls = [call for call in calls if int(call.get("round", 0)) != round_number]
                         completed_rounds.discard(round_number)
                     cache_hit = False
-                    if collection_source == "woot":
+                    if item_source == "woot":
                         def update_woot_progress(detail: str) -> None:
                             job["stage"] = f"正在拉取 {item['asin']} 评论 · {detail}"
                             _save(job)
-                        payload = woot.collect_reviews(item["asin"], progress=update_woot_progress)
-                    else:
+                        try:
+                            payload = woot.collect_reviews(
+                                item["asin"], progress=update_woot_progress,
+                                cancel=cancel,
+                                **(job.get("woot_review_ids") or {}).get(item["asin"], {}),
+                            )
+                        except (woot.WootCatalogMiss, woot.WootResolverSearchLimit,
+                                woot.WootCatalogIncomplete) as exc:
+                            if collection_source != "auto" or job.get("mode") != "asins":
+                                raise
+                            item_source = "sorftime"
+                            item["collection_source"] = item_source
+                            item["fallback_from"] = "woot"
+                            item["fallback_reason"] = _safe_error(exc)
+                            if isinstance(exc, woot.WootResolverSearchLimit):
+                                fallback_status = "候选检索达到上限，未确认匹配"
+                            elif isinstance(exc, woot.WootCatalogIncomplete):
+                                fallback_status = "目录读取不完整"
+                            else:
+                                fallback_status = "完整目录未找到精确匹配"
+                            job["stage"] = f"Woot {fallback_status} {item['asin']}，正在改用 Sorftime MCP"
+                            _save(job)
+                    if item_source == "sorftime":
+                        if not sorftime_connection_loaded:
+                            endpoint, sorftime_key = sorftime_settings.connection()
+                            sorftime_connection_loaded = True
                         cache_key = fingerprint({"contract": "sorftime-product-reviews-v1",
                             "site": job["site"], "asin": item["asin"], "review_type": "Both",
                             "round": round_number, "window": "latest-year"})
@@ -650,15 +798,35 @@ def _run(job_id: str, cancel: threading.Event) -> None:
                                 })
                                 raise
                             COLLECTION_CACHE.put(job.get("workspace_id"), cache_key, payload)
-                    review_type = "Woot max" if collection_source == "woot" else "Both"
+                    if item_source == "brightdata":
+                        cache_key = fingerprint({"contract": "brightdata-amazon-reviews-v1",
+                            "site": "US", "asin": item["asin"],
+                            "max_reviews": brightdata.MAX_REVIEWS_PER_ASIN})
+                        cache_hit, payload = COLLECTION_CACHE.get(job.get("workspace_id"), cache_key,
+                            force_refresh=bool(job.get("force_refresh")))
+                        if not cache_hit:
+                            try:
+                                payload = brightdata.collect_reviews(item["asin"], brightdata_key, cancel=cancel,
+                                    progress=lambda detail: _save({**job,
+                                        "stage": f"正在拉取 {item['asin']} 评论 · {detail}"}))
+                            except Exception:
+                                record_usage("reviews", job_id, job.get("workspace_id"), {
+                                    "stage": "reviews_collection", "model": "Bright Data", "status": "failed",
+                                    "request": True, "review_api_calls": 1, "retries": 0,
+                                })
+                                raise
+                            COLLECTION_CACHE.put(job.get("workspace_id"), cache_key, payload)
+                    review_type = ("Woot max" if item_source == "woot" else
+                                   "Bright Data max20" if item_source == "brightdata" else "Both")
                     calls.append({"round": round_number, "review_type": review_type, "payload": payload,
-                                  "cache_hit": cache_hit})
+                                  "collection_source": item_source, "cache_hit": cache_hit})
                     completed_rounds.add(round_number)
                     reviews, item["review_call_metrics"] = _reviews_from_calls(calls, item["asin"])
                     call_metric = next(metric for metric in item["review_call_metrics"]
                                        if metric["round"] == round_number)
                     record_usage("reviews", job_id, job.get("workspace_id"), {
-                        "stage": "reviews_collection", "model": "Woot" if collection_source == "woot" else "Sorftime",
+                        "stage": "reviews_collection", "model": "Woot" if item_source == "woot" else
+                        "Bright Data" if item_source == "brightdata" else "Sorftime",
                         "status": "cache_hit" if cache_hit else "completed", "request": not cache_hit,
                         "local_cache_hit": cache_hit, "local_cache_miss": not cache_hit,
                         "review_api_calls": 0 if cache_hit else call_metric.get("request_count", 1),
@@ -702,12 +870,29 @@ def _run(job_id: str, cancel: threading.Event) -> None:
                 item["status"] = "completed"
                 item["error"] = ""
             except Exception as exc:  # noqa: BLE001
+                if cancel.is_set():
+                    item["status"] = "pending"
+                    item["error"] = ""
+                    if isinstance(exc, woot.WootCancelled):
+                        item["request_budget_metrics"] = {
+                            "total_request_count": int(getattr(exc, "total_request_count", 0)),
+                            "directory_request_count": int(getattr(exc, "directory_request_count", 0)),
+                            "review_request_count": int(getattr(exc, "review_request_count", 0)),
+                        }
+                    break
                 item["status"] = "failed"
                 item["error"] = _safe_error(exc, sorftime_key, api_key)
+                if isinstance(exc, woot.WootRequestBudgetExceeded):
+                    item["request_budget_metrics"] = {
+                        "total_request_count": int(getattr(exc, "total_request_count", 0)),
+                        "directory_request_count": int(getattr(exc, "directory_request_count", 0)),
+                        "review_request_count": int(getattr(exc, "review_request_count", 0)),
+                    }
             _save(job)
         if cancel.is_set():
             job["status"] = "cancelled"
             job["stage"] = "已取消；可重试未完成 ASIN"
+            _finish_attempt(job)
             _save(job)
         else:
             failed = [item for item in job["items"] if item["status"] == "failed"]
@@ -718,10 +903,13 @@ def _run(job_id: str, cancel: threading.Event) -> None:
             _save(job)
             _register_project_artifacts(job)
             _auto_voc_handoff(job)
+            _finish_attempt(job)
+            _save(job)
     except Exception as exc:  # noqa: BLE001
         job = _read(job_id)
         job["status"] = "failed"
-        secrets = [locals().get("api_key", ""), locals().get("sorftime_key", "")]
+        secrets = [locals().get("api_key", ""), locals().get("sorftime_key", ""),
+                   locals().get("brightdata_key", "")]
         try:
             _, configured_key = sorftime_settings.connection()
             secrets.append(configured_key)
@@ -729,6 +917,7 @@ def _run(job_id: str, cancel: threading.Event) -> None:
             pass
         job["error"] = _safe_error(exc, *secrets)
         job["stage"] = "任务失败"
+        _finish_attempt(job)
         _save(job)
     finally:
         with LOCK:
@@ -802,7 +991,7 @@ def _export(job: dict[str, Any]) -> None:
     sheet = book.active
     sheet.title = "全部评论"
     headers = ("#", "来源站点", "品类节点", "ASIN", "商品标题", "变体", "评论日期", "星级", "情感",
-               "评论标题(EN)", "评论内容(EN)", "评论标题(中文)", "评论内容(中文)", "拉取批次")
+               "评论标题(EN)", "评论内容(EN)", "评论标题(中文)", "评论内容(中文)", "拉取批次", "评论采集源")
     header_fill = PatternFill("solid", fgColor="1F4E79")
     header_font = Font(color="FFFFFF", bold=True, size=11)
     thin = Side(style="thin", color="D0D0D0")
@@ -831,20 +1020,21 @@ def _export(job: dict[str, Any]) -> None:
             row.get("star_rating") or row.get("rating") or row.get("star") or "", sentiment,
             row.get("title", ""), row.get("content") or row.get("review") or row.get("text") or "",
             row.get("t_title") or row.get("title_zh") or "",
-            row.get("t_content") or row.get("translation_zh") or "", pull_batch)
+            row.get("t_content") or row.get("translation_zh") or "", pull_batch,
+            _source_label(row.get("collection_source") or job.get("collection_source")))
         sheet.append(tuple(_excel_safe(value) for value in values))
         for cell in sheet[sheet.max_row]:
             cell.border = border
-            cell.alignment = Alignment(vertical="top", wrap_text=cell.column in (5, 10, 11, 12, 13))
+            cell.alignment = Alignment(vertical="top", wrap_text=cell.column in (5, 10, 11, 12, 13, 15))
         if sentiment in sentiment_fills:
             sheet.cell(sheet.max_row, 9).fill, sheet.cell(sheet.max_row, 9).font = sentiment_fills[sentiment]
-    for column, width in enumerate((6, 12, 18, 13, 50, 20, 12, 8, 10, 28, 60, 28, 60, 18), start=1):
+    for column, width in enumerate((6, 12, 18, 13, 50, 20, 12, 8, 10, 28, 60, 28, 60, 18, 18), start=1):
         sheet.column_dimensions[get_column_letter(column)].width = width
     sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = f"A1:N{sheet.max_row}"
+    sheet.auto_filter.ref = f"A1:O{sheet.max_row}"
 
     products = book.create_sheet("商品评论统计")
-    product_headers = ("ASIN", "商品标题", "评论数", "积极", "中性", "消极", "好评率")
+    product_headers = ("ASIN", "商品标题", "评论数", "积极", "中性", "消极", "好评率", "采集来源")
     products.append(product_headers)
     for cell in products[1]:
         cell.fill = header_fill
@@ -862,10 +1052,11 @@ def _export(job: dict[str, Any]) -> None:
         positive_rate = counts["Positive"] / len(item_reviews) * 100 if item_reviews else 0
         products.append(tuple(_excel_safe(value) for value in (
             item.get("asin"), item.get("title"), len(item_reviews), counts["Positive"], counts["Mixed"],
-            counts["Negative"], f"{positive_rate:.1f}%")))
+            counts["Negative"], f"{positive_rate:.1f}%",
+            _source_label(item.get("collection_source") or job.get("collection_source")))))
         for cell in products[products.max_row]:
             cell.border = border
-    for column, width in enumerate((14, 55, 10, 10, 10, 10, 12), start=1):
+    for column, width in enumerate((14, 55, 10, 10, 10, 10, 12, 18), start=1):
         products.column_dimensions[get_column_letter(column)].width = width
     products.freeze_panes = "A2"
 
@@ -888,15 +1079,36 @@ def _export(job: dict[str, Any]) -> None:
     five_star = sum(str(row.get("star_rating") or row.get("rating") or row.get("star") or "") in ("5", "5.0") for row in reviews)
     one_star = sum(str(row.get("star_rating") or row.get("rating") or row.get("star") or "") in ("1", "1.0") for row in reviews)
     calls = int((job.get("metrics") or {}).get("review_tool_calls") or 0)
+    source_counts: dict[str, int] = {"woot": 0, "sorftime": 0, "brightdata": 0}
+    for item in job.get("items", []):
+        source = item.get("collection_source") or job.get("collection_source")
+        if source in source_counts:
+            source_counts[source] += 1
+    fallback_count = sum(bool(item.get("fallback_from")) for item in job.get("items", []))
+    if job.get("collection_source") == "auto":
+        collection_label = "自动：指定 ASIN 优先 Woot；目录无匹配、检索达到上限或目录读取不完整时回退 Sorftime MCP"
+        batch_label = "Woot 按星级和排序组合分页；回退的 Sorftime 每个 ASIN 调用 Both 两次（非分页）"
+    elif job.get("collection_source") == "woot":
+        collection_label = "Woot 爬虫"
+        batch_label = "Woot 按星级和排序组合采集并去重"
+    elif job.get("collection_source") == "brightdata":
+        collection_label = "Bright Data 评论 API"
+        batch_label = f"每个美国站 ASIN 最多采集 {brightdata.MAX_REVIEWS_PER_ASIN} 条评论"
+    else:
+        collection_label = "Sorftime MCP"
+        batch_label = "每个 ASIN 使用同站点、Both 参数调用 2 次；去重合并，不是分页"
+    source_distribution = (f"Woot：{source_counts['woot']} 个 ASIN；Sorftime MCP：{source_counts['sorftime']} 个 ASIN；"
+                           f"Bright Data：{source_counts['brightdata']} 个 ASIN")
     summary_rows = (
         ("品类节点", job.get("node_id") or ""),
         ("站点", job.get("site") or ""),
-        ("评论采集方式", "Woot 爬虫" if job.get("collection_source") == "woot" else "Sorftime MCP"),
+        ("评论采集方式", collection_label),
+        ("评论来源分布", source_distribution),
+        ("自动回退 ASIN 数", fallback_count),
         ("去重后评论总数", total_reviews),
         ("涉及商品数(ASIN)", len({row.get("asin") for row in reviews})),
         ("API 调用次数", calls),
-        ("拉取批次", "Woot 按星级和排序组合采集并去重" if job.get("collection_source") == "woot"
-         else "每个 ASIN 使用同站点、Both 参数调用 2 次；去重合并，不是分页"),
+        ("拉取批次", batch_label),
         ("积极评论", f'{sentiment_counts["Positive"]} ({sentiment_counts["Positive"] / total_reviews * 100:.1f}%)' if total_reviews else "0 (0.0%)"),
         ("中性评论", f'{sentiment_counts["Mixed"]} ({sentiment_counts["Mixed"] / total_reviews * 100:.1f}%)' if total_reviews else "0 (0.0%)"),
         ("消极评论", f'{sentiment_counts["Negative"]} ({sentiment_counts["Negative"] / total_reviews * 100:.1f}%)' if total_reviews else "0 (0.0%)"),
@@ -955,12 +1167,17 @@ def create(body: dict[str, Any]) -> dict[str, Any]:
     if mode not in ("ranked", "asins", "node_asins"):
         raise ValueError("输入模式无效")
     site = _site(body.get("site", "US"))
-    collection_source = str(body.get("collection_source") or ("woot" if site == "US" else "sorftime")).strip().lower()
-    if collection_source not in ("sorftime", "woot"):
+    collection_source = str(body.get("collection_source") or ("auto" if site == "US" else "sorftime")).strip().lower()
+    if collection_source not in ("auto", "sorftime", "woot", "brightdata"):
         raise ValueError("评论采集方式无效")
-    if collection_source == "woot" and site != "US":
+    if collection_source in ("auto", "woot") and site != "US":
         raise ValueError("Woot 评论采集仅支持 Amazon 美国站")
+    if collection_source == "woot" and mode == "ranked":
+        raise ValueError("Woot 评论需要商品对应的 Woot 评论链接；榜单模式请切换到 Sorftime MCP")
+    if collection_source == "brightdata" and (site != "US" or mode != "asins"):
+        raise ValueError("Bright Data 评论采集目前只支持 Amazon 美国站的指定 ASIN 模式")
     selected_asins = _asins(body.get("asins")) if mode in ("asins", "node_asins") else []
+    woot_review_ids = _woot_review_ids(body.get("woot_review_urls"), selected_asins, collection_source)
     node_id = str(body.get("node_id") or "").strip()
     if mode in ("ranked", "node_asins") and (not node_id or len(node_id) > 100):
         raise ValueError("类目 Node ID 无效")
@@ -974,8 +1191,10 @@ def create(body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("translate_enabled 必须是布尔值")
     if translate_enabled and (not model or not credential_id):
         raise ValueError("翻译开启时请选择翻译模型和已授权 Key")
-    if collection_source == "sorftime" or mode != "asins":
+    if collection_source in ("sorftime", "auto") or mode != "asins":
         sorftime_settings.connection()
+    if collection_source == "brightdata":
+        brightdata_settings.connection()
     if translate_enabled:
         target = model_target(model, credential_id)
         del target
@@ -1029,23 +1248,33 @@ def create(body: dict[str, Any]) -> dict[str, Any]:
                                            "asins": selected_asins, "rank_limit": rank_limit,
                                            "workflow_mode": workflow_mode, "translate_enabled": translate_enabled,
                                            "collection_source": collection_source,
+                                           "max_reviews_per_asin": (brightdata.MAX_REVIEWS_PER_ASIN
+                                                                       if collection_source == "brightdata" else None),
+                                           "woot_review_ids": woot_review_ids,
                                            "workspace_id": workspace_id, "source_dataset_id": dataset_id,
                                            "source_archive_id": archive_id, "auto_voc_policy": auto_voc_policy,
                                            "force_refresh": force_refresh})
     job = {"id": job_id, "status": "queued", "mode": mode, "site": site, "node_id": node_id,
            "asins": selected_asins, "rank_limit": rank_limit, "model": model,
            "credential_id": credential_id if translate_enabled else "", "created_at": now, "updated_at": now,
+           "started_at": None, "finished_at": None, "duration_seconds": None,
+           "total_duration_seconds": 0.0, "attempt_history": [],
            "stage": "等待执行", "attempt": 0, "items": [], "errors": [], "review_count": 0,
            "workspace_id": workspace_id, "source_dataset_id": dataset_id,
            "source_archive_id": archive_id, "workflow_mode": workflow_mode,
            "translate_enabled": translate_enabled, "auto_voc_policy": auto_voc_policy,
            "force_refresh": force_refresh,
            "collection_source": collection_source,
+           "woot_review_ids": woot_review_ids,
            "review_collection_contract": ({"source": "Woot", "mode": "max",
                                            "star_filters": [5, 4, 3, 2, 1],
                                            "sort_orders": [0, 1, 2, 3], "pagination": True,
                                            "label": "美国站使用 Woot 评论接口按星级和排序组合采集并去重"}
-                                          if collection_source == "woot" else REVIEW_CALL_CONTRACT),
+                                          if collection_source == "woot" else
+                                          {"source": "Bright Data", "max_reviews_per_asin": brightdata.MAX_REVIEWS_PER_ASIN,
+                                           "label": "美国站指定 ASIN 使用 Bright Data 评论 API，每个 ASIN 最多返回 20 条评论"}
+                                          if collection_source == "brightdata" else
+                                          AUTO_REVIEW_CONTRACT if collection_source == "auto" else REVIEW_CALL_CONTRACT),
            "metrics": {"review_tool_calls": 0, "cached_review_requests": 0,
                        "raw_records": 0, "new_unique_records": 0}}
     _save(job)
@@ -1086,10 +1315,7 @@ def get(job_id: str) -> dict[str, Any]:
 def cancel(job_id: str) -> dict[str, Any]:
     with LOCK:
         job = _read(job_id)
-        if job.get("status") == "queued":
-            job["status"] = "cancelled"
-            job["stage"] = "已取消"
-        elif job.get("status") in ("running", "queued"):
+        if job.get("status") in ("running", "queued", "cancelling"):
             event = CANCEL.get(job_id)
             if event:
                 event.set()
@@ -1099,6 +1325,7 @@ def cancel(job_id: str) -> dict[str, Any]:
             else:
                 job["status"] = "cancelled"
                 job["stage"] = "已取消"
+                _finish_attempt(job)
         _save(job)
         return _job_snapshot(job)
 
@@ -1117,6 +1344,9 @@ def retry(job_id: str) -> dict[str, Any]:
             item["error"] = ""
         job["export_only_retry"] = export_only
         job["status"] = "queued"
+        job["started_at"] = None
+        job["finished_at"] = None
+        job["duration_seconds"] = None
         job["stage"] = "等待重试"
         job["errors"] = []
         _save(job)
@@ -1155,6 +1385,7 @@ def recover() -> None:
                         item["status"] = "pending"
                 job["status"] = "interrupted"
                 job["stage"] = "工作台重启；可继续未完成 ASIN"
+                _finish_attempt(job)
                 _atomic_json(path, job)
         except Exception:
             continue
@@ -1177,6 +1408,7 @@ def stop_all() -> None:
                 job = _read(job_id)
                 job["status"] = "interrupted"
                 job["stage"] = "工作台关闭；可继续未完成 ASIN"
+                _finish_attempt(job)
                 _save(job)
             except Exception:
                 pass

@@ -214,7 +214,7 @@ def test_runtime_status_is_presence_only_and_identifies_isolated_data(monkeypatc
     from backend import credential_vault
     from backend.db import STORAGE
     monkeypatch.setattr(credential_vault, 'credential_status', lambda profile=None: {
-        'profile': 'dev-test', 'model': True, 'sellersprite': False, 'sorftime': False,
+        'profile': 'dev-test', 'model': True, 'sellersprite': False, 'sorftime': False, 'brightdata': False,
     })
     secret_marker = 'DO_NOT_RETURN_THIS_SECRET'
     with client:

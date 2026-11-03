@@ -182,7 +182,7 @@ def runtime_status(request:Request):
         from .credential_vault import credential_status
         credentials=credential_status(profile=external_effects.profile())
     except (ImportError,OSError,ValueError,RuntimeError):
-        credentials={'vault':'unavailable','model':False,'sellersprite':False,'sorftime':False}
+        credentials={'vault':'unavailable','model':False,'sellersprite':False,'sorftime':False,'brightdata':False}
     reports_dir=Path(os.environ.get('GEWU_REPORTS_DIR',str(STORAGE/'reports'))).resolve()
     report=None
     if reports_dir.is_dir():
@@ -339,6 +339,24 @@ def settings_sorftime_clear():
     from .xunlongjue import settings as sorftime_settings
     sorftime_settings.clear_key()
     return sorftime_settings.status()
+
+@app.get('/api/settings/brightdata')
+def settings_brightdata():
+    from .amazon_reviews import brightdata_settings
+    return brightdata_settings.status()
+
+@app.put('/api/settings/brightdata')
+def settings_brightdata_save(body:dict):
+    from .amazon_reviews import brightdata_settings
+    try:
+        return brightdata_settings.save((body or {}).get('api_key'))
+    except ValueError as exc:
+        raise HTTPException(status_code=400,detail=str(exc)) from None
+
+@app.delete('/api/settings/brightdata')
+def settings_brightdata_clear():
+    from .amazon_reviews import brightdata_settings
+    return brightdata_settings.clear_key()
 
 @app.post('/api/settings/models/{provider}/credentials/{credential_id}/{action}')
 def settings_credential_action(provider:str,credential_id:str,action:str):return model_settings.credential_action(provider,credential_id,action)

@@ -35,7 +35,7 @@ python .\scripts\import_provider_settings.py --apply
 
 首次安装时可以指定 DEV 源码目录和固定候选构建工作树；TEST Current、PROD beta.9 默认程序目录以及三个环境的数据、缓存和报告目录有固定默认值。重装时保留既有 Run Center 配置。PROD 程序必须位于版本化 beta 目录，启动前校验人工验收结果、候选报告、便携 ZIP 和 build manifest 的哈希。脚本不写入正式数据目录。
 
-DEV 使用 Python 自动重载和 Vite 热更新。当前机器已有非运行中心管理的 Vite 服务占用 5173，因此固定开发入口采用 5174，原进程保持不动。Vite 代理目标固定读取 `GEWU_DEV_API_URL`，默认 `http://127.0.0.1:8896`，只接受回环 HTTP 的 8896 端口；代理请求要求本地 5174 Host，若带 Origin 则必须是 `localhost` 或 `127.0.0.1` 的 5174 Origin。仓库 Vite 配置不再默认代理正式端口 8765。
+DEV 使用 Vite 前端热更新；Python 后端代码在 Run Center 启动时加载，后端变更需通过 Run Center 停止并重新启动同一个 DEV profile 才会生效。这样保留固定的 5174/8896 入口、实例身份和 DEV 数据目录，不另建实例。当前机器已有非运行中心管理的 Vite 服务占用 5173，因此固定开发入口采用 5174，原进程保持不动。Vite 代理目标固定读取 `GEWU_DEV_API_URL`，默认 `http://127.0.0.1:8896`，只接受回环 HTTP 的 8896 端口；代理请求要求本地 5174 Host，若带 Origin 则必须是 `localhost` 或 `127.0.0.1` 的 5174 Origin。仓库 Vite 配置不再默认代理正式端口 8765。
 
 桌面入口启动 DEV 或 TEST 时默认允许模型、MCP、Amazon 和其他外部调用，不弹出模式选择框。DEV 使用 `GEWU_PROFILE=dev` 和专属 `GEWU_DEV_EXTERNAL_EFFECTS`，数据/缓存为 `K:\GeWuDev\Data` 与 `K:\GeWuDev\Cache`；TEST 使用 `GEWU_PROFILE=test` 和专属 `GEWU_TEST_EXTERNAL_EFFECTS`，数据/缓存为 `K:\GeWuTest\Data` 与 `K:\GeWuTest\Cache`。外部调用可能产生费用，Run Center 不计量或强制请求/费用上限。需要离线候选冻结或维护时，可显式传入 `-ExternalEffectsMode offline`；默认实例 ID 分别为 `DEV` 和 `TEST`，离线检查分别报告 `offline`。DEV/TEST 不会因为重启而恢复以前排队的任务。
 

@@ -199,4 +199,5 @@ def credential_status(profile: str | None = None) -> dict:
     return {'profile': scope,
             'model': any(isinstance(v, str) and v for v in providers.values()),
             'sellersprite': bool(value.get('sellersprite', {}).get('mcp_secret_key')),
-            'sorftime': bool(value.get('sorftime', {}).get('api_key'))}
+            'sorftime': bool(value.get('sorftime', {}).get('api_key')),
+            'brightdata': bool(value.get('brightdata', {}).get('api_key'))}

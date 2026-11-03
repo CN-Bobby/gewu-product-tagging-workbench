@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   AMAZON_VOC_FROM_REVIEWS_API,amazonReviewsWorkflowCopy,amazonReviewsVocHandoffEndpoint,amazonVocRunHash,buildAmazonReviewsVocHandoffRequest,
-  canStartAmazonReviewsVoc,isAmazonReviewsVocEligible,isAmazonReviewsVocPartial,parseAmazonVocRoute,
+  canStartAmazonReviewsVoc,isAmazonReviewsVocEligible,isAmazonReviewsVocPartial,parseAmazonReviewInput,parseAmazonVocRoute,
 } from '../src/amazonReviewsState.js';
 
 const ready={id:'job-1',status:'completed',can_download:true,review_count:12};
@@ -54,4 +54,14 @@ test('ordinary VOC route has no pinned run and other routes are not captured',()
   assert.deepEqual(parseAmazonVocRoute('#/amazon-voc'),{page:'amazon-voc',runId:''});
   assert.deepEqual(parseAmazonVocRoute('#/amazon-voc/'),{page:'amazon-voc',runId:''});
   assert.equal(parseAmazonVocRoute('#/amazon-reviews'),null);
+});
+
+test('Woot review links become ASIN targets while invalid or foreign links are rejected',()=>{
+  const url='https://electronics.woot.com/review/B012345678?itemid=WTTEST123A&offerid=00000000-0000-0000-0000-000000000001';
+  const parsed=parseAmazonReviewInput(`B098765432\n${url}\nhttps://example.com/review/B001234567`,{allowWootReviewLinks:true});
+
+  assert.deepEqual(parsed.asins,['B098765432','B012345678']);
+  assert.deepEqual(parsed.wootReviewUrls,{'B012345678':url});
+  assert.deepEqual(parsed.invalid,['https://example.com/review/B001234567']);
+  assert.deepEqual(parseAmazonReviewInput(url),{asins:[],wootReviewUrls:{},invalid:[url]});
 });

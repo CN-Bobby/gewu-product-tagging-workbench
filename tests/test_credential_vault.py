@@ -24,7 +24,7 @@ def test_profile_scopes_share_dev_test_and_isolate_prod(fake_vault):
     assert vault.get_secret('sellersprite', 'mcp_secret_key', 'prod') is None
     vault.set_secret('sellersprite', 'mcp_secret_key', 'prod-key', 'prod')
     assert vault.get_secret('sellersprite', 'mcp_secret_key', 'prod') == 'prod-key'
-    assert vault.credential_status('test') == {'profile': 'dev-test', 'model': False, 'sellersprite': True, 'sorftime': False}
+    assert vault.credential_status('test') == {'profile': 'dev-test', 'model': False, 'sellersprite': True, 'sorftime': False, 'brightdata': False}
     assert vault.credential_status('prod')['sellersprite'] is True
 
 
@@ -58,6 +58,7 @@ def test_sellersprite_and_sorftime_adapters_use_vault_only(fake_vault, tmp_path,
         monkeypatch.setitem(sys.modules, 'dotenv', dotenv)
     from backend import db
     from backend.keyword_research import credentials as seller
+    from backend.amazon_reviews import brightdata_settings
     from backend.xunlongjue import settings as sorftime
 
     monkeypatch.setattr(db, 'STORAGE', tmp_path / 'business-data')
@@ -75,6 +76,14 @@ def test_sellersprite_and_sorftime_adapters_use_vault_only(fake_vault, tmp_path,
     assert 'sf-test-secret' not in stored
     sorftime.clear_key()
     assert sorftime.status()['key_configured'] is False
+
+    assert brightdata_settings.status() == {'key_configured': False}
+    brightdata_settings.save('bd-test-secret')
+    assert brightdata_settings.connection() == 'bd-test-secret'
+    assert brightdata_settings.status() == {'key_configured': True}
+    assert 'bd-test-secret' not in json.dumps(brightdata_settings.status())
+    brightdata_settings.clear_key()
+    assert brightdata_settings.status() == {'key_configured': False}
 
 
 def test_model_target_ignores_ambient_environment_key(fake_vault, tmp_path, monkeypatch):

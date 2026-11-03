@@ -1,11 +1,12 @@
 import json
 import time
 import threading
+from types import SimpleNamespace
 import pytest
 
 from openpyxl import load_workbook
 
-from backend.amazon_reviews import service, sorftime
+from backend.amazon_reviews import brightdata, service, sorftime, woot
 from backend.keyword_research.llm_client import LLMError
 from backend.local_result_cache import LocalResultCache
 
@@ -50,6 +51,148 @@ class OneBasedTranslator:
              "text_zh": "译：" + row["text"]}
             for row in inputs
         ]})
+
+
+def test_sorftime_decode_prefers_structured_content_to_display_text():
+    payload = {"data": [{"title": "Useful", "content": "Works well"}]}
+    result = SimpleNamespace(
+        isError=False,
+        content=[SimpleNamespace(text="Fetched 1 review")],
+        structuredContent=payload,
+    )
+
+    assert sorftime._decode(result, "test-key") == payload
+
+
+def test_sorftime_decode_treats_no_reviews_message_as_empty_review_payload():
+    result = SimpleNamespace(
+        isError=False,
+        content=[SimpleNamespace(text="No reviews found.")],
+        structuredContent=None,
+    )
+
+    payload = sorftime._decode(result, "test-key", tool_name="product_reviews")
+
+    assert payload == {"data": [], "message": "No reviews found."}
+    assert service._extract_reviews(payload) == []
+
+
+def test_sorftime_no_reviews_message_is_not_accepted_for_other_tools():
+    result = SimpleNamespace(
+        isError=False,
+        content=[SimpleNamespace(text="No reviews found.")],
+        structuredContent=None,
+    )
+
+    with pytest.raises(ValueError, match="non-JSON"):
+        sorftime._decode(result, "test-key", tool_name="category_report")
+
+
+def test_sorftime_call_records_no_reviews_as_a_success(monkeypatch):
+    finished = []
+
+    async def fake_call(_endpoint, _key, _name, _arguments):
+        return {"data": [], "message": "No reviews found."}
+
+    monkeypatch.setattr(sorftime, "_call", fake_call)
+    monkeypatch.setattr(sorftime.usage_stats, "start_usage_event", lambda **_kwargs: "event-id")
+    monkeypatch.setattr(
+        sorftime.usage_stats, "finish_usage_event",
+        lambda _event_id, **kwargs: finished.append(kwargs),
+    )
+
+    payload = sorftime.call(
+        "https://mcp.invalid/mcp", "test-key", "product_reviews", {"asin": ASIN_A},
+    )
+
+    assert payload == {"data": [], "message": "No reviews found."}
+    assert len(finished) == 1 and finished[0]["status"] == "success"
+
+
+def test_sorftime_decode_handles_multiple_independent_json_text_blocks():
+    result = SimpleNamespace(
+        isError=False,
+        content=[
+            SimpleNamespace(text=json.dumps({"data": [{"title": "First", "content": "A"}]})),
+            SimpleNamespace(text=json.dumps({"data": [{"title": "Second", "content": "B"}]})),
+        ],
+        structuredContent=None,
+    )
+
+    payload = sorftime._decode(result, "test-key")
+    reviews = service._extract_reviews(payload)
+
+    assert [row["title"] for row in reviews] == ["First", "Second"]
+
+
+def test_sorftime_decode_classifies_non_json_without_exposing_response_body():
+    secret_body = "<html>private upstream response</html>"
+    result = SimpleNamespace(
+        isError=False,
+        content=[SimpleNamespace(text=secret_body)],
+        structuredContent=None,
+    )
+
+    with pytest.raises(ValueError, match="HTML") as error:
+        sorftime._decode(result, "test-key")
+
+    assert "private upstream response" not in str(error.value)
+
+
+def test_sorftime_call_retries_a_connect_error_once_and_records_it(monkeypatch):
+    class ConnectError(RuntimeError):
+        pass
+
+    calls = []
+    sleeps = []
+    finished = []
+
+    async def fake_call(_endpoint, _key, _name, _arguments):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ExceptionGroup("transport", [ConnectError("connection refused")])
+        return {"data": []}
+
+    monkeypatch.setattr(sorftime, "_call", fake_call)
+    monkeypatch.setattr(sorftime.time, "sleep", sleeps.append)
+    monkeypatch.setattr(sorftime.usage_stats, "start_usage_event", lambda **_kwargs: "event-id")
+    monkeypatch.setattr(
+        sorftime.usage_stats, "finish_usage_event",
+        lambda _event_id, **kwargs: finished.append(kwargs),
+    )
+
+    result = sorftime.call(
+        "https://mcp.invalid/mcp", "test-key", "product_reviews", {"asin": ASIN_A},
+        usage_context={"module": "amazon_reviews"},
+    )
+
+    assert result == {"data": []}
+    assert len(calls) == 2
+    assert sleeps == [0.5]
+    assert len(finished) == 1
+    assert finished[0]["status"] == "success"
+    assert finished[0]["duration_ms"] >= 0
+    assert finished[0]["metadata"] == {"transport_retries": 1}
+
+
+def test_sorftime_call_does_not_retry_non_json_response_errors(monkeypatch):
+    calls = []
+
+    async def fake_call(_endpoint, _key, _name, _arguments):
+        calls.append(1)
+        raise ValueError("Sorftime returned non-JSON review data")
+
+    monkeypatch.setattr(sorftime, "_call", fake_call)
+    monkeypatch.setattr(sorftime.usage_stats, "start_usage_event", lambda **_kwargs: "event-id")
+    monkeypatch.setattr(sorftime.usage_stats, "finish_usage_event", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(RuntimeError, match="non-JSON"):
+        sorftime.call(
+            "https://mcp.invalid/mcp", "test-key", "product_reviews", {"asin": ASIN_A},
+            usage_context={"module": "amazon_reviews"},
+        )
+
+    assert len(calls) == 1
 
 
 class GenericFieldTranslator:
@@ -104,6 +247,32 @@ def test_review_identity_uses_source_composite_key():
 
     assert service._review_key(first) == service._review_key(second)
     assert service._review_key(first) != service._review_key(distinct)
+
+
+def test_reviews_from_calls_preserves_all_variant_attributes_after_deduplication():
+    duplicate_rows = [
+        {"review_date": "20260901", "star_rating": 5, "title": "Good", "content": "Works",
+         "variant_attribute": "color=black; size=small"},
+        {"review_date": "20260901", "star_rating": 5, "title": "Good", "content": "Works",
+         "variant_attribute": "color=navy; size=small"},
+        {"review_date": "20260901", "star_rating": 5, "title": "Good", "content": "Works",
+         "variant_attribute": "color=gray; size=small"},
+    ]
+
+    reviews, metrics = service._reviews_from_calls([
+        {"round": 1, "review_type": "Both", "payload": {"data": duplicate_rows}},
+        {"round": 2, "review_type": "Both", "payload": {"data": duplicate_rows}},
+    ], ASIN_A)
+
+    assert len(reviews) == 1
+    assert reviews[0]["source_variant_attributes"] == [
+        "color=black; size=small", "color=navy; size=small", "color=gray; size=small",
+    ]
+    assert reviews[0]["variant_attribute"] == (
+        "color=black; size=small | color=navy; size=small | color=gray; size=small"
+    )
+    assert [metric["raw_record_count"] for metric in metrics] == [3, 3]
+    assert [metric["new_unique_count"] for metric in metrics] == [1, 0]
 
 
 def test_translation_accepts_one_based_model_indexes(monkeypatch, tmp_path):
@@ -231,6 +400,12 @@ def test_live_shaped_node_job_deduplicates_translates_and_exports(monkeypatch, t
     result = service.get(created["id"])
 
     assert result["status"] == "completed", result
+    assert result["started_at"] >= result["created_at"]
+    assert result["finished_at"] >= result["started_at"]
+    assert result["duration_seconds"] >= 0
+    assert result["total_duration_seconds"] >= result["duration_seconds"]
+    assert result["attempt_history"][-1]["status"] == "completed"
+    assert result["attempt_history"][-1]["finished_at"] == result["finished_at"]
     assert [item["asin"] for item in result["items"]] == [ASIN_A, ASIN_B]
     assert result["metrics"] == {"review_tool_calls": 4, "cached_review_requests": 0,
                                  "raw_records": 6, "new_unique_records": 4}
@@ -249,7 +424,7 @@ def test_live_shaped_node_job_deduplicates_translates_and_exports(monkeypatch, t
     assert workbook.sheetnames == ["全部评论", "商品评论统计", "统计汇总"]
     all_reviews = workbook["全部评论"]
     assert all_reviews.max_row == 5
-    assert all_reviews.max_column == 14
+    assert all_reviews.max_column == 15
     assert all_reviews.cell(1, 1).value == "#"
     assert all_reviews.cell(2, 10).value == "'=Works well"  # Excel formula injection is neutralized
     assert workbook["商品评论统计"].max_row == 3
@@ -258,6 +433,59 @@ def test_live_shaped_node_job_deduplicates_translates_and_exports(monkeypatch, t
     assert summary["去重后评论总数"] == 4
     assert summary["API 调用次数"] == 4
     assert summary["翻译覆盖"] == "4/4 条"
+
+
+def test_attempt_timing_history_preserves_each_retry(monkeypatch):
+    moments = iter([100.0, 104.0, 200.0, 209.0])
+    monkeypatch.setattr(service.time, "time", lambda: next(moments))
+    job = {"id": "a" * 32, "status": "queued", "attempt": 0, "created_at": 90.0}
+
+    service._start_attempt(job)
+    job["status"] = "completed_with_errors"
+    service._finish_attempt(job)
+
+    job["status"] = "queued"
+    job["started_at"] = None
+    job["finished_at"] = None
+    job["duration_seconds"] = None
+    service._start_attempt(job)
+    job["status"] = "completed"
+    service._finish_attempt(job)
+
+    snapshot = service._job_snapshot(job)
+    assert snapshot["attempt"] == 2
+    assert snapshot["started_at"] == 200.0
+    assert snapshot["finished_at"] == 209.0
+    assert snapshot["duration_seconds"] == 9.0
+    assert snapshot["total_duration_seconds"] == 13.0
+    assert [(item["status"], item["duration_seconds"]) for item in snapshot["attempt_history"]] == [
+        ("completed_with_errors", 4.0), ("completed", 9.0),
+    ]
+
+
+def test_recover_records_interruption_time_for_running_attempt(monkeypatch, tmp_path):
+    root = tmp_path / "amazon-reviews"
+    root.mkdir()
+    monkeypatch.setattr(service, "ROOT", root)
+    monkeypatch.setattr(service.time, "time", lambda: 200.0)
+    job_id = "b" * 32
+    folder = root / job_id
+    folder.mkdir()
+    service._atomic_json(folder / "job.json", {
+        "id": job_id, "status": "running", "created_at": 90.0, "attempt": 1,
+        "started_at": 100.0, "finished_at": None, "duration_seconds": None,
+        "attempt_history": [{"attempt": 1, "status": "running", "started_at": 100.0,
+                             "finished_at": None, "duration_seconds": None}],
+        "items": [{"asin": ASIN_A, "status": "collecting"}],
+    })
+
+    service.recover()
+
+    recovered = service._read(job_id)
+    assert recovered["status"] == "interrupted"
+    assert recovered["finished_at"] == 200.0
+    assert recovered["duration_seconds"] == 100.0
+    assert recovered["attempt_history"][0]["status"] == "interrupted"
 
 
 def test_create_rejects_unconfigured_sorftime(monkeypatch):
@@ -274,6 +502,165 @@ def test_create_rejects_unconfigured_sorftime(monkeypatch):
         assert str(exc) == "not configured"
     else:
         raise AssertionError("未配置 Sorftime 时不应创建任务")
+
+
+def test_brightdata_source_is_explicit_capped_and_keeps_existing_review_workflow(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "ROOT", tmp_path / "amazon-reviews")
+    monkeypatch.setattr(service, "SHUTTING_DOWN", True)
+    monkeypatch.setattr(service, "record_usage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_register_project_artifacts", lambda _job: None)
+    monkeypatch.setattr(service, "_auto_voc_handoff", lambda _job: None)
+    monkeypatch.setattr(service.brightdata_settings, "connection", lambda: "test-provider-key")
+    monkeypatch.setattr(service.sorftime_settings, "connection", lambda: pytest.fail("不应调用 Sorftime"))
+    monkeypatch.setattr(woot, "collect_reviews", lambda *_args, **_kwargs: pytest.fail("不应调用 Woot"))
+    calls = []
+
+    def fake_brightdata(asin, api_key, **kwargs):
+        calls.append((asin, api_key, kwargs))
+        return {"reviews": [{"asin": asin, "review_date": "2026-09-01", "star_rating": "5",
+                             "title": "Good product", "content": "Works as described."}],
+                "request_count": 3, "snapshot_id": "s_fixture"}
+
+    monkeypatch.setattr(brightdata, "collect_reviews", fake_brightdata)
+    created = service.create({
+        "mode": "asins", "site": "US", "asins": [ASIN_A],
+        "collection_source": "brightdata", "translate_enabled": False,
+    })
+    assert created["review_collection_contract"]["max_reviews_per_asin"] == brightdata.MAX_REVIEWS_PER_ASIN
+    service._run(created["id"], threading.Event())
+
+    result = service.get(created["id"])
+    raw = json.loads(service.raw_path(created["id"]).read_text(encoding="utf-8"))
+    assert result["status"] == "completed"
+    assert result["items"][0]["collection_source"] == "brightdata"
+    assert result["collection_sources"]["brightdata_asins"] == 1
+    assert result["metrics"]["review_tool_calls"] == 3
+    assert calls[0][0:2] == (ASIN_A, "test-provider-key")
+    assert calls[0][2]["cancel"].is_set() is False
+    assert raw["reviews"][0]["collection_source"] == "brightdata"
+    assert service._source_label("brightdata") == "Bright Data"
+
+
+def test_brightdata_source_requires_us_direct_asins_and_configured_key(monkeypatch):
+    monkeypatch.setattr(service.brightdata_settings, "connection", lambda: "test-provider-key")
+    with pytest.raises(ValueError, match="美国站的指定 ASIN 模式"):
+        service.create({"mode": "ranked", "site": "US", "node_id": NODE,
+                        "collection_source": "brightdata", "translate_enabled": False})
+    with pytest.raises(ValueError, match="美国站"):
+        service.create({"mode": "asins", "site": "GB", "asins": [ASIN_A],
+                        "collection_source": "brightdata", "translate_enabled": False})
+    monkeypatch.setattr(service.brightdata_settings, "connection", lambda: (_ for _ in ()).throw(
+        ValueError("Bright Data not configured")))
+    with pytest.raises(ValueError, match="Bright Data not configured"):
+        service.create({"mode": "asins", "site": "US", "asins": [ASIN_A],
+                        "collection_source": "brightdata", "translate_enabled": False})
+
+
+def test_us_asin_jobs_default_to_auto_and_validate_sorftime_fallback(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "ROOT", tmp_path / "amazon-reviews")
+    monkeypatch.setattr(service, "SHUTTING_DOWN", True)
+    monkeypatch.setattr(service.sorftime_settings, "connection", lambda: ("https://mcp.invalid/mcp", "test-secret"))
+
+    created = service.create({
+        "mode": "asins", "site": "US", "asins": [ASIN_A], "translate_enabled": False,
+    })
+
+    assert created["collection_source"] == "auto"
+    assert created["review_collection_contract"]["source"] == "automatic"
+
+    monkeypatch.setattr(service.sorftime_settings, "connection", lambda: (_ for _ in ()).throw(
+        ValueError("Sorftime not configured")))
+    with pytest.raises(ValueError, match="Sorftime not configured"):
+        service.create({"mode": "asins", "site": "US", "asins": [ASIN_A], "translate_enabled": False})
+
+
+def test_us_auto_source_does_not_fallback_on_unclassified_woot_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "ROOT", tmp_path / "amazon-reviews")
+    monkeypatch.setattr(service, "SHUTTING_DOWN", False)
+    monkeypatch.setattr(service.sorftime_settings, "connection", lambda: ("https://mcp.invalid/mcp", "test-secret"))
+    monkeypatch.setattr(service, "record_usage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_register_project_artifacts", lambda _job: None)
+    monkeypatch.setattr(service, "_auto_voc_handoff", lambda _job: None)
+    monkeypatch.setattr(woot, "collect_reviews", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("Woot review request failed")))
+    monkeypatch.setattr(service.sorftime, "call", lambda *_args: pytest.fail("未分类 Woot 错误不应自动改用 Sorftime"))
+    job = _auto_review_job("e" * 32)
+    service._job_dir(job["id"]).mkdir(parents=True)
+    (service._job_dir(job["id"]) / "raw").mkdir()
+    service._save(job)
+
+    service._run(job["id"], threading.Event())
+
+    saved = service._read(job["id"])
+    assert saved["status"] == "completed_with_errors"
+    assert saved["items"][0]["status"] == "failed"
+    assert "review request failed" in saved["items"][0]["error"]
+
+
+def test_auto_source_does_not_bypass_external_effects_offline_guard(monkeypatch, tmp_path):
+    from backend.external_effects import ExternalEffectsDisabled
+
+    monkeypatch.setattr(service, "ROOT", tmp_path / "amazon-reviews")
+    monkeypatch.setattr(service, "SHUTTING_DOWN", False)
+    monkeypatch.setattr(service.sorftime_settings, "connection", lambda: ("https://mcp.invalid/mcp", "test-secret"))
+    monkeypatch.setattr(service, "record_usage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_register_project_artifacts", lambda _job: None)
+    monkeypatch.setattr(service, "_auto_voc_handoff", lambda _job: None)
+    monkeypatch.setattr(woot, "collect_reviews", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        ExternalEffectsDisabled("offline")))
+    monkeypatch.setattr(service.sorftime, "call", lambda *_args: pytest.fail("离线拒绝后不应调用 Sorftime"))
+    job = _auto_review_job("1" * 32)
+    service._job_dir(job["id"]).mkdir(parents=True)
+    (service._job_dir(job["id"]) / "raw").mkdir()
+    service._save(job)
+
+    service._run(job["id"], threading.Event())
+
+    saved = service._read(job["id"])
+    assert saved["status"] == "completed_with_errors"
+    assert saved["items"][0]["status"] == "failed"
+    assert "offline" in saved["items"][0]["error"]
+
+
+def test_auto_fallback_retry_resumes_sorftime_without_rechecking_woot(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "ROOT", tmp_path / "amazon-reviews")
+    monkeypatch.setattr(service, "SHUTTING_DOWN", False)
+    monkeypatch.setattr(service.sorftime_settings, "connection", lambda: ("https://mcp.invalid/mcp", "test-secret"))
+    monkeypatch.setattr(service, "record_usage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_register_project_artifacts", lambda _job: None)
+    monkeypatch.setattr(service, "_auto_voc_handoff", lambda _job: None)
+    monkeypatch.setattr(woot, "collect_reviews", lambda *_args, **_kwargs: pytest.fail("已确认目录未匹配后不应重查 Woot"))
+    sorftime_calls = []
+    row = {"review_date": "20260901", "star_rating": 5, "title": "Good", "content": "Works well"}
+
+    def fake_sorftime(_endpoint, _key, tool, arguments):
+        sorftime_calls.append((tool, arguments))
+        return {"data": [row]}
+
+    monkeypatch.setattr(service.sorftime, "call", fake_sorftime)
+    job = _auto_review_job("f" * 32)
+    item = job["items"][0]
+    item.update({"collection_source": "sorftime", "fallback_from": "woot",
+                 "fallback_reason": "Woot 完整目录没有精确匹配"})
+    job.update({"status": "running", "attempt": 1, "stage": "interrupted"})
+    service._job_dir(job["id"]).mkdir(parents=True)
+    (service._job_dir(job["id"]) / "raw").mkdir()
+    service._save(job)
+    first_call = [{"round": 1, "review_type": "Both", "collection_source": "sorftime",
+                   "payload": {"data": [row]}, "cache_hit": False}]
+    service._atomic_json(service._call_payloads_path(job["id"], ASIN_A), first_call)
+    reviews, item["review_call_metrics"] = service._reviews_from_calls(first_call, ASIN_A)
+    service._annotate_reviews(reviews, job, item)
+    service._write_reviews(job["id"], ASIN_A, reviews)
+
+    service._run(job["id"], threading.Event())
+
+    saved = service._read(job["id"])
+    assert saved["status"] == "completed"
+    assert len(sorftime_calls) == 1
+    assert sorftime_calls[0][1]["asin"] == ASIN_A
+    assert saved["items"][0]["collection_source"] == "sorftime"
+    assert saved["items"][0]["fallback_from"] == "woot"
 
 
 def test_retry_resumes_the_missing_review_pass(monkeypatch, tmp_path):
@@ -325,3 +712,194 @@ def test_retry_resumes_the_missing_review_pass(monkeypatch, tmp_path):
     assert len(raw["reviews"]) == 1
     assert raw["reviews"][0]["source_review_rounds"] == [1, 2]
     assert raw["reviews"][0]["translation_zh"] == "译：Works well"
+
+
+def _auto_review_job(job_id, asin=ASIN_A):
+    return {
+        "id": job_id, "status": "queued", "mode": "asins", "site": "US", "node_id": "",
+        "asins": [asin], "rank_limit": 50, "model": "", "credential_id": "",
+        "created_at": time.time(), "updated_at": time.time(), "attempt": 0, "stage": "queued",
+        "workflow_mode": "reviews_only", "translate_enabled": False, "auto_voc_policy": "none",
+        "force_refresh": False, "collection_source": "auto", "woot_review_ids": {},
+        "review_collection_contract": {"source": "automatic"}, "review_count": 0, "errors": [],
+        "metrics": {"review_tool_calls": 0, "cached_review_requests": 0,
+                    "raw_records": 0, "new_unique_records": 0},
+        "items": [{"asin": asin, "title": "Example Product", "status": "pending",
+                    "review_count": 0, "error": ""}],
+    }
+
+
+def test_sorftime_no_reviews_is_a_completed_zero_review_result(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "ROOT", tmp_path / "amazon-reviews")
+    monkeypatch.setattr(service, "SHUTTING_DOWN", False)
+    monkeypatch.setattr(service.sorftime_settings, "connection", lambda: ("https://mcp.invalid/mcp", "test-secret"))
+    monkeypatch.setattr(service, "record_usage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_register_project_artifacts", lambda _job: None)
+    monkeypatch.setattr(service, "_auto_voc_handoff", lambda _job: None)
+    calls = []
+
+    def fake_sorftime(_endpoint, _key, tool, arguments):
+        calls.append((tool, arguments))
+        return {"data": [], "message": "No reviews found."}
+
+    monkeypatch.setattr(service.sorftime, "call", fake_sorftime)
+    job = _auto_review_job("e" * 32)
+    job["collection_source"] = "sorftime"
+    job["review_collection_contract"] = service.REVIEW_CALL_CONTRACT
+    service._job_dir(job["id"]).mkdir(parents=True)
+    (service._job_dir(job["id"]) / "raw").mkdir()
+    service._save(job)
+
+    service._run(job["id"], threading.Event())
+
+    saved = service._read(job["id"])
+    raw = json.loads(service.raw_path(job["id"]).read_text(encoding="utf-8"))
+    payloads = json.loads(service._call_payloads_path(job["id"], ASIN_A).read_text(encoding="utf-8"))
+    workbook = load_workbook(service.output_path(job["id"]), data_only=True)
+
+    assert saved["status"] == "completed", saved
+    assert saved["items"][0]["status"] == "completed"
+    assert saved["items"][0]["review_count"] == 0
+    assert saved["errors"] == []
+    assert len(calls) == 2
+    assert all(tool == "product_reviews" for tool, _arguments in calls)
+    assert saved["metrics"] == {"review_tool_calls": 2, "cached_review_requests": 0,
+                                 "raw_records": 0, "new_unique_records": 0}
+    assert raw["reviews"] == []
+    assert len(payloads) == 2 and all(call["payload"]["data"] == [] for call in payloads)
+    assert workbook.sheetnames == ["全部评论", "商品评论统计", "统计汇总"]
+    assert workbook["全部评论"].max_row == 1
+
+
+@pytest.mark.parametrize("exception_name", [
+    "WootCatalogMiss", "WootResolverSearchLimit", "WootCatalogIncomplete",
+])
+def test_us_auto_source_falls_back_after_woot_miss_or_search_limit(exception_name, monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "ROOT", tmp_path / "amazon-reviews")
+    monkeypatch.setattr(service, "SHUTTING_DOWN", False)
+    monkeypatch.setattr(service.sorftime_settings, "connection", lambda: ("https://mcp.invalid/mcp", "test-secret"))
+    monkeypatch.setattr(service, "record_usage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_register_project_artifacts", lambda _job: None)
+    monkeypatch.setattr(service, "_auto_voc_handoff", lambda _job: None)
+
+    class CatalogMiss(RuntimeError):
+        pass
+
+    monkeypatch.setattr(woot, exception_name, CatalogMiss, raising=False)
+    woot_calls = []
+
+    def fake_woot(*_args, **_kwargs):
+        woot_calls.append("attempted")
+        raise CatalogMiss("Woot 完整检索公开目录后未找到精确 ASIN")
+
+    monkeypatch.setattr(woot, "collect_reviews", fake_woot)
+    sorftime_calls = []
+
+    def fake_sorftime(_endpoint, _key, tool, arguments):
+        sorftime_calls.append((tool, arguments))
+        return {"data": [{
+            "review_date": "20260901", "star_rating": 5,
+            "title": "Fits well", "content": "The product works as expected.",
+        }]}
+
+    monkeypatch.setattr(service.sorftime, "call", fake_sorftime)
+    job = _auto_review_job("c" * 32)
+    service._job_dir(job["id"]).mkdir(parents=True)
+    (service._job_dir(job["id"]) / "raw").mkdir()
+    service._save(job)
+
+    service._run(job["id"], threading.Event())
+
+    saved = service._read(job["id"])
+    raw = json.loads(service.raw_path(job["id"]).read_text(encoding="utf-8"))
+    calls = json.loads(service._call_payloads_path(job["id"], ASIN_A).read_text(encoding="utf-8"))
+    workbook = load_workbook(service.output_path(job["id"]), data_only=True)
+    all_reviews = workbook["全部评论"]
+    summary = {workbook["统计汇总"].cell(row, 1).value: workbook["统计汇总"].cell(row, 2).value
+               for row in range(2, workbook["统计汇总"].max_row + 1)}
+
+    assert saved["status"] == "completed", saved
+    assert woot_calls == ["attempted"]
+    assert len(sorftime_calls) == 2
+    assert saved["items"][0]["collection_source"] == "sorftime"
+    assert saved["items"][0]["fallback_reason"]
+    assert all(call["collection_source"] == "sorftime" for call in calls)
+    assert all(review["collection_source"] == "sorftime" for review in raw["reviews"])
+    assert all_reviews.max_column == 15
+    assert all_reviews.cell(1, 15).value == "评论采集源"
+    assert all_reviews.cell(2, 15).value == "Sorftime MCP"
+    assert workbook["商品评论统计"].cell(1, 8).value == "采集来源"
+    assert workbook["商品评论统计"].cell(2, 8).value == "Sorftime MCP"
+    assert "Sorftime" in summary["评论采集方式"]
+    assert summary["自动回退 ASIN 数"] == 1
+
+
+def test_us_auto_source_keeps_woot_results_without_calling_sorftime(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "ROOT", tmp_path / "amazon-reviews")
+    monkeypatch.setattr(service, "SHUTTING_DOWN", False)
+    monkeypatch.setattr(service.sorftime_settings, "connection", lambda: ("https://mcp.invalid/mcp", "test-secret"))
+    monkeypatch.setattr(service, "record_usage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_register_project_artifacts", lambda _job: None)
+    monkeypatch.setattr(service, "_auto_voc_handoff", lambda _job: None)
+    woot_calls = []
+
+    def fake_woot(asin, **_kwargs):
+        woot_calls.append(asin)
+        return {"reviews": [{
+            "review_date": "20260901", "star_rating": 5,
+            "title": "Good quality", "content": "This works well.",
+        }], "request_count": 20, "mode": "max"}
+
+    monkeypatch.setattr(woot, "collect_reviews", fake_woot)
+    monkeypatch.setattr(service.sorftime, "call", lambda *_args: pytest.fail("Woot 命中时不应调用 Sorftime"))
+    job = _auto_review_job("d" * 32)
+    service._job_dir(job["id"]).mkdir(parents=True)
+    (service._job_dir(job["id"]) / "raw").mkdir()
+    service._save(job)
+
+    service._run(job["id"], threading.Event())
+
+    saved = service._read(job["id"])
+    raw = json.loads(service.raw_path(job["id"]).read_text(encoding="utf-8"))
+    calls = json.loads(service._call_payloads_path(job["id"], ASIN_A).read_text(encoding="utf-8"))
+    assert saved["status"] == "completed", saved
+    assert woot_calls == [ASIN_A]
+    assert saved["items"][0]["collection_source"] == "woot"
+    assert all(review["collection_source"] == "woot" for review in raw["reviews"])
+    assert len(calls) == 1 and calls[0]["collection_source"] == "woot"
+
+
+def test_woot_cancellation_is_passed_through_and_keeps_cancelled_task_semantics(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, "ROOT", tmp_path / "amazon-reviews")
+    monkeypatch.setattr(service, "SHUTTING_DOWN", False)
+    monkeypatch.setattr(service.sorftime_settings, "connection", lambda: ("", ""))
+    monkeypatch.setattr(service, "record_usage", lambda *_args, **_kwargs: None)
+    observed = []
+
+    class WootCancelled(RuntimeError):
+        pass
+
+    monkeypatch.setattr(woot, "WootCancelled", WootCancelled, raising=False)
+
+    def fake_woot(_asin, *, cancel, **_kwargs):
+        observed.append(cancel)
+        cancel.set()
+        raise WootCancelled("Woot 采集已取消")
+
+    monkeypatch.setattr(woot, "collect_reviews", fake_woot)
+    job = _auto_review_job("e" * 32)
+    service._job_dir(job["id"]).mkdir(parents=True)
+    (service._job_dir(job["id"]) / "raw").mkdir()
+    service._save(job)
+    cancel = threading.Event()
+
+    service._run(job["id"], cancel)
+
+    saved = service._read(job["id"])
+    assert observed == [cancel]
+    assert saved["status"] == "cancelled"
+    assert saved["started_at"] <= saved["finished_at"]
+    assert saved["duration_seconds"] >= 0
+    assert saved["attempt_history"][-1]["status"] == "cancelled"
+    assert saved["items"][0]["status"] == "pending"
+    assert saved["items"][0]["error"] == ""
